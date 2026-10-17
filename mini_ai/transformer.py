@@ -27,6 +27,7 @@ import base64
 import json
 import math
 
+import re
 import numpy as np
 
 # ======================================================================================
@@ -44,6 +45,9 @@ def clean_question(text):
     t = str(text).lower().replace("ё", "е")
     for a in APOSTROPHES:
         t = t.replace(a, "'")
+    # В обучающих вопросах нет знаков препинания — убираем их и здесь, иначе «Привет!»
+    # для модели незнакомая строка и она пишет «кашу» (баг найден на скриншоте 17.10).
+    t = re.sub(r"[!?.,;:()\"«»…—–-]+", " ", t)
     return " ".join(t.split())
 
 

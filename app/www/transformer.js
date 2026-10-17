@@ -25,6 +25,8 @@
   function cleanQuestion(text) {
     var t = String(text).toLowerCase().replace(/ё/g, "е");
     t = t.replace(APOS, "'");
+    // как в Python clean_question: знаки препинания → пробел (в обучающих вопросах их нет)
+    t = t.replace(/[!?.,;:()"«»…—–-]+/g, " ");
     return t.split(/\s+/).filter(Boolean).join(" ");
   }
 
