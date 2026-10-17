@@ -1,0 +1,96 @@
+Намерений: 27, фраз train: 1255 (+опечатки = 7530), test: 312
+Вход: 2048 (хеш слов + триграмм) → скрытый слой 32 ReLU → 27 softmax
+  эпоха   1  loss=1.9726  train acc=0.934
+  эпоха  10  loss=0.1702  train acc=0.996
+  эпоха  20  loss=0.1615  train acc=0.996
+  эпоха  30  loss=0.1580  train acc=0.996
+
+ТОЧНОСТЬ НА ТЕСТЕ (сплит seed=42): 86.2%  (269/312)
+Точность на 3 разных сплитах: 86.2%, 91.0%, 87.2%  → среднее 88.1%
+  только «разговорные» намерения (без out_of_scope): 88.4%, 93.4%, 89.4%  → среднее 90.4%
+
+Матрица ошибок (строка = правильный ответ, столбец = ответ сети; показаны только ошибки):
+         greeting → goodbye         ×1
+         greeting → how_are_you     ×1
+      how_are_you → good_mood       ×1
+      how_are_you → how_work        ×1
+      who_are_you → insult          ×2
+               no → weather         ×1
+              age → insult          ×1
+        abilities → goodbye         ×1
+        abilities → not_understood  ×1
+             joke → abilities       ×1
+             joke → help            ×1
+          weather → abilities       ×1
+          weather → where           ×2
+             time → yes             ×1
+             date → how_are_you     ×3
+             help → abilities       ×1
+             help → bored           ×1
+       compliment → what_doing      ×1
+              sad → bored           ×1
+            bored → abilities       ×1
+            bored → sad             ×1
+            bored → good_mood       ×1
+            bored → insult          ×1
+        good_mood → thanks          ×1
+   not_understood → goodbye         ×1
+   not_understood → how_are_you     ×1
+   not_understood → no              ×1
+   not_understood → abilities       ×2
+            where → no              ×1
+         how_work → abilities       ×1
+     out_of_scope → creator         ×1
+     out_of_scope → age             ×1
+     out_of_scope → joke            ×2
+     out_of_scope → date            ×1
+     out_of_scope → insult          ×1
+     out_of_scope → how_work        ×2
+
+Ошибочные фразы:
+  «доброй ночи»: нужно greeting, сеть сказала goodbye
+  «привет как тебя»: нужно greeting, сеть сказала how_are_you
+  «у тебя все хорошо»: нужно how_are_you, сеть сказала good_mood
+  «как ты себя чувствуешь»: нужно how_are_you, сеть сказала how_work
+  «ты нейронка»: нужно who_are_you, сеть сказала insult
+  «ты гпт»: нужно who_are_you, сеть сказала insult
+  «никогда»: нужно no, сеть сказала weather
+  «ты еще маленький»: нужно age, сеть сказала insult
+  «qolingdan nima keladi»: нужно abilities, сеть сказала goodbye
+  «nimalarni tushunasan»: нужно abilities, сеть сказала not_understood
+  «можешь пошутить»: нужно joke, сеть сказала help
+  «ты умеешь шутить»: нужно joke, сеть сказала abilities
+  «нужен ли зонт»: нужно weather, сеть сказала where
+  «нужен зонт»: нужно weather, сеть сказала where
+  «что с погодой»: нужно weather, сеть сказала abilities
+  «вермя»: нужно time, сеть сказала yes
+  «hozir qaysi yil»: нужно date, сеть сказала how_are_you
+  «qaysi yil»: нужно date, сеть сказала how_are_you
+  «hozir qaysi oy»: нужно date, сеть сказала how_are_you
+  «ты можешь мне помочь»: нужно help, сеть сказала abilities
+  «что мне делать»: нужно help, сеть сказала bored
+  «офигенно отвечаешь»: нужно compliment, сеть сказала what_doing
+  «мне тревожно»: нужно sad, сеть сказала bored
+  «развлеки меня»: нужно bored, сеть сказала good_mood
+  «развлеки»: нужно bored, сеть сказала insult
+  «nima qilsam ekan»: нужно bored, сеть сказала abilities
+  «men zerikyapman»: нужно bored, сеть сказала sad
+  «zor rahmat»: нужно good_mood, сеть сказала thanks
+  «qaytaring»: нужно not_understood, сеть сказала how_are_you
+  «чего»: нужно not_understood, сеть сказала goodbye
+  «че»: нужно not_understood, сеть сказала no
+  «что ты имеешь ввиду»: нужно not_understood, сеть сказала abilities
+  «что ты имеешь в виду»: нужно not_understood, сеть сказала abilities
+  «internet kerakmi»: нужно where, сеть сказала no
+  «ichingda nima bor»: нужно how_work, сеть сказала abilities
+  «расскажи про историю рима»: нужно out_of_scope, сеть сказала joke
+  «расскажи про черные дыры»: нужно out_of_scope, сеть сказала joke
+  «кто президент америки»: нужно out_of_scope, сеть сказала creator
+  «какой самый большой океан»: нужно out_of_scope, сеть сказала age
+  «как приготовить плов»: нужно out_of_scope, сеть сказала how_work
+  «открой ютуб»: нужно out_of_scope, сеть сказала date
+  «переведи на английский»: нужно out_of_scope, сеть сказала how_work
+  «какой курс доллара»: нужно out_of_scope, сеть сказала insult
+
+Финальное обучение на всех 1567 фразах (+опечатки = 9402)
+Параметров: 66,459. model.json: 301 КБ

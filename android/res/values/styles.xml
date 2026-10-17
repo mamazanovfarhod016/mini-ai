@@ -1,0 +1,10 @@
+<resources>
+  <string name="app_name">Mini AI</string>
+  <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
+    <item name="android:statusBarColor">#F5F4EE</item>
+    <item name="android:navigationBarColor">#F5F4EE</item>
+    <item name="android:windowLightStatusBar">true</item>
+    <item name="android:windowBackground">@color/bg</item>
+  </style>
+  <color name="bg">#F5F4EE</color>
+</resources>
