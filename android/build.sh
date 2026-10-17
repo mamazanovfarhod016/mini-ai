@@ -9,6 +9,7 @@ export JAVA_HOME="${JAVA_HOME:-$HOME/opt/jdk-17.0.20.1+1}"; export PATH="$JAVA_H
 SDK="${ANDROID_SDK:-$HOME/opt/android-sdk}"; BT="$SDK/build-tools/34.0.0"; JAR="$SDK/platforms/android-34/android.jar"
 KS="$HOME/.config/mini-ai/release.jks"; PASSF="$HOME/.config/mini-ai/keystore.txt"
 [ -f "$ROOT/app/www/model.js" ] || { echo "Нет app/www/model.js — сначала: .venv/bin/python train.py"; exit 1; }
+[ -f "$ROOT/app/www/model_transformer.js" ] || { echo "Нет app/www/model_transformer.js — сначала: .venv/bin/python train_transformer.py"; exit 1; }
 [ -f "$KS" ] || { echo "Нет ключа $KS (см. README: keytool -genkeypair ...)"; exit 1; }
 PASS="$(cat "$PASSF")"
 

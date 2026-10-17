@@ -1,5 +1,10 @@
 """Скриншоты интерфейса: headless Chrome 390×844 @2x (как телефон).
-Запуск: /tmp/jv/bin/python tools/screenshots.py"""
+Запуск: /tmp/jv/bin/python tools/screenshots.py
+
+Показываем v0.2 (трансформер, диалог ru+uz, стриминг, тепловая карта внимания)
+и тёмную тему. Старые файлы (1_empty_chat.png и т.д.) перезаписываются —
+это те же экраны, но теперь с трансформером по умолчанию.
+"""
 import sys
 from pathlib import Path
 
@@ -33,21 +38,34 @@ def run(scheme, suffix):
         page.evaluate("window.__FAST__ = true")
         if suffix == "":
             shot(page, "1_empty_chat.png")
+
+        # ---------- диалог (трансформер, ru+uz) ----------
         for q in DIALOG:
             page.evaluate("q => MiniApp.ask(q)", q)
-            page.wait_for_timeout(80)
+            page.wait_for_timeout(120)
         shot(page, f"2_dialog{suffix}.png")
+
+        # ---------- тепловая карта внимания ----------
         page.evaluate("MiniApp.openSheet()")
         shot(page, f"3_how_it_works{suffix}.png")
+        page.evaluate("MiniApp.closeSheet()")
+
         if suffix == "":
-            page.evaluate("MiniApp.closeSheet(); MiniApp.newChat();")
+            # ---------- настоящий посимвольный стриминг (без __FAST__) ----------
+            page.evaluate("MiniApp.newChat(); window.__FAST__ = false;")
+            page.evaluate("q => MiniApp.ask(q)", "расскажи про себя подробно")
+            page.wait_for_timeout(650)   # ловим момент, когда буквы ещё печатаются
+            shot(page, "6_streaming.png")
             page.evaluate("window.__FAST__ = true")
+
+            # ---------- боковое меню с переключателем модели ----------
+            page.evaluate("MiniApp.newChat();")
             page.evaluate("q => MiniApp.ask(q)", "превет как дела")
             page.wait_for_timeout(80)
             page.evaluate("MiniApp.openDrawer()")
             shot(page, "4_drawer.png")
         else:
-            page.evaluate("MiniApp.closeSheet(); MiniApp.newChat();")
+            page.evaluate("MiniApp.newChat();")
             shot(page, "5_empty_dark.png")
         if errs:
             print("JS ERRORS:", errs)
