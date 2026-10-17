@@ -1,0 +1,337 @@
+Mini AI v0.2 — лог обучения трансформера
+Архитектура: d=96, layers=3, heads=4, block=224, params=371,863
+Время обучения: 54.6 мин (3000 шагов, batch=32)
+Train: loss=0.061 ppl=1.06
+Test:  loss=0.069 ppl=1.07
+Точная метрика (exact match): 32.3% (101/313)
+Мягкая метрика (1-Levenshtein): 48.1%
+Размер model_transformer.json: 986 КБ
+
+Примеры (вопрос → ответ, невиденные тестовые вопросы):
+  «ahmoq» [insult] → «Yaxshi, kelishdik.» 
+  «ahmoq bot» [insult] → «Yaxshi, kelishdik.» 
+  «albatta bot» [yes] → «Zo'r! Kun bo'yi shunday bo'lsin.» 
+  «assalomu alaykum bot» [greeting] → «Salom! Ishlar qalay?» ✓
+  «bandmisan» [what_doing] → «Siz bilan gaplashyapman 🙂» ✓
+  «bitta latifa ayt» [joke] → «Gradientim hazildan tezroq tushyapti 😅» ✓
+  «bugun havo qanday» [weather] → «Men oflayn tarmoqman, ob-havo ilovasini tekshiring.» ✓
+  «bugun nechanchi sana bot» [date] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «bugungi sana» [date] → «Men mukammal emasman. Farhod meni yaxshilaydi 🙂» 
+  «bye friend» [goodbye] → «Gradientim hazildan tezroq tushyapti 😅» 
+  «ha» [yes] → «Yaxshi, kelishdik.» ✓
+  «hammasi yaxshi» [good_mood] → «Zo'r! Kun bo'yi shunday bo'lsin.» ✓
+  «hey» [greeting] → «Xayr! Yana kiring 👋» 
+  «hi» [greeting] → «Men hali kichkinaman 😅 Oddiyroq narsa so'rang.» 
+  «how are you bot» [how_are_you] → «Marhamat! Yana so'rang.» 
+  «hozir qaysi yil» [date] → «Hammasi zo'r, rahmat! O'zingiz qalaysiz?» 
+  «hozir vaqt necha» [time] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «ishlaring qalay» [how_are_you] → «Hammasi zo'r, rahmat! O'zingiz qalaysiz?» ✓
+  «ishlaring qalay bot» [how_are_you] → «Hammasi zo'r, rahmat! O'zingiz qalaysiz?» ✓
+  «ismingni ayt bot» [name] → «Mening ismim Mini AI 🙂» ✓
+  «kayfiyatim yo'q» [sad] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «kayfiyatim yo'q bugun» [sad] → «Men mukammmal emasman. Farhod meni yaxshilaydi 🙂» 
+  «kayfiyating qalay» [how_are_you] → «Gradientim hazildan tezroq tushyapti 😅» 
+  «kerak emas» [no] → «Men hali kichkinaman 😅 Oddiyroq narsa so'rang.» 
+  «kerak emas bot» [no] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «kerakmas» [no] → «Mamat! Yana so'rang.» 
+  «kim seni yaratgan» [creator] → «Meni Farhod yaratgan — noldan, Python va numpy'da.» ✓
+  «kim yaratgan seni» [creator] → «Meni Farhod yaratgan — noldan, Python va numpy'da.» ✓
+  «ko'rishguncha» [goodbye] → «Marhamat! Yana so'rang.» 
+  «korishguncha» [goodbye] → «Men hali kichkinaman 😅 Oddiyroq narsa so'rang.» 
+  «matematikadan masala yech» [out_of_scope] → «Gradientim hazildan tezroq tushyapti 😅» 
+  «men charchadim» [sad] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «men xafaman» [sad] → «Yaxshi, tushundim.» 
+  «men yaxshiman rahmat» [good_mood] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «men yolg'izman» [sad] → «Men matritsalar va gradientlarni yaxshi ko'raman 📉» 
+  «necha yosh» [age] → «Men hali kichkinaman 😅 Oddiyroq narsa so'rang.» 
+  «nima dedingiz bot» [not_understood] → «Mening ismim Mini AI 🙂» 
+  «nima qila olasan» [abilities] → «Salomlashish, hazil, vaqt va sanani aytish. Murakkab narsaga «bilmayman» deyman.» ✓
+  «nima qila olasan bot» [abilities] → «Salomlashish, hazil, vaqt va sanani aytish. Murakkab narsaga «bilmayman» deyman.» ✓
+  «nimalarni bilasan» [abilities] → «Salomlashish, hazil, vaqt va sanani aytish. Murakkab narsaga «bilmayman» deyman.» ✓
+  «o'ynaymiz» [bored] → «Zo'r, rahmat! Sizning ishlaringiz qalay?» 
+  «o'ynaymizmi» [bored] → «Zerikish — yangi narsa o'rganish uchun ajoyib vaqt!» ✓
+  «ok bye» [goodbye] → «Men hali kichkinaman 😅 Oddiyroq narsa so'rang.» 
+  «orzuing nima» [favorite] → «Meni Farhod yaratgan — noldan, Python va numpy'da.» 
+  «otingiz nima» [name] → «Meni Mini AI. Kichkina tarmoq uchun qisqa ism.» 
+  «qachon yaratilgansan» [age] → «Salomlashish, hazil, vaqt va sanani aytish. Murakkab narsaga «bilmayman» deyman.» 
+  «qalaysan bot» [how_are_you] → «Hammasi zo'r, rahmat! O'zingiz qalaysiz?» ✓
+  «qalaysiz do'stim» [how_are_you] → «Salomlashish, hazil, vaqt va sanani aytish. Murakkab narsaga «bilmayman» deyman.» 
+  «qanday foydalansam bo'ladi» [help] → «Oddiy gap yozing: «salom», «qalaysan», «kimsan», «soat necha», «latifa ayt».» ✓
+  «qanday ishlaysan bot» [how_work] → «Hammasi zo'r, rahmat! O'zingiz qalaysiz?» 
+  «qaytarib ayt» [not_understood] → «Zo'r! Kun bo'yi shunday bo'lsin.» 
+  «qo'rqyapman» [sad] → «Salom! 👋 Qanday yordam bera olaman?» 
+  «rahmat bot» [thanks] → «Ajoyib!» 
+  «rahmat do'stim» [thanks] → «Ajoyib! Yaxshi kayfiyat yuqumli.» 
+  «rahmat katta» [thanks] → «Arzimaydi! 😊» ✓
+  «salam» [greeting] → «Assalomu alaykum! Sizni ko'rganimdan xursandman.» ✓
+  «salomat bo'ling» [goodbye] → «Salomlashish, hazil, vaqt va sanani aytish. Murakkab narsaga «bilmayman» deyman.» 
+  «sana» [date] → «Marhamat! Yana so'rang.» 
+  «sen dasturmisan» [who_are_you] → «Men matritsalar va gradientlarni yaxshi ko'raman 📉» 
+  «sen kimsan bot» [who_are_you] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «sen necha yoshdasan» [age] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «sen qanday o'rgangansan» [how_work] → «Men matritsalar va gradientlarni yaxshi ko'raman 📉» 
+  «sen robotmisan» [who_are_you] → «Men matritsalar va gradientlarni yaxshi ko'raman 📉» 
+  «sen yomonsan» [insult] → «Men hali kichkinaman 😅 Oddiyroq narsa so'rang.» ✓
+  «sen zo'rsan bot» [compliment] → «Men hali kichkinaman 😅 Oddiyroq narsa so'rang.» 
+  «sen zo'rsan do'stim» [compliment] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom».» 
+  «senga nima yoqadi» [favorite] → «Men Mini AI. Kichkina tarmoq uchun qisqa ism.» 
+  «seni qanday chaqiraman» [name] → «Men Mini AI. Kichkina tarmoq uchun qisqa ism.» ✓
+  «sening isming nima» [name] → «Meni Mini AI — juda kichkina neyron tarmoqman. Meni noldan numpy'da yozishgan, internetsinelefongizda ishlayman.» 
+  «sevimli ovqating nima» [favorite] → «Meni Farhod yaratgan — noldan, Python va numpy'da.» 
+  «sevimli taoming» [favorite] → «Mening ismim Mini AI 🙂» 
+  «soat necha bo'ldi» [time] → «Shu yerda, ilovada. Hammasi telefoningizda hisoblanadi.» 
+  «soat nechchi» [time] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom», «qalaysan».» 
+  «tushuntir» [not_understood] → «Salom! 👋 Qanday yordam bera olaman?» 
+  «xa albatta» [yes] → «Ajoyib!» ✓
+  «xayr endi» [goodbye] → «Xayr! Yana kiring 👋» ✓
+  «xayrli kun» [greeting] → «Ajoyib!» 
+  «yangiliklar» [out_of_scope] → «Men hali kichkina neyron tarmoqman, va obun ileksiringizda yoqdi. Sima nima gap?» 
+  «yaxshi bot» [compliment] → «Xayr! Yana kiring 👋» 
+  «yaxshi qoling» [goodbye] → «Salom! 👋 Qanday yordam bera olaman?» 
+  «yaxshiman» [good_mood] → «Ajoyib!» 
+  «yaxshimisan do'stim» [how_are_you] → «Men kichkina suhbatdosh neyron tarmoqman. Oddiy gaplarni tushunaman.» 
+  «yaxshimisiz» [how_are_you] → «Men kichkina suhbatdosh neyron tarmoqman. Oddiy gaplarni tushunaman.» 
+  «yaxshimisiz do'stim» [how_are_you] → «Men kichkina suhbatdosh neyron tarmoqman. Oddiy gaplarni tushunaman.» 
+  «yo'g'e» [no] → «Mayli, siz aytgandek 🙂» ✓
+  «yo'q» [no] → «Yaxshi, tushundim.» ✓
+  «yo'q yo'q» [no] → «Yaxshi, tushundim.» ✓
+  «yomon bot» [insult] → «Salom! 👋 Qanday yordam bera olaman?» 
+  «yordam ber» [help] → «Oddiy gap yozing: «salom», «qalaysan», «kimsan», «soat necha», «latifa ayt».» ✓
+  «yoshing nechida» [age] → «Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom», «qalaysan».» 
+  «zerikarli» [bored] → «Salom! 👋 Qanday yordam bera olaman?» 
+  «zo'r» [good_mood] → «Salom! 👋 Qanday yordam bera olaman?» 
+  «а кто тебя создал» [creator] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «а сколько тебе лет» [age] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «а ты кто» [who_are_you] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ага» [yes] → «Хорошо, договорились.» ✓
+  «ага да» [yes] → «Пока! Заходи ещё 👋» 
+  «анекдот» [joke] → «Пока! Заходи ещё 👋» 
+  «бай бай» [goodbye] → «Привет! 👋 Чем могу помочь?» 
+  «благодарю тебя» [thanks] → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!» 
+  «большое спасибо» [thanks] → «Пожалуйста! 😊» ✓
+  «боюсь экзамена» [sad] → «Пока! Заходи ещё 👋» 
+  «в смысле» [not_understood] → «Спасибо, мне очень приятно! 🥰» 
+  «вовсе нет» [no] → «Пока! Заходи ещё 👋» 
+  «все в порядке» [good_mood] → «Пока! Заходи ещё 👋» 
+  «все хорошо» [good_mood] → «Пока! Заходи ещё 👋» 
+  «всего доброго» [goodbye] → «Пока! Заходи ещё 👋» ✓
+  «всем привет» [greeting] → «Привет! 👋 Чем могу помочь?» ✓
+  «где ты» [where] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» 
+  «где ты бот» [where] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» 
+  «где ты находишься» [where] → «Спасибо! Это всё заслуга Фархода и пары тысяч шагов градиентного спуска.» 
+  «грустно мне» [sad] → «Пока! Заходи ещё 👋» 
+  «давай анекдот» [joke] → «По календарю телефона сегодня 0.0.2026.» 
+  «до свидания бот» [goodbye] → «Пока! Заходи ещё 👋» ✓
+  «до связи» [goodbye] → «Пока! Заходи ещё 👋» ✓
+  «доброе утро» [greeting] → «Привет! 👋 Чем могу помочь?» ✓
+  «добрый день бот» [greeting] → «Понимаю, я не идеальна. Фарход ещё будет меня улучшать 🙂» 
+  «дождь будет» [weather] → «Погоду я не знаю: у меня нет доступа к интернету. Но надеюсь, у тебя солнечно ☀️» ✓
+  «заткнись бот» [insult] → «Пока! Заходи ещё 👋» 
+  «здравствуй» [greeting] → «Привет! 👋 Чем могу помочь?» ✓
+  «здравствуй друг» [greeting] → «Привет! 👋 Чем могу помочь?» ✓
+  «идиот» [insult] → «Пока! Заходи ещё 👋» 
+  «инструкция» [help] → «Мой любимый цвет — терракотовый, как кнопка отправки 🧡» 
+  «как время» [time] → «Сейчас 06:30 ⏰ (смотрю на часы твоего телефона)» ✓
+  «как дела ничего» [how_are_you] → «Хорошо! Я всего лишь маленькая нейронка, но мне приятно, что ты спросил. Как ты?» ✓
+  «как жизнь» [how_are_you] → «Хорошо! Я всего лишь маленькая нейронка, но мне приятно, что ты спросил. Как ты?» ✓
+  «как к тебе обращаться бот» [name] → «Я MLP: слова → мешок слов и символьных n-грамм → скрытый слой с ReLU → softmax по намерениям. Меня обучили обратным распространением ошибки (backprop) и Adam — всё написано руками на numpy.» 
+  «как пользоваться» [help] → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!» 
+  «как поступить в мит» [out_of_scope] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «как твое имя бот» [name] → «Я Mini AI. Короткое имя для маленькой нейронки.» ✓
+  «как тебя завут» [name] → «Я Mini AI. Короткое имя для маленькой нейронки.» ✓
+  «как тебя зовут» [name] → «Я Mini AI. Короткое имя для маленькой нейронки.» ✓
+  «как тебя называть» [name] → «Я Mini AI. Короткое имя для маленькой нейронки.» ✓
+  «как тебя научили» [how_work] → «Внутри меня два слоя весов. Обучение: прямой проход → ошибка (cros-entropy) → градиенты назад → шаг Adam. И так тысячи раз.» 
+  «как ты думаешь» [how_work] → «Всё супер, спасибо! А твои как дела?» 
+  «как ты работаешь» [how_work] → «Внутри меня два слоя весов. Обучение: прямой проход → ошибка (cros-entropy) → градиенты назад → шаг Adam. И так тысячи раз.» 
+  «как ты устроен» [how_work] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «как ты устроен бот» [how_work] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «как это работает» [how_work] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «какая будет погода» [weather] → «По календарю телефона сегодня 0.0.2026.» 
+  «какая дата» [date] → «Хорошо! Я всего лишь маленькая нейронка, но мне приятно, что ты спросил. Как ты?» 
+  «какая погода бот» [weather] → «По календарю телефона сегодня 0.0.2026.» 
+  «какая погода на улице» [weather] → «По календарю телефона сегодня 0.0.2026.» 
+  «какая сегодня дата» [date] → «По календарю телефона сегодня 0.0.2026.» ✓
+  «какая столица японии» [out_of_scope] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «какая ты тупая» [insult] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «какие у тебя функции бот» [abilities] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «какое сегодня число и месяц» [date] → «Сегодня 23.0.2026 📅» ✓
+  «какое сейчас время» [time] → «Сейчас 0:30 ⏰ (смотрю на часы твоего телефона)» ✓
+  «какое число» [date] → «Сейчас 0:30 ⏰ (смотрю на часы твоего телефона)» 
+  «какой месяц сейчас» [date] → «Сейчас 06:30 ⏰ (смотрю на часы твоего телефона)» 
+  «какой цвет тебе нравится» [favorite] → «Я MLP: слова → мешок слов и символьных n-грамм → скрытый слой с ReLU → softmax по намерениям. Меня обучили обратным распространем ошиенибки (backprop) Adam — всё но но рукано рука на numpy.» 
+  «классный бот» [compliment] → «Сейчас 06:30 ⏰ (смотрю на часы твоего телефона)» 
+  «конечно» [yes] → «Давай я пошучу! Напиши «шутка» 😄» 
+  «крутой бот» [compliment] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» 
+  «кто автор» [creator] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» 
+  «кто написал войну и мир» [out_of_scope] → «Пока! Заходи ещё 👋» 
+  «кто написал этого бота» [creator] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «кто президент америки» [out_of_scope] → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!» 
+  «кто со мной говорит» [who_are_you] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «кто тебя написал бот» [creator] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «кто тебя программировал» [creator] → «Я пока маленькая нейронка и этого не знаю 🙈 Я понимаю только простые фразы: «привет», «как дела», «кто ты».» 
+  «кто тебя разработал» [creator] → «Мой создатель — Фарход. Он сам написал прямой проход, backprop и обучение.» ✓
+  «кто тебя разработал бот» [creator] → «Меня создал Фарход — с нуля, на Python и numpy, без готовых библиотек для нейросетей.» ✓
+  «кто тебя создал бот» [creator] → «Мой создатель — Фарход. Он сам написал прямой проход, backprop и обучение.» ✓
+  «кто тебя создал скажи» [creator] → «Мой создатель — Фарход. Он сам написал прямой проход, backprop и обучение.» ✓
+  «кто тибя создал» [creator] → «Мой создатель — Фарход. Он сам написал прямой проход, backprop и обучение.» ✓
+  «кто ты вообще» [who_are_you] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ладно бот» [yes] → «Пока! Заходи ещё 👋» 
+  «любимая еда» [favorite] → «Мой любимый цвет — терракотовый, как кнопка отправки 🧡» ✓
+  «люблю тебя» [compliment] → «Мечтаю когда-нибудь вырасти в большую модель. Но и маленькой быть неплохо!» 
+  «меня обидели сегодня» [sad] → «Сегодня 23.0.2026 📅» 
+  «мне грустно бот» [sad] → «Ты не один. Отдохни немного, выпей воды, и всё станет чуть легче 💛» ✓
+  «мне нечего делать» [bored] → «Обнимаю (виртуально) 🤗 Если очень тяжело — поговори с близким человеком, это правда помогает.» 
+  «мне нравится с тобой» [compliment] → «Мой любимый цвет — терракотовый, как кнопка отправки 🧡» 
+  «мне нужна помощь бот» [help] → «Пока! Заходи ещё 👋» 
+  «мне одиноко бот» [sad] → «Пока! Заходи ещё 👋» 
+  «мне очень плохо» [sad] → «Ты не один. Отдохни немного, выпей воды, и всё станет чуть легче 💛» ✓
+  «мне плохо сегодня» [sad] → «Ты не один. Отдохни немного, выпей воды, и всё станет чуть легче 💛» ✓
+  «можешь помочь» [help] → «Пока! Заходи ещё 👋» 
+  «можешь помочь бот» [help] → «Пока! Заходи ещё 👋» 
+  «на чем ты написан» [how_work] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «не бот» [no] → «Ладно, как скажешь 🙂» ✓
+  «не знаю чем заняться» [bored] → «Ты не один. Отдохни немного, выпей воды, и всё станет чуть легче 💛» 
+  «не понял» [not_understood] → «Давай ещё раз! Напиши, например, «что ты умеешь?»» ✓
+  «не понял тебя» [not_understood] → «Окей, не буду.» 
+  «не понятно» [not_understood] → «Давай ещё раз! Напиши, например, «что ты умеешь?»» ✓
+  «не стоит» [no] → «Окей, не буду.» ✓
+  «неа» [no] → «Ладно, как скажешь 🙂» ✓
+  «неплохо» [good_mood] → «Пока! Заходи ещё 👋» 
+  «неплохо вроде» [good_mood] → «Пока! Заходи ещё 👋» 
+  «нет не надо бот» [no] → «Ладно, как скажешь 🙂» ✓
+  «ну как ты» [how_are_you] → «Сейчас 0:30 ⏰ (смотрю на часы твоего телефона)» 
+  «ну спасибо» [thanks] → «Пока! Заходи ещё 👋» 
+  «о чем ты мечтаешь» [favorite] → «Немного: поздороваться, поболтать, пошутить, сказать время и дату с твоего телефона. На сложное я честно скажу «не знаю».» 
+  «ок» [yes] → «Супер!» ✓
+  «ок бот» [yes] → «Пока! Заходи ещё 👋» 
+  «повтори пожалуйста» [not_understood] → «Пока! Заходи ещё 👋» 
+  «повтори что сказал» [not_understood] → «Пока! Заходи ещё 👋» 
+  «погода» [weather] → «Пока! Заходи ещё 👋» 
+  «погода на завтра» [weather] → «Пока! Заходи ещё 👋» 
+  «погода сейчас» [weather] → «Пока! Заходи ещё 👋» 
+  «пойдет» [good_mood] → «Пока! Заходи ещё 👋» 
+  «пойдет дождь» [weather] → «Пока! Заходи ещё 👋» 
+  «пока до завтра» [goodbye] → «Пока! Заходи ещё 👋» ✓
+  «пошути» [joke] → «Привет! 👋 Чем могу помочь?» 
+  «пошути пожалуйста» [joke] → «Программист кладёт на тумбочку два стакана: с водой — если захочет пить, и пустой — если не захочет.» ✓
+  «привет» [greeting] → «Привет! 👋 Чем могу помочь?» ✓
+  «привет друг» [greeting] → «Привет! 👋 Чем могу помочь?» ✓
+  «привет нейронка» [greeting] → «Привет! 👋 Чем могу помочь?» ✓
+  «привет привет» [greeting] → «Привет! 👋 Чем могу помочь?» ✓
+  «развлеки меня» [bored] → «Супер!» 
+  «расскажи анекдот» [joke] → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!» 
+  «расскажи шутку бот» [joke] → «Почему нейросеть пошла к психологу? У неё было слишком много скрытых слоёв 😄» ✓
+  «рахмат» [thanks] → «Привет! 👋 Чем могу помочь?» 
+  «рахмат бот» [thanks] → «Привет! 👋 Чем могу помочь?» 
+  «реши задачу по математике» [out_of_scope] → «Программист кладёт на тумбочку два стакана: с водой — если захочет пить, и пустой — если не захочет.» 
+  «салют» [greeting] → «Пока! Заходи ещё 👋» 
+  «скажи время» [time] → «Сейчас 0:30 ⏰ (смотрю на часы твоего телефона)» ✓
+  «скажи дату» [date] → «Пока! Заходи ещё 👋» 
+  «скажи шутку» [joke] → «Почему нейросеть пошла к психологу? У неё было слишком много скрытых слоёв 😄» ✓
+  «скок тебе лет» [age] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «сколько времени бот» [time] → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!» 
+  «сколько градусов» [weather] → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!» 
+  «сколько градусов сегодня» [weather] → «По календарю телефона сегодня 23.0.2026.» 
+  «сколько лет» [age] → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!» ✓
+  «сколько сейчас времени бот» [time] → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!» 
+  «сколько тебе годиков» [age] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «сколько тебе годиков бот» [age] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «сколько у тебя слоев» [how_work] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «сколько щас времени» [time] → «Сейчас 0:30 ⏰ (смотрю на часы твоего телефона)» ✓
+  «скукота» [bored] → «Пока! Заходи ещё 👋» 
+  «скучаю» [bored] → «Пока! Заходи ещё 👋» 
+  «скучно бот» [bored] → «Пока! Заходи ещё 👋» 
+  «скучный день» [bored] → «Скука — отличное время, чтобы научиться чему-то новому. Например, написать свою нейронку, как Фарход!» ✓
+  «согласна» [yes] → «Пока! Заходи ещё 👋» 
+  «спасиб» [thanks] → «Пожалуйста! 😊» ✓
+  «спасибо» [thanks] → «Пожалуйста! 😊» ✓
+  «спасибочки» [thanks] → «Пожалуйста! 😊» ✓
+  «твоя любимая еда» [favorite] → «Мечтаю когда-нибудь вырасти в большую модель. Но и маленькой быть неплохо!» ✓
+  «твоя любимая еда какая» [favorite] → «Мечтаю когда-нибудь вырасти в большую модель. Но и маленькой быть неплохо!» ✓
+  «тебе сколько» [age] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» 
+  «текущее время» [time] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «температура сегодня» [weather] → «Погоду я не знаю: у меня нет доступа к интернету. Но надеюсь, у тебя солнечно ☀️» ✓
+  «точно» [yes] → «Давай ещё раз! Напиши, например, «что ты умеешь?»» 
+  «ты chatgpt» [who_are_you] → «Zo'r! Kun bo'yi shunday bo'lsin.» 
+  «ты в интернете или в телефоне» [where] → «Я MLP: слова → мешок слов и символьных n-грамм → скрытый слой с ReLU → softmax по намерениям. Меня обучили ратным распранением оспрапрапибки (backprop) исё написаписано руками на на на но рукап» 
+  «ты в телефоне» [where] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты взрослый» [age] → «Спасибо, мне очень приятно! 🥰» 
+  «ты вообще тупой» [insult] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» ✓
+  «ты живой человек» [who_are_you] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты занят» [what_doing] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты ии или человек» [who_are_you] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты искусственный интеллект» [who_are_you] → «Я Mini AI — очень маленькая нейросеть. Меня написали с нуля на numpy, и я живу прямо в твоём телефоне, без интернета.» ✓
+  «ты как называешься» [name] → «Спасибо! Это всё заслуга Фархода и пары тысяч шагов градиентного спуска.» 
+  «ты кто такой» [who_are_you] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты лучший бот» [compliment] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты любишь музыку» [favorite] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты милая» [compliment] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты мне очень нравишься» [compliment] → «Спасибо! Это всё заслуга Фархода и пары тысяч шагов градиентного спуска.» ✓
+  «ты на numpy» [how_work] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты на сервере или в телефоне» [where] → «Я живу прямо в твоём телефоне 📱 Интернет мне не нужен — все веса лежат внутри приложения.» ✓
+  «ты не умный» [insult] → «Ой, я аж покраснела бы, если бы умела 😊» 
+  «ты ничего не умеешь» [insult] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «ты откуда» [where] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» 
+  «ты офлайн» [where] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» 
+  «ты очень умный» [compliment] → «Спасибо! Это всё заслуга Фархода и пары тысяч шагов градиентного спуска.» ✓
+  «ты плохая» [insult] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» ✓
+  «ты программа или человек» [who_are_you] → «Я пока маленькая нейронка и этого не знаю 🙈 Я понимаю только простые фразы: «привет», «как дела», «кто ты».» 
+  «ты работаешь без интернета» [where] → «Я пока маленькая нейронка и этого не знаю 🙈 Я понимаю только простые фразы: «привет», «как дела», «кто ты».» 
+  «ты работаешь без интернета бот» [where] → «Я MLP: слова → мешок слов и символьных n-грамм → скрытый слой с ReLU → softmax по намерениям. Меня обучили ратным распраниением ошибки (backprop) и Adam — всё написаписапи руками на numpy.» 
+  «ты робот» [who_are_you] → «Я правда ещё маленькая — во мне всего несколько тысяч параметров 😅 Попробуй спросить что-то попроще.» 
+  «ты тупая бот» [insult] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты тупая машина» [insult] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты умница» [compliment] → «Спасибо! Это всё заслуга Фархода и пары тысяч шагов градиентного спуска.» ✓
+  «ты хороший» [compliment] → «Спасибо, мне очень приятно! 🥰» ✓
+  «ты что делаешь» [what_doing] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «ты что то делаешь» [what_doing] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «у меня все отлично» [good_mood] → «Обнимаю (виртуально) 🤗 Если очень тяжело — поговори с близким человеком, это правда помогает.» 
+  «у меня все хорошо» [good_mood] → «Рада за тебя! 😊» ✓
+  «у меня хорошо» [good_mood] → «Отлично! Хорошее настроение — это заразно.» ✓
+  «у тебя есть хобби» [favorite] → «Мечтаю когда-нибудь вырасти в большую модель. Но и маленькой быть неплохо!» ✓
+  «у тебя как дела» [how_are_you] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «угу конечно» [yes] → «Окей, не буду.» 
+  «умеешь что нибудь» [abilities] → «Понимаю около 27 типов фраз на русском и узбекском. Могу сказать время, пошутить и поддержать.» ✓
+  «хочу посмеяться» [joke] → «Пока! Заходи ещё 👋» 
+  «хреново» [sad] → «Привет! 👋 Чем могу помочь?» 
+  «чего» [not_understood] → «Давай я пошучу! Напиши «шутка» 😄» 
+  «чем занимаешься» [what_doing] → «Разговариваю с тобой 🙂 Это моё любимое (и единственное) занятие.» ✓
+  «чем занимаешься вообще» [what_doing] → «Разговариваю с тобой 🙂 Это моё любимое (и единственное) занятие.» ✓
+  «чем ты занят сейчас» [what_doing] → «Ничего особенного — считаю вероятности для твоих соообщений.» 
+  «что мне спросить» [help] → «Пока! Заходи ещё 👋» 
+  «что мне у тебя спросить» [help] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» ✓
+  «что можно спросить» [help] → «Пока! Заходи ещё 👋» 
+  «что поделываешь» [what_doing] → «Понимаю около 27 типов фраз на русском и узбекском. Могу сказать время, пошутить и поддержать.» 
+  «что такое квантовая физика» [out_of_scope] → «Я MLP: слова → мешок слов и символьных n-грамм → скрытый слой с ReLU → softmax по намерениям. Меня обучили обратным распранением ошибкибки (backprop) и Adam — всё написано руками на numpy.» 
+  «что такое фотосинтез» [out_of_scope] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «что ты вообще знаешь» [abilities] → «Ничего особенного — считаю вероятности для твоих соообщений.» 
+  «что ты делаешь» [what_doing] → «Ничего особенного — считаю вероятности для твоих соообщений.» 
+  «что ты делаешь бот» [what_doing] → «Я Mini AI. Короткое имя для маленькой нейронки.» 
+  «что ты можешь» [abilities] → «Немного: поздороваться, поболтать, пошутить, сказать время и дату с твоего телефона. На сложное я честно скажу «не знаю».» ✓
+  «что ты сказала» [not_understood] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «что ты умеешь делать» [abilities] → «Я помогу, чем смогу! Попробуй: «что ты умеешь?» или «пошути».» 
+  «что ты умеешь друг» [abilities] → «Понимаю около 27 типов фраз на русском и узбекском. Могу сказать время, пошутить и поддержать.» ✓
+  «что у тебя внутри» [how_work] → «Мой любимый цвет — терракотовый, как кнопка отправки 🧡» 
+  «что у тебя спросить» [help] → «Понимаю, я не идеальна. Фарход ещё будет меня улучшать 🙂» 
+  «что умеешь делать» [abilities] → «Понимаю около 27 типов фраз на русском и узбекском. Могу сказать время, пошутить и поддержать.» ✓
+  «шо» [not_understood] → «Пока! Заходи ещё 👋» 
+  «шутка» [joke] → «Привет! 👋 Чем могу помочь?» 
+  «шутку расскажи бот» [joke] → «Почему нейросеть пошла к психологу? У неё было слишком много скрытых слоёв 😄» ✓
+  «я плачу» [sad] → «До встречи! Хорошего дня.» 
+  «я тебя люблю» [compliment] → «Мечтаю когда-нибудь вырасти в большую модель. Но и маленькой быть неплохо!» 
+  «я ушла» [goodbye] → «До встречи! Хорошего дня.» ✓
+  «ahmoq» → «Yaxshi, kelishdik.»
+  «ahmoq bot» → «Yaxshi, kelishdik.»
+  «albatta bot» → «Zo'r! Kun bo'yi shunday bo'lsin.»
+  «assalomu alaykum bot» → «Salom! Ishlar qalay?»
+  «bandmisan» → «Siz bilan gaplashyapman 🙂»
+  «bitta latifa ayt» → «Gradientim hazildan tezroq tushyapti 😅»
+  «превет как дила» → «Пока! Заходи ещё 👋»
+  «qalaysan do'stim» → «Salom! 👋 Qanday yordam bera olaman?»
+  «кто тбея создал» → «Мой создатель — Фарход. Он сам написал прямой проход, backprop и обучение.»
+  «расскажи анекдот про программиста» → «Программист кладёт на тумбочку два стакана: с водой — если захочет пить, и пустой — если не захочет.»
+  «столица франции» → «Пока! Заходи ещё 👋»
+  «xyzqwrty bla bla» → «Xayr! Yana kiring 👋»
+  «который час сейчас покажи» → «По человеческим меркам мне 0 лет. Но несколько тысяч шагов обучения я уже прошла!»
+  «менга hayrli kun» → «Men mukammal emasman. Farhod meni yaxshilaydi 🙂»
