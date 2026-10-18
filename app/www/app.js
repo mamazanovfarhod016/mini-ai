@@ -22,6 +22,8 @@
   // ---------- движки ----------
   var mlpModel = window.MINI_AI_MODEL;
   var mlpBrain = new window.MiniBrain.Brain(mlpModel);
+  // Новая версия модели, скачанная с сервера (прошла экзамен) — важнее встроенной.
+  if (window.MiniLearn && window.MiniLearn.storedModel()) window.MINI_AI_TRANSFORMER = window.MiniLearn.storedModel();
   var txModel = window.MINI_AI_TRANSFORMER ? new window.MiniTransformer.TransformerModel(window.MINI_AI_TRANSFORMER) : null;
 
   var UNKNOWN = {
@@ -154,6 +156,13 @@
     var meta = document.createElement("div");
     meta.className = "meta";
     var b = document.createElement("button");
+    if (thought && thought.engine === "memory") {
+      b.textContent = thought.source === "mentor" ? "выучено от наставника" : "выучено из интернета";
+      b.onclick = function () {};
+      meta.appendChild(b);
+      el.querySelector(".text").parentNode.appendChild(meta);
+      return;
+    }
     if (thought && thought.engine === "transformer") {
       b.textContent = "✨ трансформер · нажми, чтобы увидеть внимание";
     } else {
@@ -166,6 +175,18 @@
   }
 
   var busy = false, lastThought = null;
+
+  function addMentorAnswer(q, answer) {
+    if (!current) { current = { id: String(Date.now()), title: q.slice(0, 40), ts: Date.now(), msgs: [] }; chats.unshift(current); }
+    app.classList.add("has-msgs");
+    var lang = isLatinText(q) ? "uz" : "ru";
+    var text = (lang === "uz" ? "Ustozning javobi — «" : "Наставник ответил на «") + q + "»: " + answer;
+    var el = addAI();
+    el.querySelector(".text").textContent = text;
+    current.msgs.push({ role: "ai", text: text, thought: { engine: "memory", source: "mentor" }, q: q });
+    save(); renderList(); scrollDown();
+  }
+  if (window.MiniLearn) window.MiniLearn.start({ onMentorAnswer: addMentorAnswer });
 
   // ---------- трансформер: пошаговая генерация с реальным стримингом ----------
   // lastGen хранит «сырые» данные последнего сгенерированного ответа (внимание по шагам)
@@ -241,7 +262,7 @@
     var lang = isLatinText(text) ? "uz" : "ru";
     var fast = !!window.__FAST__;
 
-    function finish(finalText, thought) {
+    function finish(finalText, thought, raw, fromMemory) {
       out.classList.remove("caret");
       logo.classList.remove("spin");
       addMeta(el, thought, text);
@@ -249,6 +270,20 @@
       save();
       busy = false;
       scrollDown();
+      if (window.MiniLearn) window.MiniLearn.afterAnswer({
+        q: text, answer: finalText, raw: raw != null ? raw : finalText, lang: lang, engine: thought && thought.engine,
+        thought: thought, memory: !!fromMemory, host: el.querySelector(".text").parentNode, scroll: scrollDown
+      });
+    }
+
+    // Выученное (от наставника / подтверждено в интернете) — отвечаем сразу, до ночного дообучения.
+    var mem = window.MiniLearn && window.MiniLearn.recall(text);
+    if (mem) {
+      setTimeout(function () {
+        out.textContent = mem.a;
+        finish(mem.a, { engine: "memory", answer: mem.a, source: mem.source }, mem.a, true);
+      }, fast ? 0 : 350);
+      return;
     }
 
     if (engine === "transformer" && txModel) {
@@ -260,12 +295,13 @@
           out.textContent = fillPlaceholders(soFar, new Date());
           scrollDown();
         }, function (finalText, steps) {
+          var rawText = finalText;
           finalText = fillPlaceholders(finalText, new Date());
           out.textContent = finalText;
           lastGen = { question: text, cleaned: window.MiniTransformer.cleanQuestion(text), answer: finalText, steps: steps, engine: "transformer" };
           var thought = { engine: "transformer", answer: finalText };
           lastThought = { q: text, t: thought };
-          finish(finalText, thought);
+          finish(finalText, thought, rawText);
         });
       }, startDelay);
     } else {
