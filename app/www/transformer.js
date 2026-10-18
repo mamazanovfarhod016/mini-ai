@@ -119,6 +119,33 @@
     return out;
   }
 
+  // ---------- RoPE: вращающиеся позиционные эмбеддинги (см. transformer.py) ----------
+  // Угол пары i на позиции t: t * base^(-2i/dh). Кэш cos/sin по позициям — ленивый
+  // (считаем только для позиций, которые реально встретились, а не все 10000 заранее).
+  function ropeCosSin(pos, dh, base) {
+    var half = dh / 2;
+    var cos = new Float64Array(half), sin = new Float64Array(half);
+    for (var i = 0; i < half; i++) {
+      var theta = Math.pow(base, -(2 * i) / dh);
+      var ang = pos * theta;
+      cos[i] = Math.cos(ang);
+      sin[i] = Math.sin(ang);
+    }
+    return { cos: cos, sin: sin };
+  }
+
+  // Поворачиваем пары координат вектора vec (длина dh) на углы cos/sin (длина dh/2).
+  function applyRope(vec, dh, cos, sin) {
+    var out = new Float64Array(dh);
+    for (var i = 0; i < dh / 2; i++) {
+      var x0 = vec[2 * i], x1 = vec[2 * i + 1];
+      var c = cos[i], s = sin[i];
+      out[2 * i] = x0 * c - x1 * s;
+      out[2 * i + 1] = x0 * s + x1 * c;
+    }
+    return out;
+  }
+
   // ======================================================================================
   // Модель
   // ======================================================================================
@@ -141,6 +168,8 @@
                        (typeof require !== "undefined" ? require("./bpe.js") : null);
       this.bpe = new MiniAIBPE.BPETokenizer({ vocab: m.vocab, merges: m.merges || [] });
     }
+    this.usesRope = this.cfg.pos === "rope";
+    this.ropeCache = {};   // pos -> {cos, sin}, считаем по требованию (не весь контекст заранее)
   }
 
   TransformerModel.prototype.encode = function (s) {
@@ -172,9 +201,19 @@
   TransformerModel.prototype.step = function (tok, pos, cache, wantAttn) {
     var cfg = this.cfg, p = this.p;
     var d = cfg.d, H = cfg.n_head, dh = d / H;
-    var wte = p.wte.data, wpe = p.wpe.data;
+    var wte = p.wte.data;
     var x = new Float64Array(d);
-    for (var i = 0; i < d; i++) x[i] = wte[tok * d + i] + wpe[pos * d + i];
+    if (this.usesRope) {
+      for (var i = 0; i < d; i++) x[i] = wte[tok * d + i];
+    } else {
+      var wpe = p.wpe.data;
+      for (i = 0; i < d; i++) x[i] = wte[tok * d + i] + wpe[pos * d + i];
+    }
+    var rope = null;
+    if (this.usesRope) {
+      rope = this.ropeCache[pos];
+      if (!rope) rope = this.ropeCache[pos] = ropeCosSin(pos, dh, cfg.rope_base || 10000);
+    }
     var attnOut = wantAttn ? [] : null;
 
     for (var l = 0; l < cfg.n_layer; l++) {
@@ -189,6 +228,10 @@
         var q = qkv.subarray(qOff, qOff + dh);
         var kNew = qkv.slice(kOff, kOff + dh);
         var vNew = qkv.slice(vOff, vOff + dh);
+        if (rope) {
+          q = applyRope(q, dh, rope.cos, rope.sin);
+          kNew = applyRope(kNew, dh, rope.cos, rope.sin);   // кэш хранит УЖЕ ПОВЁРНУТЫЙ k
+        }
         layerCache.k[head] = layerCache.k[head] || [];
         layerCache.v[head] = layerCache.v[head] || [];
         layerCache.k[head].push(kNew);

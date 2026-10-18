@@ -41,20 +41,54 @@ def _drop(x, p, gen):
     return x * keep / (1.0 - p)
 
 
+def _rope_cos_sin(positions, dh, base, device):
+    """Как transformer.rope_cos_sin, но на torch (для forward/backward через autograd)."""
+    i = torch.arange(0, dh, 2, dtype=torch.float64, device=device)
+    theta = base ** (-i / dh)
+    ang = positions.to(torch.float64)[:, None] * theta[None, :]
+    return torch.cos(ang), torch.sin(ang)
+
+
+def _apply_rope(x, cos, sin):
+    """Поворот пар координат последней оси x (...,T,dh), как transformer.apply_rope."""
+    *lead, T, dh = x.shape
+    xr = x.reshape(*lead, T, dh // 2, 2)
+    x0, x1 = xr[..., 0], xr[..., 1]
+    c = cos.to(x.dtype).reshape((1,) * len(lead) + cos.shape)
+    s = sin.to(x.dtype).reshape((1,) * len(lead) + sin.shape)
+    o0 = x0 * c - x1 * s
+    o1 = x0 * s + x1 * c
+    return torch.stack([o0, o1], dim=-1).reshape(*lead, T, dh)
+
+
 def forward(p, cfg, idx, drop=0.0, gen=None):
     """Как transformer.forward: idx (B,T) → logits (B,T,V)."""
     B, T = idx.shape
     d, H = cfg["d"], cfg["n_head"]
     dh = d // H
-    x = _drop(p["wte"][idx] + p["wpe"][:T], drop, gen)
+    use_rope = cfg.get("pos", "learned") == "rope"
+    if use_rope:
+        x = _drop(p["wte"][idx], drop, gen)
+        cos, sin = _rope_cos_sin(torch.arange(T, device=idx.device), dh, cfg.get("rope_base", 10000.0), idx.device)
+    else:
+        x = _drop(p["wte"][idx] + p["wpe"][:T], drop, gen)
     mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=idx.device))
+    use_sdpa = drop <= 0 and T > 64   # на коротких T точность не теряем, на длинных — экономим память
     for l in range(cfg["n_layer"]):
         h1 = _ln(x, p[f"{l}.ln1.g"], p[f"{l}.ln1.b"])
         qkv = (h1 @ p[f"{l}.attn.wqkv"] + p[f"{l}.attn.bqkv"]).reshape(B, T, 3, H, dh).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
-        S = (q @ k.transpose(-1, -2)) / math.sqrt(dh)
-        S = S.masked_fill(~mask, -1e9)
-        Y = torch.softmax(S, -1) @ v
+        if use_rope:
+            q = _apply_rope(q, cos, sin)
+            k = _apply_rope(k, cos, sin)
+        if use_sdpa:
+            # scaled_dot_product_attention с is_causal=True — то же самое, что softmax(QK/√dh)·V
+            # с causal-маской, но экономнее по памяти на длинных последовательностях (RoPE/10000)
+            Y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        else:
+            S = (q @ k.transpose(-1, -2)) / math.sqrt(dh)
+            S = S.masked_fill(~mask, -1e9)
+            Y = torch.softmax(S, -1) @ v
         a = Y.transpose(1, 2).reshape(B, T, d) @ p[f"{l}.attn.wo"] + p[f"{l}.attn.bo"]
         x2 = x + _drop(a, drop, gen)
         h2 = _ln(x2, p[f"{l}.ln2.g"], p[f"{l}.ln2.b"])
