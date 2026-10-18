@@ -30,6 +30,8 @@ import math
 import re
 import numpy as np
 
+from . import backend as bk   # bk.xp = numpy (процессор) или cupy (видеокарта)
+
 # ======================================================================================
 # 1. Токенизатор: символ ↔ номер
 # ======================================================================================
@@ -129,6 +131,7 @@ def init_params(V, d=128, n_layer=3, n_head=4, block=160, d_ff=None, seed=0, dty
     p["lnf.g"], p["lnf.b"] = o(d), z(d)
     p["bout"] = z(V)          # смещение выходного слоя (сама матрица связана с wte)
     cfg = {"V": V, "d": d, "n_layer": n_layer, "n_head": n_head, "block": block, "d_ff": d_ff}
+    p = {k: bk.to_xp(v) for k, v in p.items()}   # с видеокартой веса сразу живут на ней
     return p, cfg
 
 
@@ -150,7 +153,7 @@ def layernorm_forward(x, g, b):
     mu = x.mean(-1, keepdims=True)
     xc = x - mu
     var = (xc * xc).mean(-1, keepdims=True)
-    rstd = 1.0 / np.sqrt(var + LN_EPS)
+    rstd = 1.0 / bk.xp.sqrt(var + LN_EPS)
     xhat = xc * rstd
     return xhat * g + b, (xhat, rstd, g)
 
@@ -174,7 +177,7 @@ def gelu_forward(x):
     """GELU (как в GPT-2), tanh-приближение:  gelu(x) = ½·x·(1 + tanh(c·(x + 0.044715·x³))),  c = √(2/π).
     Похож на ReLU, но гладкий: маленькие отрицательные значения не обнуляются резко."""
     u = GELU_C * (x + 0.044715 * x ** 3)
-    t = np.tanh(u)
+    t = bk.xp.tanh(u)
     return 0.5 * x * (1.0 + t), (x, t)
 
 
@@ -187,12 +190,13 @@ def gelu_backward(dy, cache):
 def causal_mask(T):
     """Маска «нельзя смотреть в будущее»: символ i видит только символы 0..i.
     mask[i, j] = True, если j ≤ i (нижний треугольник)."""
-    return np.tril(np.ones((T, T), dtype=bool))
+    return bk.xp.tril(bk.xp.ones((T, T), dtype=bool))
 
 
 def softmax(x, axis=-1):
     """softmax(z)_i = e^(z_i − max) / Σ_j e^(z_j − max). Вычитаем max — чтобы e^z не переполнилось."""
-    e = np.exp(x - x.max(axis, keepdims=True))
+    xp = bk.xp_of(x)       # numpy или cupy — смотря где лежит массив (KVModel всегда на numpy)
+    e = xp.exp(x - x.max(axis, keepdims=True))
     return e / e.sum(axis, keepdims=True)
 
 
@@ -216,7 +220,7 @@ def attention_forward(h, wqkv, bqkv, wo, bo, n_head):
     scale = 1.0 / math.sqrt(dh)
     S = (q @ k.transpose(0, 1, 3, 2)) * scale                    # (B,H,T,T)
     mask = causal_mask(T)
-    S = np.where(mask, S, -1e9)        # −∞ на будущих позициях → после softmax там ровно 0
+    S = bk.xp.where(mask, S, -1e9)        # −∞ на будущих позициях → после softmax там ровно 0
     A = softmax(S, -1)
     Y = A @ v                                                    # (B,H,T,dh)
     Ym = Y.transpose(0, 2, 1, 3).reshape(B, T, d)                # склеиваем головы
@@ -245,7 +249,7 @@ def attention_backward(dout, cache):
     dS *= scale
     dq = dS @ k
     dk = dS.transpose(0, 1, 3, 2) @ q
-    dqkv = np.stack([dq, dk, dv]).transpose(1, 3, 0, 2, 4).reshape(B, T, 3 * d)
+    dqkv = bk.xp.stack([dq, dk, dv]).transpose(1, 3, 0, 2, 4).reshape(B, T, 3 * d)
     dwqkv = h.reshape(-1, d).T @ dqkv.reshape(-1, 3 * d)
     dbqkv = dqkv.reshape(-1, 3 * d).sum(0)
     dh = dqkv @ wqkv.T
@@ -257,7 +261,9 @@ def dropout_mask(shape, p, rng, dtype):
     Мешает модели зазубрить обучающие фразы. При ответе (инференсе) не используется."""
     if p <= 0 or rng is None:
         return None
-    return (rng.random(shape) >= p).astype(dtype) / (1.0 - p)
+    # на видеокарте случайные числа тоже рождаются на видеокарте (иначе копировать долго)
+    r = bk.device_rng(rng).random(shape, dtype=bk.xp.float32) if bk.GPU else rng.random(shape)
+    return (r >= p).astype(dtype) / (1.0 - p)
 
 
 def block_forward(x, p, l, n_head, drop=0.0, rng=None):
@@ -316,6 +322,7 @@ def block_backward(dy, cache, p, l, grads):
 # ======================================================================================
 def forward(p, cfg, idx, drop=0.0, rng=None):
     """idx (B,T) номера символов → logits (B,T,V): «оценки» каждого возможного следующего символа."""
+    idx = bk.to_xp(idx)                            # номера символов → туда же, где веса
     B, T = idx.shape
     x = p["wte"][idx] + p["wpe"][:T]              # эмбеддинг символа + эмбеддинг позиции
     m0 = dropout_mask(x.shape, drop, rng, x.dtype)
@@ -335,14 +342,14 @@ def cross_entropy(logits, targets, mask):
         L = −(1/N) Σ log p(правильный символ),   p = softmax(logits)
     Градиент по logits — знаменитая простая формула:  dL/dz = (p − onehot(y)) / N."""
     V = logits.shape[-1]
-    P = softmax(logits.reshape(-1, V).astype(np.float64), -1)
-    t = targets.reshape(-1)
-    m = mask.reshape(-1).astype(np.float64)
+    P = softmax(logits.reshape(-1, V).astype(bk.xp.float64), -1)
+    t = bk.to_xp(targets).reshape(-1)
+    m = bk.to_xp(mask).reshape(-1).astype(bk.xp.float64)
     N = max(m.sum(), 1.0)
-    logp = np.log(P[np.arange(len(t)), t] + 1e-30)
-    loss = -(logp * m).sum() / N
+    logp = bk.xp.log(P[bk.xp.arange(len(t)), t] + 1e-30)
+    loss = float(-(logp * m).sum() / N)
     dlogits = P
-    dlogits[np.arange(len(t)), t] -= 1.0
+    dlogits[bk.xp.arange(len(t)), t] -= 1.0
     dlogits *= (m / N)[:, None]
     return loss, dlogits.reshape(logits.shape).astype(logits.dtype)
 
@@ -350,7 +357,7 @@ def cross_entropy(logits, targets, mask):
 def backward(p, cfg, dlogits, cache):
     """Полный обратный проход: от dL/dlogits до градиентов ВСЕХ весов."""
     idx, m0, caches, hf, c_lnf = cache
-    grads = {k: np.zeros_like(v) for k, v in p.items()}
+    grads = {k: bk.xp.zeros_like(v) for k, v in p.items()}
     V, d = p["wte"].shape
     dl = dlogits.reshape(-1, V)
     grads["bout"] += dl.sum(0)
@@ -366,7 +373,7 @@ def backward(p, cfg, dlogits, cache):
     # эмбеддинги: x = wte[idx] + wpe[t]  ⇒  градиент «складываем» в строки, которые использовались
     T = idx.shape[1]
     grads["wpe"][:T] += dx.sum(0)
-    np.add.at(grads["wte"], idx.reshape(-1), dx.reshape(-1, d))
+    bk.scatter_add(grads["wte"], idx.reshape(-1), dx.reshape(-1, d))
     return grads
 
 
@@ -386,8 +393,8 @@ class AdamW:
 
     def __init__(self, params, lr=3e-3, betas=(0.9, 0.98), eps=1e-8, wd=0.01):
         self.lr, self.b1, self.b2, self.eps, self.wd = lr, betas[0], betas[1], eps, wd
-        self.m = {k: np.zeros_like(v) for k, v in params.items()}
-        self.v = {k: np.zeros_like(v) for k, v in params.items()}
+        self.m = {k: bk.xp.zeros_like(v) for k, v in params.items()}
+        self.v = {k: bk.xp.zeros_like(v) for k, v in params.items()}
         self.t = 0
 
     def step(self, params, grads, lr):
@@ -396,7 +403,7 @@ class AdamW:
         for k, g in grads.items():
             self.m[k] = self.b1 * self.m[k] + (1 - self.b1) * g
             self.v[k] = self.b2 * self.v[k] + (1 - self.b2) * g * g
-            upd = (self.m[k] / c1) / (np.sqrt(self.v[k] / c2) + self.eps)
+            upd = (self.m[k] / c1) / (bk.xp.sqrt(self.v[k] / c2) + self.eps)
             if params[k].ndim == 2 and k != "wpe":
                 upd = upd + self.wd * params[k]
             params[k] -= (lr * upd).astype(params[k].dtype)
@@ -413,7 +420,7 @@ def lr_schedule(step, total, base, warmup):
 def clip_grads(grads, max_norm=1.0):
     """Gradient clipping: если общая длина градиента ‖g‖ > max_norm, уменьшаем его до max_norm.
     Защищает от редких «взрывов» градиента."""
-    norm = math.sqrt(sum(float((g.astype(np.float64) ** 2).sum()) for g in grads.values()))
+    norm = math.sqrt(float(sum((g.astype(bk.xp.float64) ** 2).sum() for g in grads.values())))
     if norm > max_norm:
         s = max_norm / (norm + 1e-6)
         for g in grads.values():
@@ -429,7 +436,7 @@ class KVModel:
     сохраняем, чтобы не пересчитывать их на каждом шаге — новая буква считает только свои q, k, v."""
 
     def __init__(self, p, cfg):
-        self.p = {k: v.astype(np.float64) for k, v in p.items()}
+        self.p = {k: bk.to_np(v).astype(np.float64) for k, v in p.items()}
         self.cfg = cfg
 
     def new_cache(self):
@@ -516,7 +523,7 @@ def export_model(p, cfg, tok, meta, tokenizer_type="char", max_q=None, merges=No
         "tokenizer": tokenizer_type,
         "order": order,
         "shapes": {k: list(p[k].shape) for k in order},
-        "weights": {k: to_f16_b64(p[k]) for k in order},
+        "weights": {k: to_f16_b64(bk.to_np(p[k])) for k in order},
         **meta,
     }
     if tokenizer_type == "bpe":

@@ -8,9 +8,9 @@
   1. собирает «посылку»: код (mini_ai/, train_transformer.py) + данные (intents, примеры) → tar.gz → base64;
   2. делает из неё один Python-скрипт и запускает его на Kaggle (`kaggle kernels push`), приватно;
   3. ждёт окончания (`kaggle kernels status`), скачивает модель и лог (`kaggle kernels output`).
-Токен Kaggle — в ~/.kaggle/access_token (вне git). Видеокарта включится сама, когда аккаунт
-подтверждён по телефону; пока обучение идёт на процессоре Kaggle (4 ядра).
-Код обучения тот же самый — numpy, с нуля; Kaggle просто чужой компьютер.
+Токен Kaggle — в ~/.kaggle/access_token (вне git). Аккаунт подтверждён по телефону → дают
+видеокарту Tesla T4; обучение идёт с --gpu (mini_ai/backend.py: numpy → CuPy, формулы те же).
+Код обучения тот же самый, с нуля; Kaggle просто чужой компьютер.
 """
 import argparse
 import base64
@@ -61,6 +61,8 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
              (Path(intents) if intents else ROOT / "data/intents.json", "data/intents.json")]
     args = ["--tokenizer", "bpe", "--vocab", "1000", "--steps", str(steps), "--warmup", "300", "--drop", "0.05",
             "--intents", "data/intents.json", *extra]
+    if gpu:
+        args.append("--gpu")      # те же формулы, но массивы на видеокарте (CuPy уже стоит на Kaggle)
     if math:
         files.append((Path(math), "data/math_pairs.json"))
         args += ["--math", "data/math_pairs.json"]

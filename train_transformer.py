@@ -37,6 +37,7 @@ from mini_ai.transformer import (
     AdamW, loss_and_grads, TIME_TOK, DATE_TOK,
 )
 from mini_ai.bpe import BPETokenizer
+from mini_ai import backend as bk
 
 ROOT = Path(__file__).resolve().parent
 RU_KEYS = "йцукенгшщзхфывапролджэячсмитьбю"
@@ -163,6 +164,7 @@ def evaluate(model_p, cfg, tok, pairs, max_q, block, batch=48):
         chunk = pairs[s:s + batch]
         idx, targets, mask = make_batch(tok, [(q, a) for q, a, *_ in chunk], max_q, block, rng)
         logits, _ = forward(model_p, cfg, idx, drop=0.0, rng=None)
+        logits = bk.to_np(logits)
         V = logits.shape[-1]
         P = softmax(logits.reshape(-1, V).astype(np.float64), -1)
         t = targets.reshape(-1)
@@ -307,8 +309,11 @@ def main():
     ap.add_argument("--no-app", action="store_true", help="не перезаписывать app/www/model_transformer.js")
     ap.add_argument("--math", default="", help="data/math_pairs.json — учить считать (tools/make_math.py)")
     ap.add_argument("--math_frac", type=float, default=0.4, help="доля примеров на счёт в каждом батче")
+    ap.add_argument("--gpu", action="store_true", help="считать на видеокарте (CuPy), если она есть")
     ap.add_argument("--vocab", type=int, default=1000, help="размер словаря BPE (только для --tokenizer bpe)")
     args = ap.parse_args()
+    if args.gpu or bk.GPU:
+        print("Считаю на:", "видеокарте (CuPy)" if bk.use_gpu(True) else "процессоре (numpy)", flush=True)
     if args.quick:
         args.steps = 40
     if args.tokenizer == "bpe" and args.max_q == 40:
