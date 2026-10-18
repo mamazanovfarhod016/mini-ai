@@ -60,7 +60,7 @@ def fetch(name, url):
     return path
 
 
-def ru_wiki_intros(n_calls=250):
+def ru_wiki_intros(n_calls=1000):
     """Вступления случайных статей русской Википедии (API, без ключей). Кэшируем."""
     path = CACHE / "ruwiki_intros.jsonl"
     if path.exists():
@@ -93,8 +93,12 @@ def words(s):
 
 
 def clean_ok(s, lang):
-    if not (4 <= len(s.split()) <= 30) or not ALPHA[lang].match(s):
+    if not (6 <= len(s.split()) <= 30) or not ALPHA[lang].match(s):
         return False
+    if len(re.findall(r"\d+", s)) > 1 or re.search(r"\b(km2|г\.|гг\.|см\.|т\. е|англ|лат)\b", s):
+        return False                                   # справочные обрывки: «Телефонный код — 3238.»
+    if sum(ch.isupper() for ch in s) > max(3, len(s.split()) // 2):
+        return False                                   # списки имён и аббревиатур
     if re.search(r"https?:|www\.|\d{5,}|==|\|", s) or s[-1] not in ".!?\"»":
         return False
     if lang == "uz" and not UZ_MARK.search(s):
