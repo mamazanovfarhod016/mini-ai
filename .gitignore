@@ -1,11 +1,17 @@
-.venv/
+# Mini AI — игнорируем служебные/личные файлы
+
+# Python
 __pycache__/
 *.pyc
-.pytest_cache/
+.venv/
+
+# Сборка APK (регенерируется android/build.sh)
 android/build/
-build/
-*.apk
-*.idsig
-*.jks
-*.keystore
-keystore.txt
+
+# Личные данные владельца (НЕ для публичного репо) — см. docs/ASSISTANT_TEACH.md
+data/personal/
+model_personal/
+android/build-personal/
+
+# Экспорт пар пользователя для тестов teach.py — не секрет, но и не нужен в git постоянно
+/tmp/

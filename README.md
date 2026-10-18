@@ -305,3 +305,62 @@ letters the model looked at, per layer/head) plus top-5 next-character probabili
 .venv/bin/python train_transformer.py && .venv/bin/python -m pytest tests/test_transformer.py -q
 ```
 
+### Teaching the model new pairs (branch `feat/teach`, EN summary)
+
+`tools/teach.py --pairs export.json --build` merges new Q→A pairs into
+`data/user_pairs.json` (dedup by normalized question), fine-tunes the transformer
+from its current weights (5–10 min CPU, mixing in 432 replay pairs from
+`data/replay_pairs.json` to avoid forgetting), prints before/after metrics on 10
+control questions + the new pairs, saves weights, bumps the APK version and
+rebuilds it. See [`docs/ASSISTANT_TEACH.md`](docs/ASSISTANT_TEACH.md) for the
+assistant workflow. On-device fine-tuning (JS backprop in a Web Worker, a
+"Teach" screen, IndexedDB storage) is planned but not yet built — see the repo's
+latest status report.
+
+---
+
+## Как научить нейронку (ветка `feat/teach`)
+
+Два способа дообучить Mini AI новыми парами «вопрос → ответ» без переобучения с нуля.
+
+### Способ 2 — через ассистента в Telegram (готово)
+
+Присылаешь ассистенту новые вопросы/ответы (текстом или JSON-файлом), он запускает
+на сервере:
+
+```bash
+.venv/bin/python tools/teach.py --pairs export.json --build
+```
+
+Скрипт сам: объединяет новые пары с `data/user_pairs.json` (без дублей — если тот
+же вопрос с другим ответом, обновляет), **дообучает** (fine-tune) веса трансформера
+от текущего состояния (5–10 мин на CPU, а не 55 мин полного обучения с нуля),
+подмешивая **replay** — 432 старые обучающие пары (`data/replay_pairs.json`,
+собраны `tools/make_replay.py`) — чтобы модель не забыла старое. Считает метрики
+ДО/ПОСЛЕ (контрольные вопросы + новые пары), сохраняет веса
+(`model_transformer.json`, `app/www/model_transformer.js`), поднимает
+`versionCode`/`versionName` в `android/AndroidManifest.xml` и пересобирает APK.
+Ассистент присылает готовый APK обратно.
+
+Без `--build` — только метрики, без пересборки (быстрее посмотреть, не портится
+ли старое). Подробный план действий ассистента — [`docs/ASSISTANT_TEACH.md`](docs/ASSISTANT_TEACH.md).
+
+Пример (проверочный тест из `--pairs`):
+
+| вопрос | ответ ДО | ответ ПОСЛЕ |
+|---|---|---|
+| «как зовут твою кошку» | (не знает) | «Мурка» |
+| «твой любимый цвет» | (не знает) | «Оранжевый, как моя кнопка» |
+
+Контрольные 10 старых вопросов (`привет`, `как дела`, `пока`, …) проверяются
+отдельно — цель: ≥ 8 из 10 не изменились.
+
+### Способ 1 — кнопка «Научить» в самом приложении (офлайн, план)
+
+Задумано дообучение прямо на телефоне: JS-backprop трансформера в Web Worker
+(интерфейс не замирает), replay от забывания, веса в IndexedDB, экспорт своих пар
+в JSON для отправки ассистенту (способ 2). Черновая реализация ядра backprop —
+`app/www/teach_core.js` (WIP, не подключена к интерфейсу). Экран «Научить», Adam в
+JS, прогресс-бар и тесты для этой части — пока не сделаны, см. раздел «Что не
+получилось» в последнем отчёте по ветке.
+
