@@ -8,7 +8,8 @@
   sub   — вычитание a − b, 0 ≤ b ≤ a ≤ 99        ( 5 050 пар)
   mul   — таблица умножения 0..10 × 0..10        (   121 пара)
   div   — деление нацело из таблицы (56 / 8)     (   110 пар)
-  check — «23 + 45 = 68» → «Верно, 68.» / «Нет, будет 68.»
+  check — «23 + 45 = 68» → «Верно, 68.» / «Нет, будет 68.» (ru, uz, en)
+Языки: русский, узбекский, английский — одни и те же примеры в разных формулировках.
 
 ЧЕСТНЫЙ ТЕСТ: 20% пар (a, b) для add/sub целиком спрятаны — модель НИ РАЗУ не видит
 этот пример ни в одной формулировке. Если она их решает — она поняла, как складывать
@@ -23,7 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FORMS = {
     "ru": ["{a} {op} {b}", "{a} {op} {b} =", "сколько будет {a} {op} {b}", "{a} {op} {b} сколько", "посчитай {a} {op} {b}"],
-    "uz": ["{a} {op} {b} necha bo'ladi", "{a} {op} {b} nechchi"],
+    "uz": ["{a} {op} {b} necha bo'ladi", "{a} {op} {b} nechchi", "{a} {op} {b} hisobla", "{a} {op} {b} qancha"],
+    "en": ["what is {a} {op} {b}", "{a} {op} {b} equals", "how much is {a} {op} {b}", "calculate {a} {op} {b}"],
 }
 
 
@@ -67,9 +69,13 @@ def main():
             claim = right if rng.random() < 0.5 else right + rng.choice([-10, -2, -1, 1, 2, 10])
             if claim < 0:
                 claim = right + 1
-            if rng.random() < 0.8:
+            r = rng.random()
+            if r < 0.55:
                 q, ans = f"{a} {op} {b} = {claim}", (f"Верно, {right}." if claim == right else f"Нет, будет {right}.")
                 lang = "ru"
+            elif r < 0.8:
+                q, ans = f"is {a} {op} {b} = {claim} right", (f"Correct, {right}." if claim == right else f"No, it is {right}.")
+                lang = "en"
             else:
                 q, ans = f"{a} {op} {b} = {claim} to'g'rimi", (f"To'g'ri, {right}." if claim == right else f"Yo'q, {right} bo'ladi.")
                 lang = "uz"
