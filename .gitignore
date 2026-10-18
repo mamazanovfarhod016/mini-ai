@@ -25,3 +25,6 @@ data/reasoning.json
 # сырые скачанные тексты для корпуса (пересобираются tools/make_corpus.py)
 .cache_corpus/
 .venv
+
+# Задачи по Python — большой файл, пересобирается tools/make_python_tasks.py
+data/python_tasks.json
