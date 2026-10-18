@@ -33,7 +33,7 @@ import numpy as np
 
 from mini_ai.transformer import (
     BOS, EOS, PAD, SEP, CharTokenizer, KVModel, clean_question, clip_grads,
-    export_model, forward, init_params, lr_schedule, n_params, softmax,
+    export_model, forward, grow_params, init_params, load_model, lr_schedule, n_params, softmax,
     AdamW, loss_and_grads, TIME_TOK, DATE_TOK,
 )
 from mini_ai.bpe import BPETokenizer
@@ -309,6 +309,7 @@ def main():
     ap.add_argument("--no-app", action="store_true", help="не перезаписывать app/www/model_transformer.js")
     ap.add_argument("--math", default="", help="data/math_pairs.json[,data/school_math.json] — учить считать/решать (tools/make_math.py, tools/make_school_math.py)")
     ap.add_argument("--math_frac", type=float, default=0.4, help="доля примеров на счёт в каждом батче")
+    ap.add_argument("--init", default="", help="модель, с которой продолжать (постоянные знания); можно увеличить --d/--layers")
     ap.add_argument("--gpu", action="store_true", help="считать на видеокарте (CuPy), если она есть")
     ap.add_argument("--vocab", type=int, default=1000, help="размер словаря BPE (только для --tokenizer bpe)")
     args = ap.parse_args()
@@ -347,7 +348,28 @@ def main():
         all_text.append(clean_question(q))
         all_text.append(a)
 
-    if args.tokenizer == "bpe":
+    init = None
+    if args.init:
+        # ПОСТОЯННЫЕ ЗНАНИЯ: берём прошлую модель (её веса и её словарь) и учим дальше, а не с нуля
+        p_old, cfg_old, tok_old, meta_old = load_model(args.init)
+        init = (p_old, cfg_old)
+        tok = tok_old
+        args.tokenizer = meta_old.get("tokenizer", "char")
+        if args.tokenizer == "bpe":                # новые буквы/слова (англ., дроби) — в конец словаря
+            corpus = [clean_question(q) for q, *_ in train_aug + math_train] + [a for _, a, *_ in train_aug + math_train]
+            tok.extend(corpus, extra=200, verbose=True)
+        V = len(tok)
+        args.max_q = meta_old.get("max_q", args.max_q)
+        args.d, args.layers = max(args.d, cfg_old["d"]), max(args.layers, cfg_old["n_layer"])
+        args.heads = args.heads if args.d % args.heads == 0 else cfg_old["n_head"]
+        enc = (lambda s_: tok.encode(s_)) if args.tokenizer == "bpe" else (lambda s_: tok.encode(s_))
+        max_len = 0
+        for q, a, *_ in train_aug + test_pairs + math_train:
+            max_len = max(max_len, 2 + len(enc(clean_question(q))[:args.max_q]) + len(enc(fill_placeholders(a))))
+        args.block = max(cfg_old["block"], max_len + 4)
+        print(f"Продолжаю с модели {args.init}: d={cfg_old['d']}, слоёв={cfg_old['n_layer']}, "
+              f"{sum(v.size for v in p_old.values()):,} параметров → d={args.d}, слоёв={args.layers}, block={args.block}")
+    elif args.tokenizer == "bpe":
         # BPE учим на ВСЁМ корпусе intents.json (все вопросы + все ответы) —
         # это ОК: словарь токенов — не утечка конкретных train/test ответов,
         # просто частотная статистика кусков слов на русском/узбекском.
@@ -379,6 +401,8 @@ def main():
 
     p, cfg = init_params(V, d=args.d, n_layer=args.layers, n_head=args.heads,
                           block=args.block, seed=args.seed)
+    if init:
+        p = grow_params(p, cfg, *init)
     print(f"Архитектура: d={args.d}, слоёв={args.layers}, голов={args.heads}, "
           f"контекст={args.block}, d_ff={cfg['d_ff']}")
     print(f"Параметров: {n_params(p):,}")

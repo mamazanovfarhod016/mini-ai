@@ -2,7 +2,7 @@
 Самообучение Mini AI на сервере: темы с формулировками, экзамен на НЕВИДАННЫХ формулировках.
 
     .venv/bin/python -m server.nightly            # ночью: дообучение (fine-tune) на новых темах
-    .venv/bin/python -m server.nightly --full     # раз в неделю: обучение с нуля на всём знании,
+    .venv/bin/python -m server.nightly --full     # раз в неделю: большое обучение на всём знании, ДАЛЬШЕ с текущей модели,
                                                   #   модель побольше, если знаний стало много
 
 Что считается «поняла», а не «запомнила»:
@@ -131,7 +131,7 @@ def main():
     ap.add_argument("--data", default=str(ROOT / "server_data"))
     ap.add_argument("--steps", type=int, default=400)
     ap.add_argument("--lr", type=float, default=6e-4)
-    ap.add_argument("--full", action="store_true", help="обучение с нуля на всём знании (раз в неделю)")
+    ap.add_argument("--full", action="store_true", help="большое обучение на всём знании с текущей модели (раз в неделю)")
     ap.add_argument("--max-drop", type=float, default=0.01)
     args = ap.parse_args()
     data = Path(args.data)
@@ -171,12 +171,12 @@ def main():
     before["weak"] = weak_acc(p, cfg, tok, max_q)
     if weak:
         log(data, f"слабые типы примеров (по твоим ошибкам): {', '.join(weak)}; на спрятанных ДО: {before['weak']*100:.0f}%")
-    log(data, f"{'ПОЛНОЕ ПЕРЕОБУЧЕНИЕ' if args.full else 'дообучение'}: тем всего {len(topics)}, новых/изменённых {len(fresh)}. "
+    log(data, f"{'БОЛЬШОЕ ОБУЧЕНИЕ (на всём сразу, с текущей модели)' if args.full else 'дообучение'}: тем всего {len(topics)}, новых/изменённых {len(fresh)}. "
               f"ДО: старые {before['base']*100:.1f}%, новые темы на невиданных формулировках "
               f"{before['new_hits']}/{before['new_total']}")
 
     if args.full:
-        # с нуля: intents.json + все темы; модель растёт с объёмом знаний
+        # на всём знании сразу: intents.json + все темы; модель растёт с объёмом знаний
         merged = data / "intents_merged.json"
         store.write_json(merged, {"intents": intents + knowledge.as_intents(topics)})
         math_file = MATH
@@ -186,13 +186,15 @@ def main():
                 md["train"] += [{"q": q, "a": a, "kind": k.split("_")[0], "lang": "ru"} for q, a in drills[k][0]]
             math_file = data / "math_merged.json"
             math_file.write_text(json.dumps(md, ensure_ascii=False), encoding="utf-8")
-        d = 96 if len(topics) < 40 else 128
-        layers = 3 if len(topics) < 40 else 4
+        # ПОСТОЯННЫЕ ЗНАНИЯ: не с нуля, а дальше с текущей модели (cur_path). Если знаний стало
+        # много — сеть растёт (grow_params: старые веса внутри новой, бОльшей сети), но не обнуляется.
+        d = max(cfg["d"], 96 if len(topics) < 40 else 128)
+        layers = max(cfg["n_layer"], 3 if len(topics) < 40 else 4)
         out = data / "models/_candidate_full.json"
         cmd = [sys.executable, str(ROOT / "train_transformer.py"), "--tokenizer", "bpe", "--vocab", "1000",
                *(["--math", str(math_file)] if MATH.exists() else []),
-               "--d", str(d), "--layers", str(layers), "--heads", "4", "--steps", "6000", "--warmup", "300",
-               "--drop", "0.05", "--intents", str(merged), "--out", str(out), "--no-app",
+               "--d", str(d), "--layers", str(layers), "--heads", str(cfg["n_head"]), "--steps", "6000", "--warmup", "300",
+               "--drop", "0.05", "--intents", str(merged), "--out", str(out), "--no-app", "--init", str(cur_path),
                "--ckpt_dir", str(data / "ckpt_full"), "--ckpt_every", "100000",
                "--log", str(data / "logs/train_full.txt")]
         t0 = time.time()
@@ -200,8 +202,8 @@ def main():
         try:                                       # сначала Kaggle (бесплатно, не грузит сервер METTA)
             from server import kaggle_train
             kaggle_train.run(intents=merged, math=math_file if MATH.exists() else None, steps=6000,
-                             extra=["--d", str(d), "--layers", str(layers), "--heads", "4"], out=out,
-                             log=lambda m: log(data, m))
+                             extra=["--d", str(d), "--layers", str(layers), "--heads", str(cfg["n_head"])], out=out,
+                             log=lambda m: log(data, m), init=cur_path)
             where = "Kaggle"
         except Exception as e:                     # нет токена / квота / сбой → учимся у себя
             log(data, f"Kaggle недоступен ({str(e)[:150]}) — учусь на своём сервере")
@@ -211,7 +213,7 @@ def main():
                 return
         p2, cfg2, tok2, meta2 = load_model(str(out))
         max_q2 = meta2.get("max_q", 24)
-        log(data, f"обучено с нуля ({where}) за {(time.time()-t0)/60:.0f} мин: d={d}, слоёв={layers}, {n_params(p2):,} параметров")
+        log(data, f"обучено дальше с текущей модели ({where}) за {(time.time()-t0)/60:.0f} мин: d={d}, слоёв={layers}, {n_params(p2):,} параметров")
         after = exam(p2, cfg2, tok2, max_q2, base_tests, topics, base_resp)
         after["weak"] = weak_acc(p2, cfg2, tok2, max_q2)
         cur_score = before["base"] + (before["new"] or 0) + (before["math"] or 0)

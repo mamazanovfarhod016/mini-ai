@@ -130,6 +130,47 @@ class BPETokenizer:
                 print(f"  merge #{rank}: {a!r}+{b!r} -> {new_tok!r} (freq={pair_counts[best_pair]}) vocab={len(self.itos)}")
         return self
 
+    def extend(self, texts, extra=200, verbose=False):
+        """ПОСТОЯННЫЕ ЗНАНИЯ: дополнить словарь, НЕ меняя старые номера токенов.
+        Новые буквы (например, английская «w») и новые слияния добавляются В КОНЕЦ —
+        старые id значат то же самое, поэтому выученные веса сети остаются верными.
+        Возвращает число добавленных токенов."""
+        n0 = len(self.itos)
+        words = [self._bpe_word(_word_to_symbols(w)) for t in texts for w in _split_words(t) if w]
+        for w in words:                                   # новые буквы — отдельными токенами
+            for sym in w:
+                if sym not in self.stoi and len(sym) <= 2:
+                    self._add_symbol(sym)
+        from collections import Counter
+        corpus = [[list(w), c] for w, c in Counter(tuple(w) for w in words).items()]
+        target = len(self.itos) + extra
+        while len(self.itos) < target:                    # продолжаем BPE с того места, где остановились
+            counts = {}
+            for syms, c in corpus:
+                for i in range(len(syms) - 1):
+                    a, b = syms[i], syms[i + 1]
+                    if not (_atomic(a) or _atomic(b)):
+                        counts[(a, b)] = counts.get((a, b), 0) + c
+            if not counts:
+                break
+            best = max(counts, key=lambda k: (counts[k], k))
+            if counts[best] < 20:                          # редкие пары не берём — словарь не раздуваем
+                break
+            a, b = best
+            self.merge_rank[(a, b)] = len(self.merges)
+            self.merges.append([a, b])
+            self._add_symbol(a + b)
+            for syms, _c in corpus:
+                i = 0
+                while i < len(syms) - 1:
+                    if syms[i] == a and syms[i + 1] == b:
+                        syms[i:i + 2] = [a + b]
+                    else:
+                        i += 1
+        if verbose:
+            print(f"Словарь дополнен: {n0} → {len(self.itos)} токенов (старые номера не изменились)")
+        return len(self.itos) - n0
+
     def _add_symbol(self, s):
         if s not in self.stoi:
             self.stoi[s] = len(self.itos)

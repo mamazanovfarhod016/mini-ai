@@ -142,6 +142,48 @@ def init_params(V, d=128, n_layer=3, n_head=4, block=160, d_ff=None, seed=0, dty
     return p, cfg
 
 
+def grow_params(p_new, cfg_new, p_old, cfg_old):
+    """ПОСТОЯННЫЕ ЗНАНИЯ: новая (такая же или бОльшая) сеть начинает не с нуля, а с весов старой.
+
+    • Те же размеры → просто копия: сеть продолжает учиться с того места, где остановилась.
+    • Больше слоёв → старые слои копируем как есть, а у новых слоёв выходы (attn.wo, mlp.w2 и их
+      смещения) обнуляем. Тогда новый блок делает x + 0 + 0 = x, то есть сеть отвечает РОВНО как
+      раньше, а новые слои потом постепенно включаются в работу при обучении.
+    • Шире (больше d) → старые числа кладём в «левый верхний угол» новых матриц (для wqkv — отдельно
+      в части Q, K и V). Ответы меняются чуть-чуть (LayerNorm считает среднее по всем d), и сеть
+      быстро это доучивает — знания не пропадают.
+    • Длиннее контекст (block) → старые позиции копируем, новые остаются случайными.
+    • Словарь больше (BPETokenizer.extend добавил токены В КОНЕЦ) → старые строки wte/bout копируем,
+      новые токены получают свои случайные векторы. Старые номера значат то же, что и раньше.
+    """
+    if cfg_new["V"] < cfg_old["V"]:
+        raise ValueError(f"словарь можно только дополнять: {cfg_old['V']} → {cfg_new['V']}")
+    if cfg_new["d"] < cfg_old["d"] or cfg_new["n_layer"] < cfg_old["n_layer"]:
+        raise ValueError("сеть можно только увеличивать, не уменьшать")
+    d0, d1 = cfg_old["d"], cfg_new["d"]
+
+    def put(name, old):
+        new = p_new[name]
+        old = bk.to_xp(bk.to_np(old).astype(new.dtype))          # старые веса могут быть на процессоре
+        if name.endswith("attn.wqkv"):               # (d, 3d): части Q|K|V кладём каждую на своё место
+            for j in range(3):
+                new[:d0, j * d1:j * d1 + d0] = old[:, j * d0:(j + 1) * d0]
+        elif name.endswith("attn.bqkv"):
+            for j in range(3):
+                new[j * d1:j * d1 + d0] = old[j * d0:(j + 1) * d0]
+        else:
+            sl = tuple(slice(0, min(a, b)) for a, b in zip(new.shape, old.shape))
+            new[sl] = old[sl]
+
+    for name, old in p_old.items():
+        if name in p_new:
+            put(name, old)
+    for l in range(cfg_old["n_layer"], cfg_new["n_layer"]):     # новые слои = «пропуск» (x → x)
+        for k in ("attn.wo", "attn.bo", "mlp.w2", "mlp.b2"):
+            p_new[f"{l}.{k}"][...] = 0
+    return p_new
+
+
 def n_params(p):
     return int(sum(v.size for v in p.values()))
 
