@@ -83,7 +83,10 @@
 
   // ---------- память: выученное от наставника и из интернета (сразу, до ночного обучения) ----------
   function recall(q) { var m = get(K.memory, {}); return m[clean(q)] || null; }
-  function remember(q, a, source) { var m = get(K.memory, {}); m[clean(q)] = { a: a, source: source }; set(K.memory, m); }
+  function remember(q, a, source) {
+    if (/\d/.test(clean(q)) && mathAnswer(q, "ru") != null) return;     // примеры не запоминаем — она их считает
+    var m = get(K.memory, {}); m[clean(q)] = { a: a, source: source }; set(K.memory, m);
+  }
 
   // ---------- понимает ли модель вопрос ----------
   // 1) Вопрос «про незнакомое»: есть слово, которого не было в обучении (с допуском 1 опечатки),
@@ -144,6 +147,7 @@
   }
   function isConfident(info) {
     if (info.memory) return true;
+    if (info.thought && info.thought.math) return info.thought.math.ok;   // пример — проверено калькулятором
     if (needsWeb(info.q)) return false;
     if (info.engine === "mlp") return !!(info.thought && info.thought.intent) && !WEAK[info.thought.intent];
     var tag = intentOf(info.raw, root.MINI_AI_TRANSFORMER);
@@ -295,6 +299,10 @@
 
   function start(opts) {
     onMentorAnswer = opts.onMentorAnswer;
+    // старые «выученные» ответы на примеры («2 плюс 2 равно 4») — убираем: теперь считает сама
+    var mem = get(K.memory, {}), changed = false;
+    Object.keys(mem).forEach(function (k) { if (/\d/.test(k)) { delete mem[k]; changed = true; } });
+    if (changed) set(K.memory, mem);
     discover().then(function () {
       flushOutbox(); pollMentor(); checkModel(opts.onModelUpdated);
     });
@@ -303,9 +311,10 @@
 
   function progress() { return call("/api/progress"); }
 
-  // ---------- арифметика: считаем сами, а не «учим» ----------
-  // «1+2», «1+2=», «сколько будет 7*8», «5 плюс 3», «12 / 4», «2+2=4?» → просто «3», «56», «8»…
-  // Нейронке такое учить бессмысленно (бесконечно много примеров), калькулятор точен всегда.
+  // ---------- арифметика: ПРОВЕРКА ответа нейросети ----------
+  // Нейросеть считает сама (data/math_pairs.json, tools/make_math.py). Калькулятор нужен только чтобы
+  // честно показать под ответом «✓ посчитала сама» или «✗ ошиблась, правильно: …».
+  // «1+2», «сколько будет 7*8», «5 плюс 3», «2+2=4» → «3», «56», «8», «Верно, 4.»
   var WORD_OPS = [[/(умножить|умножь|умноженное)\s+на|ko'paytir(ilsa|sa)?|×|x(?=\s*\d)|х(?=\s*\d)/g, "*"],
                   [/(разделить|раздели|делить|делённое|деленное)\s+на|bo'lin(sa|gan)?|÷|:/g, "/"],
                   [/плюс|qo'sh(ilsa|sa)?/g, "+"], [/минус|ayir(ilsa|sa)?/g, "-"]];

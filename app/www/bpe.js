@@ -15,6 +15,9 @@
   NO_MERGE[TIME_TOK] = true;
   NO_MERGE[DATE_TOK] = true;
 
+  // как _atomic в bpe.py: ①/② и любые цифры не сливаются (каждая цифра — свой токен)
+  function atomic(sym) { return !!NO_MERGE[sym] || /[0-9]/.test(sym); }
+
   function wordToSymbols(word) {
     if (!word) return [];
     var chars = Array.from(word);
@@ -43,7 +46,7 @@
       var bestRank = null, bestI = -1;
       for (var i = 0; i < symbols.length - 1; i++) {
         var a = symbols[i], b = symbols[i + 1];
-        if (NO_MERGE[a] || NO_MERGE[b]) continue;
+        if (atomic(a) || atomic(b)) continue;
         var key = a + "\u0001" + b;
         var r = this.mergeRank.hasOwnProperty(key) ? this.mergeRank[key] : null;
         if (r !== null && (bestRank === null || r < bestRank)) {

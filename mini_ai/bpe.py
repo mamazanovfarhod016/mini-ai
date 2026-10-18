@@ -33,6 +33,12 @@ DATE_TOK = "\u2461"          # ②
 NO_MERGE = {TIME_TOK, DATE_TOK}   # эти символы никогда не сливаются с соседями
 
 
+def _atomic(sym):
+    """Неделимый кусочек: ①/② и любые ЦИФРЫ. Каждая цифра — отдельный токен, иначе «23» и «45»
+    были бы для модели целыми «словами» и она не увидела бы разряды (нужно для счёта, 18.10)."""
+    return sym in NO_MERGE or any("0" <= c <= "9" for c in sym)
+
+
 def _word_to_symbols(word):
     """«привет» → ['▁п','р','и','в','е','т'] — первый символ слова с префиксом ▁.
 
@@ -94,7 +100,7 @@ class BPETokenizer:
             for syms, c in corpus:
                 for i in range(len(syms) - 1):
                     a, b = syms[i], syms[i + 1]
-                    if a in NO_MERGE or b in NO_MERGE:
+                    if _atomic(a) or _atomic(b):
                         continue
                     counts[(a, b)] = counts.get((a, b), 0) + c
             return counts
@@ -139,7 +145,7 @@ class BPETokenizer:
             best_rank, best_i = None, None
             for i in range(len(symbols) - 1):
                 a, b = symbols[i], symbols[i + 1]
-                if a in NO_MERGE or b in NO_MERGE:
+                if _atomic(a) or _atomic(b):
                     continue
                 r = self.merge_rank.get((a, b))
                 if r is not None and (best_rank is None or r < best_rank):

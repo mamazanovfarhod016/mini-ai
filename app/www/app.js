@@ -163,6 +163,13 @@
       el.querySelector(".text").parentNode.appendChild(meta);
       return;
     }
+    if (thought && thought.math) {
+      var mb = document.createElement("button");
+      mb.className = "math-chip " + (thought.math.ok ? "ok" : "bad");
+      mb.textContent = thought.math.ok ? "✓ посчитала сама" : "✗ ошиблась, правильно: " + thought.math.right;
+      mb.title = "Нейросеть считает сама (её этому научили). Калькулятор только проверяет её ответ.";
+      meta.appendChild(mb);
+    }
     if (thought && thought.engine === "transformer") {
       b.textContent = "✨ трансформер · нажми, чтобы увидеть внимание";
     } else {
@@ -268,6 +275,9 @@
     function finish(finalText, thought, raw, fromMemory) {
       out.classList.remove("caret");
       logo.classList.remove("spin");
+      if (calcCheck != null && thought) {
+        thought.math = { right: calcCheck, ok: String(finalText).trim() === calcCheck };
+      }
       addMeta(el, thought, text);
       current.msgs.push({ role: "ai", text: finalText, thought: thought, q: text });
       save();
@@ -279,17 +289,9 @@
       });
     }
 
-    // Арифметика — считаем сами, коротко: «1+2» → «3».
-    var calc = window.MiniLearn && window.MiniLearn.mathAnswer(text, lang);
-    if (calc != null) {
-      setTimeout(function () {
-        out.textContent = calc;
-        out.classList.remove("caret"); logo.classList.remove("spin");
-        current.msgs.push({ role: "ai", text: calc, thought: { engine: "calc" }, q: text });
-        save(); busy = false; scrollDown();
-      }, fast ? 0 : 250);
-      return;
-    }
+    // Арифметика: отвечает САМА нейросеть (обучена считать). Калькулятор только проверяет —
+    // чип под ответом честно показывает, посчитала она верно или ошиблась.
+    var calcCheck = window.MiniLearn && window.MiniLearn.mathAnswer(text, lang);
 
     // Выученное (от наставника / подтверждено в интернете) — отвечаем сразу, до ночного дообучения.
     var mem = window.MiniLearn && window.MiniLearn.recall(text);
@@ -552,6 +554,7 @@
       html += "<p class=\"small-note\">Экзамен — только на формулировках, которых я <b>не видела</b> при обучении. Так видно, что я понимаю смысл, а не зубрю.</p>";
       html += "<div class=\"grow-now\"><div><b>" + Math.round((m.test_intent_accuracy || 0) * 100) + "%</b><small>понимаю старые темы</small></div>" +
         "<div><b>" + (m.new_topics_accuracy == null ? "—" : Math.round(m.new_topics_accuracy * 100) + "%") + "</b><small>понимаю новые темы</small></div>" +
+        "<div><b>" + (m.math && m.math.acc != null ? Math.round(m.math.acc * 100) + "%" : "—") + "</b><small>считаю сама (новые примеры)</small></div>" +
         "<div><b>" + (m.learned_topics || 0) + "</b><small>выучено тем</small></div></div>";
       var ok = (hist || []).filter(function (h) { return h.kind !== "rejected"; });
       if (ok.length) {
@@ -559,9 +562,9 @@
         var x = function (i) { return n === 1 ? W / 2 : 10 + i * (W - 20) / (n - 1); };
         var y = function (v) { return H - 10 - v * (H - 20); };
         var line = function (key) { return ok.map(function (h, i) { return h[key] == null ? "" : (i ? "L" : "M") + x(i).toFixed(1) + "," + y(h[key]).toFixed(1); }).join(""); };
-        html += "<svg class=\"grow-chart\" viewBox=\"0 0 " + W + " " + H + "\"><path d=\"" + line("base") + "\" class=\"g-base\"/><path d=\"" + line("new") + "\" class=\"g-new\"/>" +
+        html += "<svg class=\"grow-chart\" viewBox=\"0 0 " + W + " " + H + "\"><path d=\"" + line("base") + "\" class=\"g-base\"/><path d=\"" + line("new") + "\" class=\"g-new\"/><path d=\"" + line("math") + "\" class=\"g-math\"/>" +
           ok.map(function (h, i) { return h.new == null ? "" : "<circle cx=\"" + x(i) + "\" cy=\"" + y(h.new) + "\" r=\"3\" class=\"g-dot\"/>"; }).join("") + "</svg>";
-        html += "<p class=\"small-note\"><span class=\"key g-new\"></span> новые темы · <span class=\"key g-base\"></span> старые темы</p>";
+        html += "<p class=\"small-note\"><span class=\"key g-new\"></span> новые темы · <span class=\"key g-math\"></span> счёт · <span class=\"key g-base\"></span> старые темы</p>";
       }
       html += "<h3>Экзамены</h3>";
       if (!hist || !hist.length) html += "<p class=\"small-note\">Пока не было — первый пройдёт ночью, когда появятся новые знания.</p>";

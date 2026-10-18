@@ -33,7 +33,18 @@ from mini_ai.transformer import (  # noqa: E402
 from server import knowledge, store  # noqa: E402
 from train_transformer import build_pairs, build_prompt, fill_placeholders, is_latin, make_batch  # noqa: E402
 
-BASE_MODEL = ROOT / "model_transformer_bpe.json"
+BASE_MODEL = ROOT / "model_transformer_math.json"
+if not BASE_MODEL.exists():
+    BASE_MODEL = ROOT / "model_transformer_bpe.json"
+MATH = ROOT / "data/math_pairs.json"
+
+
+def math_sets():
+    if not MATH.exists():
+        return [], []
+    m = json.loads(MATH.read_text(encoding="utf-8"))
+    rnd = random.Random(7)
+    return [(x["q"], x["a"]) for x in m["train"]], rnd.sample([(x["q"], x["a"]) for x in m["test"]], 300)
 
 
 def log(data, msg, quiet=False):
@@ -68,7 +79,10 @@ def exam(p, cfg, tok, max_q, base_tests, topics, base_resp):
             ok = a in ok_set
             new_total += 1; new_hits += ok
             details.append({"tag": t["tag"], "q": q, "a": a, "ok": ok})
-    return {"base": hits / len(base_tests), "new": (new_hits / new_total) if new_total else None,
+    math_test = math_sets()[1]
+    m_hits = sum(gen(kv, tok, cfg, max_q, q) == a for q, a in math_test)
+    return {"base": hits / len(base_tests), "math": (m_hits / len(math_test)) if math_test else None,
+            "new": (new_hits / new_total) if new_total else None,
             "new_hits": new_hits, "new_total": new_total, "details": details}
 
 
@@ -106,7 +120,7 @@ def publish(data, p, cfg, tok, meta, max_q, res, kind, n_topics, latest):
 def record_progress(data, res, kind, version, n_topics, n_params_):
     prog = store.read_json(data / "progress.json", [])
     prog.append({"at": time.strftime("%Y-%m-%d %H:%M"), "kind": kind, "version": version,
-                 "base": round(res["base"], 4), "new": None if res["new"] is None else round(res["new"], 4),
+                 "base": round(res["base"], 4), "math": None if res.get("math") is None else round(res["math"], 4), "new": None if res["new"] is None else round(res["new"], 4),
                  "new_hits": res["new_hits"], "new_total": res["new_total"], "topics": n_topics,
                  "params": n_params_})
     store.write_json(data / "progress.json", prog)
@@ -157,6 +171,7 @@ def main():
         layers = 3 if len(topics) < 40 else 4
         out = data / "models/_candidate_full.json"
         cmd = [sys.executable, str(ROOT / "train_transformer.py"), "--tokenizer", "bpe", "--vocab", "1000",
+               *(["--math", str(MATH)] if MATH.exists() else []),
                "--d", str(d), "--layers", str(layers), "--heads", "4", "--steps", "6000", "--warmup", "300",
                "--drop", "0.05", "--intents", str(merged), "--out", str(out), "--no-app",
                "--ckpt_dir", str(data / "ckpt_full"), "--ckpt_every", "100000",
@@ -172,11 +187,13 @@ def main():
         after = exam(p2, cfg2, tok2, max_q2, base_tests, topics, base_resp)
         cur_score = before["base"] + (before["new"] or 0)
         new_score = after["base"] + (after["new"] or 0)
-        passed = after["base"] >= before["base"] - args.max_drop and new_score > cur_score
+        passed = after["base"] >= before["base"] - args.max_drop and new_score > cur_score and \
+            (after["math"] or 0) >= (before["math"] or 0) - 0.02
         p, cfg, tok, meta, max_q = p2, cfg2, tok2, meta2, max_q2
     else:
         new_ex = topic_pairs(fresh)
         replay = [(q, a) for q, a, *_ in train_pairs] + topic_pairs([t for t in topics if t not in fresh])
+        replay += random.Random(3).sample(math_sets()[0], min(4000, len(math_sets()[0])))   # не разучиться считать
         opt = AdamW(p, lr=args.lr, wd=0.01)
         rng = np.random.default_rng(int(time.time()))
         t0 = time.time()
@@ -190,8 +207,11 @@ def main():
         log(data, f"дообучение: {args.steps} шагов за {(time.time()-t0)/60:.1f} мин")
         after = exam(p, cfg, tok, max_q, base_tests, topics, base_resp)
         passed = after["base"] >= before["base"] - args.max_drop and \
-            (after["new"] or 0) >= (before["new"] or 0) and after["new_hits"] > 0
+            (after["new"] or 0) >= (before["new"] or 0) and after["new_hits"] > 0 and \
+            (after["math"] or 0) >= (before["math"] or 0) - 0.02
 
+    if after.get("math") is not None:
+        log(data, f"счёт на невиданных примерах: {after['math']*100:.1f}% (было {(before['math'] or 0)*100:.1f}%)")
     log(data, f"ЭКЗАМЕН ПОСЛЕ: старые {after['base']*100:.1f}% (было {before['base']*100:.1f}%), "
               f"новые темы на невиданных формулировках {after['new_hits']}/{after['new_total']} "
               f"(было {before['new_hits']}/{before['new_total']}) → "

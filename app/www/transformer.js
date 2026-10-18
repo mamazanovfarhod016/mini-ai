@@ -26,8 +26,18 @@
     var t = String(text).toLowerCase().replace(/ё/g, "е");
     t = t.replace(APOS, "'");
     // как в Python clean_question: знаки препинания → пробел (в обучающих вопросах их нет)
+    t = normalizeMath(t);
     t = t.replace(/[!?.,;:()"«»…—–-]+/g, " ");
     return t.split(/\s+/).filter(Boolean).join(" ");
+  }
+
+  // как normalize_math в transformer.py: единая запись примеров «23 + 45», «8 * 3», «10 / 2», «7 − 3»
+  function normalizeMath(t) {
+    t = t.replace(/(\d)\s*[x×х*]\s*(?=\d)/g, "$1 * ");
+    t = t.replace(/(\d)\s*[-−–]\s*(?=\d)/g, "$1 − ");
+    t = t.replace(/(\d)\s*[:÷\/]\s*(?=\d)/g, "$1 / ");
+    t = t.replace(/\s*([+=])\s*/g, " $1 ");
+    return t;
   }
 
   // ---------- float16 (IEEE 754 half) → float64 ----------

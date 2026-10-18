@@ -240,6 +240,20 @@ def intent_accuracy(kv, tok, intents_by_tag, qs, block, max_q=40):
     return hits / max(1, len(qs)), details
 
 
+def math_accuracy(kv, tok, tests, block, max_q=40):
+    """tests: [(q, ответ, вид)]. Дословное совпадение ответа. → (доля, {вид: (верно, всего)}, ошибки)."""
+    by, wrong = {}, []
+    for q, a, kind in tests:
+        gen = greedy_answer(kv, tok, q, block, max_q).strip()
+        ok = gen == a
+        h, n = by.get(kind, (0, 0))
+        by[kind] = (h + ok, n + 1)
+        if not ok and len(wrong) < 15:
+            wrong.append((q, a, gen))
+    hits = sum(h for h, _ in by.values())
+    return hits / max(1, len(tests)), by, wrong
+
+
 def levenshtein(a, b):
     if a == b:
         return 0
@@ -291,6 +305,8 @@ def main():
                      help="файл намерений (сервер самообучения подаёт сюда intents.json + выученные темы)")
     ap.add_argument("--log", default=str(ROOT / "docs/train_log_transformer.txt"))
     ap.add_argument("--no-app", action="store_true", help="не перезаписывать app/www/model_transformer.js")
+    ap.add_argument("--math", default="", help="data/math_pairs.json — учить считать (tools/make_math.py)")
+    ap.add_argument("--math_frac", type=float, default=0.4, help="доля примеров на счёт в каждом батче")
     ap.add_argument("--vocab", type=int, default=1000, help="размер словаря BPE (только для --tokenizer bpe)")
     args = ap.parse_args()
     if args.quick:
@@ -311,6 +327,13 @@ def main():
 
     train_aug = augment_pairs(train_pairs, rng_py, n_typo=2)
     print(f"Train-пар с опечатками: {len(train_aug)}")
+    # примеры на счёт — БЕЗ опечаток (опечатка в цифре меняет правильный ответ)
+    math_train, math_test = [], []
+    if args.math:
+        md = json.loads(Path(args.math).read_text(encoding="utf-8"))
+        math_train = [(x["q"], x["a"], "math_" + x["kind"], x["lang"]) for x in md["train"]]
+        math_test = [(x["q"], x["a"], x["kind"]) for x in md["test"]]
+        print(f"Счёт: train {len(math_train)}, test {len(math_test)} (тест — примеры, которых модель НЕ видела)")
 
     # ---------- словарь: char или bpe ----------
     all_text = []
@@ -329,13 +352,15 @@ def main():
             for lang, answers in it["responses"].items():
                 for a in answers:
                     bpe_corpus.append(fill_placeholders(a))
+        for q, a, *_ in math_train[::9]:            # каждый 9-й: в словарь попадут все виды (+ − * / «Верно»)
+            bpe_corpus += [clean_question(q), a]
         tok = BPETokenizer()
         tok.train(bpe_corpus, vocab_size=args.vocab, verbose=True)
         V = len(tok)
         print(f"Словарь BPE: {V} токенов ({len(tok.merges)} слияний)")
         # block = max(<bos>+вопрос+<sep>+ответ+<eos> в токенах) + запас
         max_len = 0
-        for q, a, *_ in train_aug + test_pairs:
+        for q, a, *_ in train_aug + test_pairs + math_train:
             seq_len = 2 + len(tok.encode(clean_question(q))[:args.max_q]) + len(tok.encode(fill_placeholders(a)))
             max_len = max(max_len, seq_len)
         args.block = max_len + 4
@@ -357,6 +382,7 @@ def main():
 
     examples = [(q, a) for q, a, *_ in train_aug]
     n = len(examples)
+    math_examples = [(q, a) for q, a, *_ in math_train]
 
     # ---------- сбалансированное сэмплирование по намерениям ----------
     # Диагностика (18.10): случайная выборка по ПАРАМ даёт намерениям с бОльшим
@@ -371,6 +397,15 @@ def main():
     tag_arrays = {t: np.array(idxs) for t, idxs in by_tag.items()}
     print(f"Сбалансированное сэмплирование: {'ВКЛ' if args.balanced else 'выкл'} "
           f"({len(tags_list)} намерений)")
+
+    def sample_batch(batch_size):
+        n_math = int(round(batch_size * args.math_frac)) if math_examples else 0
+        ex = [examples[i] for i in sample_batch_idxs(batch_size - n_math)]
+        ex += [math_examples[i] for i in np_rng.integers(0, len(math_examples), n_math)] if n_math else []
+        return ex
+
+    rng_eval = random.Random(1)
+    math_eval_ckpt = rng_eval.sample(math_test, min(400, len(math_test))) if math_test else []
 
     def sample_batch_idxs(batch_size):
         if not args.balanced:
@@ -394,8 +429,7 @@ def main():
 
     log_every = max(1, args.steps // 20)
     for step in range(args.steps):
-        idxs = sample_batch_idxs(args.batch)
-        batch_examples = [examples[i] for i in idxs]
+        batch_examples = sample_batch(args.batch)
         idx, targets, mask = make_batch(tok, batch_examples, args.max_q, args.block, np_rng)
         lr = lr_schedule(step, args.steps, args.lr, args.warmup)
         loss, grads = loss_and_grads(p, cfg, idx, targets, mask, drop=args.drop, rng=np_rng)
@@ -411,13 +445,17 @@ def main():
             kv_ckpt = KVModel(p, cfg)
             train_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, train_qs_eval, args.block, args.max_q)
             test_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, test_qs_eval, args.block, args.max_q)
+            m_acc = math_accuracy(kv_ckpt, tok, math_eval_ckpt, args.block, args.max_q)[0] if math_eval_ckpt else None
             elapsed = time.time() - t_start
             msg = (f"[ckpt шаг {step}] train_intent_acc={train_acc*100:.1f}% "
-                   f"test_intent_acc={test_acc*100:.1f}% elapsed={elapsed/60:.1f}мин")
+                   f"test_intent_acc={test_acc*100:.1f}% "
+                   + (f"math_acc(невиданные)={m_acc*100:.1f}% " if m_acc is not None else "")
+                   + f"elapsed={elapsed/60:.1f}мин")
             print(msg, flush=True)
             progress_log.append({"step": step, "train_intent_acc": train_acc, "test_intent_acc": test_acc,
                                   "elapsed_sec": elapsed})
-            meta_ckpt = {"step": step, "train_intent_acc": round(train_acc, 4),
+            score = test_acc + (m_acc or 0)
+            meta_ckpt = {"step": step, "train_intent_acc": round(train_acc, 4), "math_acc": m_acc,
                          "test_intent_acc": round(test_acc, 4), "elapsed_sec": round(elapsed, 1)}
             out_dict_ckpt = export_model(p, cfg, tok, meta_ckpt, tokenizer_type=args.tokenizer,
                                           max_q=args.max_q,
@@ -426,8 +464,8 @@ def main():
                 json.dumps(out_dict_ckpt, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
             # лучший по test — отдельный файл "best.json" (не затираем все промежуточные,
             # чтобы прогресс не терялся при обрыве; но держим явный указатель на лучший)
-            if test_acc > best_test_acc:
-                best_test_acc = test_acc
+            if score > best_test_acc:
+                best_test_acc = score
                 best_step = step
                 (ckpt_dir / "best.json").write_text(
                     json.dumps(out_dict_ckpt, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -469,6 +507,16 @@ def main():
     print(f"Мягкая метрика (1 − норм. расстояние Левенштейна до ближайшего эталона): "
           f"{soft_score*100:.1f}%")
 
+    math_final = None
+    if math_test:
+        m_acc, m_by, m_wrong = math_accuracy(kv, tok, math_test, args.block, args.max_q)
+        math_final = {"acc": round(m_acc, 4), "by_kind": {k: [h, n] for k, (h, n) in m_by.items()}}
+        print(f"\nСЧЁТ на НЕВИДАННЫХ примерах: {m_acc*100:.1f}% ({sum(h for h, _ in m_by.values())}/{len(math_test)})")
+        for k, (h, n) in sorted(m_by.items()):
+            print(f"  {k:6s} {h}/{n} = {h/n*100:.1f}%")
+        for q, a, g in m_wrong:
+            print(f"  ✗ «{q}» → «{g}» (надо «{a}»)")
+
     # ---------- сохранение весов (float16 base64, < 5 МБ) ----------
     meta = {
         "train_loss": round(train_loss, 4), "train_ppl": round(train_ppl, 3),
@@ -482,6 +530,7 @@ def main():
         "train_pairs": len(train_pairs), "train_pairs_aug": len(train_aug),
         "test_pairs": len(test_pairs), "test_questions": len(test_qs),
         "balanced_sampling": args.balanced,
+        "math": math_final,
         "best_ckpt_step": best_step, "best_ckpt_test_intent_acc": round(best_test_acc, 4),
         "responses": {it["tag"]: it["responses"] for it in intents},
         "labels": {it["tag"]: it["description"] for it in intents},
