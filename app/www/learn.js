@@ -215,7 +215,7 @@
       c2.appendChild(el("p", "learn-note muted", t.found));
       c2.appendChild(el("p", "learn-answer", r.answer));
       var s = el("a", "learn-src", t.src + ": " + (r.title || "Википедия"));
-      s.href = r.url; s.target = "_blank"; s.rel = "noopener";
+      s.href = r.url; s.rel = "noopener";          // в приложении откроется во внешнем браузере
       c2.appendChild(s);
       var row = el("div", "learn-row");
       row.appendChild(btn(t.right, true, function () {

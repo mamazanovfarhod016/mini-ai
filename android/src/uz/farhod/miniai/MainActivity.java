@@ -1,7 +1,9 @@
 package uz.farhod.miniai;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.res.Configuration;
+import android.net.Uri;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -15,7 +17,8 @@ import android.webkit.WebViewClient;
 
 /**
  * Mini AI: обёртка WebView. Интерфейс и нейросеть (model.js + brain.js) лежат в assets/www,
- * вся «думалка» — на JavaScript прямо в телефоне. Разрешения INTERNET нет.
+ * вся «думалка» — на JavaScript прямо в телефоне. Интернет — для самообучения (сервер Mini AI,
+ * поиск ответа в Википедии); ссылки на источники открываются во внешнем браузере.
  */
 public class MainActivity extends Activity {
     static final String URL = "file:///android_asset/www/index.html";
@@ -43,7 +46,12 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
-                return !"file".equals(req.getUrl().getScheme());   // никуда наружу
+                Uri u = req.getUrl();
+                if ("file".equals(u.getScheme())) return false;            // свои страницы — внутри
+                if ("https".equals(u.getScheme())) {                       // источник (Википедия) — в браузере
+                    try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) {}
+                }
+                return true;
             }
         });
         setContentView(web);

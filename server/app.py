@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from server import research as research_mod
-from server import store
+from server import mathcheck, store
 
 MAX_BODY = 16 * 1024
 
@@ -99,8 +99,11 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/log":
             rec["ok"] = bool(body.get("ok"))
             with self.lock:
+                m = mathcheck.log_answer(self.data, q, rec["a"], lang)   # пример → проверяет скрипт, не ИИ
+                if m:
+                    rec["ok"], rec["math"] = m["ok"], m
                 store.append_jsonl(self.data / "questions.jsonl", rec)
-            return self._send(200, {"ok": True})
+            return self._send(200, {"ok": True, "math": m})
         if u.path == "/api/research":
             res = research_mod.research(q, lang)
             with self.lock:
@@ -113,6 +116,8 @@ class Handler(BaseHTTPRequestHandler):
                 item = store.add_mentor_item(self.data, {**rec, "kind": "confirm", "web": web})
             return self._send(200, {"ok": True, "id": item["id"]})
         if u.path == "/api/mentor":
+            if mathcheck.parse_math(q):            # примеры наставнику не нужны — их проверяет скрипт
+                return self._send(200, {"ok": True, "id": None, "math": True})
             web = body.get("web") if isinstance(body.get("web"), dict) else None
             with self.lock:
                 item = store.add_mentor_item(self.data, {**rec, "kind": "question", "web": web})

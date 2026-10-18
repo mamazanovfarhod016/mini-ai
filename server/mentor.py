@@ -37,7 +37,13 @@ def main():
     data = Path(args.data)
 
     if args.cmd == "inbox":
-        items = [i for i in store.read_json(data / "mentor_inbox.json", []) if i["status"] == "new"]
+        from server import mathcheck
+        all_items = store.read_json(data / "mentor_inbox.json", [])
+        for i in all_items:                      # примеры проверяет скрипт — ИИ-наставника не будим
+            if i["status"] == "new" and mathcheck.parse_math(i["q"]):
+                i["status"] = "skipped_math"
+        store.write_json(data / "mentor_inbox.json", all_items)
+        items = [i for i in all_items if i["status"] == "new"]
         for i in items:
             web = i.get("web") or {}
             if i.get("kind") == "confirm":

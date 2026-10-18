@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 from mini_ai.transformer import (  # noqa: E402
     AdamW, KVModel, clip_grads, export_model, load_model, loss_and_grads, lr_schedule, n_params,
 )
-from server import knowledge, store  # noqa: E402
+from server import knowledge, mathcheck, store  # noqa: E402
 from train_transformer import build_pairs, build_prompt, fill_placeholders, is_latin, make_batch  # noqa: E402
 
 BASE_MODEL = ROOT / "model_transformer_math.json"
@@ -141,7 +141,10 @@ def main():
     trained = set(store.read_json(data / "trained_topics.json", []))
     sig = lambda t: f"{t['tag']}:{len(t['train'])}:{len(t['heldout'])}:{json.dumps(t['responses'], ensure_ascii=False, sort_keys=True)}"
     fresh = [t for t in topics if sig(t) not in trained]
-    if not args.full and not fresh:
+    weak = mathcheck.weak_kinds(data)
+    drills = {k: mathcheck.drill(k) for k in weak}
+    weak_test = [(q, a) for k in weak for q, a in drills[k][1]]
+    if not args.full and not fresh and not weak:
         log(data, "новых тем нет — обучение не нужно", quiet=True)
         return
     if args.full and not topics:
@@ -158,7 +161,16 @@ def main():
     train_pairs, test_pairs = build_pairs(intents, random.Random(0), split_seed=0)
     base_tests = sorted({(q, tag) for q, a, tag, lang in test_pairs})
 
+    def weak_acc(p_, cfg_, tok_, mq_):
+        if not weak_test:
+            return None
+        kv_ = KVModel(p_, cfg_)
+        return sum(gen(kv_, tok_, cfg_, mq_, q) == a for q, a in weak_test) / len(weak_test)
+
     before = exam(p, cfg, tok, max_q, base_tests, topics, base_resp)
+    before["weak"] = weak_acc(p, cfg, tok, max_q)
+    if weak:
+        log(data, f"слабые типы примеров (по твоим ошибкам): {', '.join(weak)}; на спрятанных ДО: {before['weak']*100:.0f}%")
     log(data, f"{'ПОЛНОЕ ПЕРЕОБУЧЕНИЕ' if args.full else 'дообучение'}: тем всего {len(topics)}, новых/изменённых {len(fresh)}. "
               f"ДО: старые {before['base']*100:.1f}%, новые темы на невиданных формулировках "
               f"{before['new_hits']}/{before['new_total']}")
@@ -167,11 +179,18 @@ def main():
         # с нуля: intents.json + все темы; модель растёт с объёмом знаний
         merged = data / "intents_merged.json"
         store.write_json(merged, {"intents": intents + knowledge.as_intents(topics)})
+        math_file = MATH
+        if weak and MATH.exists():                 # + примеры на слабые типы
+            md = json.loads(MATH.read_text(encoding="utf-8"))
+            for k in weak:
+                md["train"] += [{"q": q, "a": a, "kind": k.split("_")[0], "lang": "ru"} for q, a in drills[k][0]]
+            math_file = data / "math_merged.json"
+            math_file.write_text(json.dumps(md, ensure_ascii=False), encoding="utf-8")
         d = 96 if len(topics) < 40 else 128
         layers = 3 if len(topics) < 40 else 4
         out = data / "models/_candidate_full.json"
         cmd = [sys.executable, str(ROOT / "train_transformer.py"), "--tokenizer", "bpe", "--vocab", "1000",
-               *(["--math", str(MATH)] if MATH.exists() else []),
+               *(["--math", str(math_file)] if MATH.exists() else []),
                "--d", str(d), "--layers", str(layers), "--heads", "4", "--steps", "6000", "--warmup", "300",
                "--drop", "0.05", "--intents", str(merged), "--out", str(out), "--no-app",
                "--ckpt_dir", str(data / "ckpt_full"), "--ckpt_every", "100000",
@@ -185,13 +204,14 @@ def main():
         max_q2 = meta2.get("max_q", 24)
         log(data, f"обучено с нуля за {(time.time()-t0)/60:.0f} мин: d={d}, слоёв={layers}, {n_params(p2):,} параметров")
         after = exam(p2, cfg2, tok2, max_q2, base_tests, topics, base_resp)
-        cur_score = before["base"] + (before["new"] or 0)
-        new_score = after["base"] + (after["new"] or 0)
+        after["weak"] = weak_acc(p2, cfg2, tok2, max_q2)
+        cur_score = before["base"] + (before["new"] or 0) + (before["math"] or 0)
+        new_score = after["base"] + (after["new"] or 0) + (after["math"] or 0)
         passed = after["base"] >= before["base"] - args.max_drop and new_score > cur_score and \
             (after["math"] or 0) >= (before["math"] or 0) - 0.02
         p, cfg, tok, meta, max_q = p2, cfg2, tok2, meta2, max_q2
     else:
-        new_ex = topic_pairs(fresh)
+        new_ex = topic_pairs(fresh) + [(q, a) for k in weak for q, a in drills[k][0]]
         replay = [(q, a) for q, a, *_ in train_pairs] + topic_pairs([t for t in topics if t not in fresh])
         replay += random.Random(3).sample(math_sets()[0], min(4000, len(math_sets()[0])))   # не разучиться считать
         opt = AdamW(p, lr=args.lr, wd=0.01)
@@ -206,10 +226,14 @@ def main():
             opt.step(p, grads, lr_schedule(step, args.steps, args.lr, max(10, args.steps // 10)))
         log(data, f"дообучение: {args.steps} шагов за {(time.time()-t0)/60:.1f} мин")
         after = exam(p, cfg, tok, max_q, base_tests, topics, base_resp)
-        passed = after["base"] >= before["base"] - args.max_drop and \
-            (after["new"] or 0) >= (before["new"] or 0) and after["new_hits"] > 0 and \
+        after["weak"] = weak_acc(p, cfg, tok, max_q)
+        improved = (fresh and after["new_hits"] > 0) or (weak and after["weak"] > before["weak"])
+        passed = after["base"] >= before["base"] - args.max_drop and improved and \
+            (after["new"] or 0) >= (before["new"] or 0) and \
             (after["math"] or 0) >= (before["math"] or 0) - 0.02
 
+    if weak:
+        log(data, f"слабые типы на спрятанных ПОСЛЕ: {after['weak']*100:.0f}% (было {before['weak']*100:.0f}%)")
     if after.get("math") is not None:
         log(data, f"счёт на невиданных примерах: {after['math']*100:.1f}% (было {(before['math'] or 0)*100:.1f}%)")
     log(data, f"ЭКЗАМЕН ПОСЛЕ: старые {after['base']*100:.1f}% (было {before['base']*100:.1f}%), "
@@ -225,6 +249,11 @@ def main():
     version = publish(data, p, cfg, tok, meta, max_q, after, "full" if args.full else "finetune", len(topics), latest)
     record_progress(data, after, "full" if args.full else "finetune", version, len(topics), n_params(p))
     store.write_json(data / "trained_topics.json", sorted({sig(t) for t in topics}))
+    if weak:                                     # статистику слабых типов начинаем заново — проверим на новых примерах
+        stats = store.read_json(data / "math_stats.json", {})
+        for k in weak:
+            stats[k] = {"ok": 0, "wrong": 0, "examples": [], "drilled": stats.get(k, {}).get("drilled", 0) + 1}
+        store.write_json(data / "math_stats.json", stats)
     log(data, f"опубликована версия {version}: приложение скачает её при следующем запуске")
 
 
