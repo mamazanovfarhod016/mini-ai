@@ -178,19 +178,22 @@
     var cache = txModel.newCache();
     var last = null;
     for (var i = 0; i < ids.length; i++) last = txModel.step(ids[i], i, cache, i === ids.length - 1);
-    var pos = ids.length, chars = [], steps = [];
+    var pos = ids.length, outIds = [], steps = [];
     var block = txModel.cfg.block;
     var fast = !!window.__FAST__;
+    // Пары ids → текст собираем через decode(ВСЕХ id), а не склейкой по одному:
+    // у BPE пробел живёт внутри токена («▁слово»), decode одного токена его срезает.
+    var qIds = ids.slice(1, -1);
 
     function tick() {
-      if (pos >= block) return onDone(chars.join(""), steps);
+      if (pos >= block) return onDone(txModel.decode(outIds), steps);
       var nxt = txModel.pickNext(last.logits, 0);
-      if (nxt === window.MiniTransformer.EOS) return onDone(chars.join(""), steps);
-      var ch = txModel.decode([nxt]);
+      if (nxt === window.MiniTransformer.EOS) return onDone(txModel.decode(outIds), steps);
+      var ch = txModel.piece(nxt);
       var topk = txModel.topK(last.logits, 5);
-      chars.push(ch);
-      steps.push({ ch: ch, attn: last.attn, topk: topk, qLen: qLen });
-      onChar(ch, steps[steps.length - 1], chars.join(""));
+      outIds.push(nxt);
+      steps.push({ ch: ch, attn: last.attn, topk: topk, qLen: qLen, qIds: qIds });
+      onChar(ch, steps[steps.length - 1], txModel.decode(outIds));
       last = txModel.step(nxt, pos, cache, true);
       pos++;
       setTimeout(tick, fast ? 0 : 26 + Math.random() * 24);
@@ -436,7 +439,9 @@
     if (!step || !hm) return;
     var attn = step.attn && step.attn[heatState.layer];   // Float64Array(H * T)
     var qLen = step.qLen;
-    var qChars = Array.from(gen.cleaned);                 // символы вопроса (без <bos>/<sep>)
+    // кусочки вопроса (без <bos>/<sep>): буквы для char-модели, BPE-токены для bpe-модели
+    var qChars = step.qIds ? step.qIds.map(function (id) { return txModel.piece(id).trim() || "␣"; })
+                           : Array.from(gen.cleaned);
     var html = "";
     if (attn) {
       var T = attn.length / txModel.cfg.n_head;

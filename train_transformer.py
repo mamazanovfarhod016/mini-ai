@@ -26,6 +26,7 @@ import math
 import random
 import sys
 import time
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,7 @@ from mini_ai.transformer import (
     export_model, forward, init_params, lr_schedule, n_params, softmax,
     AdamW, loss_and_grads, TIME_TOK, DATE_TOK,
 )
+from mini_ai.bpe import BPETokenizer
 
 ROOT = Path(__file__).resolve().parent
 RU_KEYS = "йцукенгшщзхфывапролджэячсмитьбю"
@@ -78,7 +80,10 @@ def build_pairs(intents, rng, split_seed, test_frac=0.2):
     train_pairs, test_pairs = [], []
     for it in intents:
         patterns = sorted(set(clean_question(p) for p in it["patterns"]))
-        srng = random.Random(split_seed * 1000 + hash(it["tag"]) % 97)
+        # crc32, а не hash(): встроенный hash() строк в Python рандомизируется при
+        # каждом запуске (PYTHONHASHSEED) → раньше train/test-сплит был разным в
+        # каждом прогоне и модели нельзя было честно сравнить (найдено 18.10).
+        srng = random.Random(split_seed * 1000 + zlib.crc32(it["tag"].encode()) % 97)
         srng.shuffle(patterns)
         n_test = max(1, round(len(patterns) * test_frac))
         test_q, train_q = patterns[:n_test], patterns[n_test:]
@@ -169,8 +174,15 @@ def evaluate(model_p, cfg, tok, pairs, max_q, block, batch=48):
     return avg, math.exp(min(avg, 30))
 
 
-def greedy_answer(kv, tok, question, block):
-    ids = tok.prompt(question)
+def build_prompt(tok, question, max_q):
+    """<bos> + вопрос + <sep>, одинаково для CharTokenizer и BPETokenizer
+    (у обоих есть encode(clean_question(text)) -> список id)."""
+    q = tok.encode(clean_question(question))[:max_q]
+    return [BOS] + q + [SEP]
+
+
+def greedy_answer(kv, tok, question, block, max_q=40):
+    ids = build_prompt(tok, question, max_q)
     out, _ = kv.generate(ids, max_new=block - len(ids), temperature=0.0)
     return tok.decode(out)
 
@@ -216,11 +228,11 @@ def intent_of_answer(gen, intents_by_tag):
     return None
 
 
-def intent_accuracy(kv, tok, intents_by_tag, qs, block):
+def intent_accuracy(kv, tok, intents_by_tag, qs, block, max_q=40):
     """qs: список (q, true_tag, lang). Возвращает (доля верных намерений, детали)."""
     hits, details = 0, []
     for q, tag, lang in qs:
-        gen = greedy_answer(kv, tok, q, block)
+        gen = greedy_answer(kv, tok, q, block, max_q)
         pred = intent_of_answer(gen, intents_by_tag)
         ok = pred == tag
         hits += ok
@@ -257,7 +269,8 @@ def main():
     ap.add_argument("--lr", type=float, default=2.5e-3)
     ap.add_argument("--warmup", type=int, default=150)
     ap.add_argument("--drop", type=float, default=0.1)
-    ap.add_argument("--max_q", type=int, default=40)
+    ap.add_argument("--max_q", type=int, default=40,
+                     help="макс. длина вопроса (символов для char, токенов для bpe)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=str(ROOT / "model_transformer.json"))
     ap.add_argument("--quick", action="store_true", help="мало шагов — для smoke-теста")
@@ -271,9 +284,15 @@ def main():
     ap.add_argument("--ckpt_every", type=int, default=1000)
     ap.add_argument("--eval_every", type=int, default=1000,
                      help="как часто (в шагах) считать intent-accuracy на train/test для подбора лучшего чекпойнта")
+    ap.add_argument("--tokenizer", choices=["char", "bpe"], default="char",
+                     help="char — старое посимвольное разбиение (по умолчанию, не ломаем старое поведение); "
+                          "bpe — свой byte-pair encoding токенизатор (mini_ai/bpe.py)")
+    ap.add_argument("--vocab", type=int, default=1000, help="размер словаря BPE (только для --tokenizer bpe)")
     args = ap.parse_args()
     if args.quick:
         args.steps = 40
+    if args.tokenizer == "bpe" and args.max_q == 40:
+        args.max_q = 24   # дефолт в ТОКЕНАХ (не в символах) — короче, т.к. 1 bpe-токен ~ несколько символов
 
     t_start = time.time()
     data = json.loads((ROOT / "data/intents.json").read_text(encoding="utf-8"))
@@ -289,15 +308,39 @@ def main():
     train_aug = augment_pairs(train_pairs, rng_py, n_typo=2)
     print(f"Train-пар с опечатками: {len(train_aug)}")
 
-    # ---------- словарь символов ----------
+    # ---------- словарь: char или bpe ----------
     all_text = []
     for q, a, *_ in train_aug + test_pairs:
         all_text.append(clean_question(q))
         all_text.append(a)
-    chars = set("".join(all_text))
-    tok = CharTokenizer(chars)
-    V = len(tok)
-    print(f"Словарь: {V} символов")
+
+    if args.tokenizer == "bpe":
+        # BPE учим на ВСЁМ корпусе intents.json (все вопросы + все ответы) —
+        # это ОК: словарь токенов — не утечка конкретных train/test ответов,
+        # просто частотная статистика кусков слов на русском/узбекском.
+        bpe_corpus = []
+        for it in intents:
+            for pat in it["patterns"]:
+                bpe_corpus.append(clean_question(pat))
+            for lang, answers in it["responses"].items():
+                for a in answers:
+                    bpe_corpus.append(fill_placeholders(a))
+        tok = BPETokenizer()
+        tok.train(bpe_corpus, vocab_size=args.vocab, verbose=True)
+        V = len(tok)
+        print(f"Словарь BPE: {V} токенов ({len(tok.merges)} слияний)")
+        # block = max(<bos>+вопрос+<sep>+ответ+<eos> в токенах) + запас
+        max_len = 0
+        for q, a, *_ in train_aug + test_pairs:
+            seq_len = 2 + len(tok.encode(clean_question(q))[:args.max_q]) + len(tok.encode(fill_placeholders(a)))
+            max_len = max(max_len, seq_len)
+        args.block = max_len + 4
+        print(f"Максимальная длина последовательности в токенах: {max_len}, block={args.block}")
+    else:
+        chars = set("".join(all_text))
+        tok = CharTokenizer(chars)
+        V = len(tok)
+        print(f"Словарь: {V} символов")
 
     p, cfg = init_params(V, d=args.d, n_layer=args.layers, n_head=args.heads,
                           block=args.block, seed=args.seed)
@@ -362,8 +405,8 @@ def main():
         is_ckpt_step = (step > 0 and step % args.ckpt_every == 0) or step == args.steps - 1
         if is_ckpt_step:
             kv_ckpt = KVModel(p, cfg)
-            train_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, train_qs_eval, args.block)
-            test_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, test_qs_eval, args.block)
+            train_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, train_qs_eval, args.block, args.max_q)
+            test_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, test_qs_eval, args.block, args.max_q)
             elapsed = time.time() - t_start
             msg = (f"[ckpt шаг {step}] train_intent_acc={train_acc*100:.1f}% "
                    f"test_intent_acc={test_acc*100:.1f}% elapsed={elapsed/60:.1f}мин")
@@ -372,7 +415,9 @@ def main():
                                   "elapsed_sec": elapsed})
             meta_ckpt = {"step": step, "train_intent_acc": round(train_acc, 4),
                          "test_intent_acc": round(test_acc, 4), "elapsed_sec": round(elapsed, 1)}
-            out_dict_ckpt = export_model(p, cfg, tok, meta_ckpt)
+            out_dict_ckpt = export_model(p, cfg, tok, meta_ckpt, tokenizer_type=args.tokenizer,
+                                          max_q=args.max_q,
+                                          merges=tok.merges if args.tokenizer == "bpe" else None)
             (ckpt_dir / f"ckpt_step{step}.json").write_text(
                 json.dumps(out_dict_ckpt, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
             # лучший по test — отдельный файл "best.json" (не затираем все промежуточные,
@@ -399,18 +444,18 @@ def main():
 
     # ---------- точность на train/test (greedy): намерение + дословный ответ ----------
     kv = KVModel(p, cfg)
-    train_intent_acc, train_intent_details = intent_accuracy(kv, tok, intents_by_tag, train_qs_eval, args.block)
+    train_intent_acc, train_intent_details = intent_accuracy(kv, tok, intents_by_tag, train_qs_eval, args.block, args.max_q)
     test_qs = test_qs_eval
     exact_hits, soft_dists, examples_log = 0, [], []
     for q, tag, lang in test_qs:
-        gen = greedy_answer(kv, tok, q, args.block)
+        gen = greedy_answer(kv, tok, q, args.block, args.max_q)
         ok = answer_matches(gen, tag, intents_by_tag, lang)
         exact_hits += ok
         soft_dists.append(softest_distance(gen, tag, intents_by_tag, lang))
         examples_log.append({"q": q, "intent": tag, "lang": lang, "answer": gen, "exact": ok})
     exact_acc = exact_hits / max(1, len(test_qs))
     soft_score = 1 - (sum(soft_dists) / max(1, len(soft_dists)))
-    test_intent_acc, _ = intent_accuracy(kv, tok, intents_by_tag, test_qs_eval, args.block)
+    test_intent_acc, _ = intent_accuracy(kv, tok, intents_by_tag, test_qs_eval, args.block, args.max_q)
     print(f"\nTRAIN — доля правильных НАМЕРЕНИЙ (greedy): {train_intent_acc*100:.1f}% "
           f"({sum(d['ok'] for d in train_intent_details)}/{len(train_qs_eval)})")
     print(f"TEST  — доля правильных НАМЕРЕНИЙ (greedy): {test_intent_acc*100:.1f}% "
@@ -437,7 +482,8 @@ def main():
         "responses": {it["tag"]: it["responses"] for it in intents},
         "labels": {it["tag"]: it["description"] for it in intents},
     }
-    out_dict = export_model(p, cfg, tok, meta)
+    out_dict = export_model(p, cfg, tok, meta, tokenizer_type=args.tokenizer, max_q=args.max_q,
+                             merges=tok.merges if args.tokenizer == "bpe" else None)
     text = json.dumps(out_dict, ensure_ascii=False, separators=(",", ":"))
     size_kb = len(text.encode()) / 1024
     print(f"\nmodel_transformer.json: {size_kb:.0f} КБ ({size_kb/1024:.2f} МБ)")
@@ -451,7 +497,7 @@ def main():
     extra = ["превет как дила", "qalaysan do'stim", "кто тбея создал", "расскажи анекдот про программиста",
              "столица франции", "xyzqwrty bla bla", "который час сейчас покажи", "менга hayrli kun"]
     for q in demo_qs + extra:
-        gen = greedy_answer(kv, tok, q, args.block)
+        gen = greedy_answer(kv, tok, q, args.block, args.max_q)
         print(f"  «{q}» → «{gen}»")
         examples_log.append({"q": q, "answer": gen, "demo": True})
 

@@ -491,27 +491,40 @@ def from_f16_b64(s, shape):
     return np.frombuffer(base64.b64decode(s), dtype="<f2").astype(np.float64).reshape(shape)
 
 
-def export_model(p, cfg, tok, meta):
+def export_model(p, cfg, tok, meta, tokenizer_type="char", max_q=None, merges=None):
+    """tokenizer_type: "char" (старое поведение, по умолчанию — не ломаем старые вызовы)
+    или "bpe" (тогда дополнительно сохраняем merges и max_q — в токенах, не в символах)."""
     order = list(p.keys())
-    return {
+    out = {
         "format": "mini-ai-transformer/1",
         "config": cfg,
         "vocab": tok.itos,
-        "max_q": MAX_Q,
+        "max_q": max_q if max_q is not None else MAX_Q,
+        "tokenizer": tokenizer_type,
         "order": order,
         "shapes": {k: list(p[k].shape) for k in order},
         "weights": {k: to_f16_b64(p[k]) for k in order},
         **meta,
     }
+    if tokenizer_type == "bpe":
+        out["merges"] = merges if merges is not None else []
+    return out
 
 
 def load_model(path_or_dict):
+    """Возвращает (p, cfg, tok, meta). tok — CharTokenizer или BPETokenizer
+    (определяется по полю "tokenizer" в JSON; отсутствие поля = старый char-формат)."""
     m = path_or_dict
     if not isinstance(m, dict):
         with open(path_or_dict, encoding="utf-8") as f:
             m = json.load(f)
     p = {k: from_f16_b64(m["weights"][k], m["shapes"][k]) for k in m["order"]}
-    tok = CharTokenizer([])
-    tok.itos = m["vocab"]
-    tok.stoi = {c: i for i, c in enumerate(tok.itos)}
+    tokenizer_type = m.get("tokenizer", "char")
+    if tokenizer_type == "bpe":
+        from mini_ai.bpe import BPETokenizer
+        tok = BPETokenizer.from_dict({"vocab": m["vocab"], "merges": m.get("merges", [])})
+    else:
+        tok = CharTokenizer([])
+        tok.itos = m["vocab"]
+        tok.stoi = {c: i for i, c in enumerate(tok.itos)}
     return p, m["config"], tok, m

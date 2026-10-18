@@ -110,6 +110,7 @@
     this.m = m;
     this.cfg = m.config;
     this.vocab = m.vocab;
+    this.tokenizerType = m.tokenizer || "char";
     this.stoi = {};
     for (var i = 0; i < this.vocab.length; i++) this.stoi[this.vocab[i]] = i;
     this.maxQ = m.max_q;
@@ -118,9 +119,16 @@
       var key = m.order[k];
       this.p[key] = reshape(base64ToF16Array(m.weights[key]), m.shapes[key]);
     }
+    if (this.tokenizerType === "bpe") {
+      // BPETokenizer из bpe.js (должен быть загружен ДО этого файла)
+      var MiniAIBPE = (typeof window !== "undefined" && window.MiniAIBPE) ||
+                       (typeof require !== "undefined" ? require("./bpe.js") : null);
+      this.bpe = new MiniAIBPE.BPETokenizer({ vocab: m.vocab, merges: m.merges || [] });
+    }
   }
 
   TransformerModel.prototype.encode = function (s) {
+    if (this.tokenizerType === "bpe") return this.bpe.encode(s);
     var out = [];
     for (var i = 0; i < s.length; i++) {
       var id = this.stoi[s[i]];
@@ -130,6 +138,7 @@
   };
 
   TransformerModel.prototype.decode = function (ids) {
+    if (this.tokenizerType === "bpe") return this.bpe.decode(ids);
     var out = "";
     for (var i = 0; i < ids.length; i++) {
       if (ids[i] >= SPECIALS.length) out += this.vocab[ids[i]];
@@ -243,8 +252,14 @@
     idx.sort(function (a, b) { return probs[b] - probs[a]; });
     var self = this;
     return idx.slice(0, k).map(function (i) {
-      return { ch: i < SPECIALS.length ? SPECIALS[i] : self.vocab[i], p: probs[i] };
+      return { ch: i < SPECIALS.length ? SPECIALS[i] : self.piece(i), p: probs[i] };
     });
+  };
+
+  // Как токен выглядит на экране: для BPE «▁при» → « при» (▁ = начало слова), для char — сам символ.
+  TransformerModel.prototype.piece = function (id) {
+    var s = this.vocab[id] || "";
+    return this.tokenizerType === "bpe" ? s.split("\u2581").join(" ") : s;
   };
 
   /*
