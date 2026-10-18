@@ -41,6 +41,7 @@ os.makedirs("/kaggle/working/w", exist_ok=True)
 os.chdir("/kaggle/working/w")
 tarfile.open(fileobj=io.BytesIO(base64.b64decode(BUNDLE)), mode="r:gz").extractall(".")
 print("CPU:", os.cpu_count(), flush=True)
+print("kaggle input:", os.listdir("/kaggle/input") if os.path.exists("/kaggle/input") else "НЕТ /kaggle/input", flush=True)
 
 def run(cmd):
     print("$", " ".join(cmd), flush=True)
@@ -60,9 +61,24 @@ if BUILD_DATA:
     if not os.path.exists("data/parallel.json"):
         run([sys.executable, "tools/make_parallel.py"])
     run([sys.executable, "tools/make_python_tasks.py"])
+else:
+    # smoke-режим: не тратим время на полный корпус/генераторы — крошечный текст для проверки
+    os.makedirs("data/corpus", exist_ok=True)
+    if not os.path.exists("data/corpus/ru.txt"):
+        with open("data/corpus/ru.txt", "w", encoding="utf-8") as f:
+            f.write("привет мир\nкак дела у тебя\nсолнце светит ярко\n")
 
 t = time.time()
-cmd = [sys.executable, "train_curriculum.py", "--init", INIT_PATH, "--out", "/kaggle/working/out",
+init_path = INIT_PATH
+if not os.path.exists(init_path):
+    # fallback: искать model.json в любом примонтированном датасете (имя датасета могло
+    # не совпасть, например из-за задержки версии)
+    for root, dirs, fs in os.walk("/kaggle/input"):
+        if "model.json" in fs:
+            init_path = os.path.join(root, "model.json")
+            print("INIT_PATH не найден, использую", init_path, flush=True)
+            break
+cmd = [sys.executable, "train_curriculum.py", "--init", init_path, "--out", "/kaggle/working/out",
        "--ckpt_minutes", str(CKPT_MINUTES)]
 if PLAN_JSON:
     with open("plan.json", "w") as f:
@@ -161,9 +177,12 @@ def main():
     ap.add_argument("--smoke", action="store_true", help="крошечный smoke-прогон (CPU, малый план)")
     a = ap.parse_args()
     if a.smoke:
+        # лёгкий smoke: НЕ строим полный корпус/генераторы на Kaggle (это долго для нашего
+        # предварительного прогона) — используем крошечный встроенный текст, который
+        # раннер сам пишет в data/corpus/ru.txt перед запуском train_curriculum.py.
         tiny_plan = {
-            "init_model": a.init, "target_vocab": 20,
-            "arch": {"d": 16, "n_layer": 2, "n_head": 2, "block": 64, "pos": "rope"},
+            "init_model": a.init, "target_vocab": 1210,
+            "arch": {"d": 192, "n_layer": 6, "n_head": 8, "block": 224, "pos": "rope"},
             "time_budget_hours": 0.01,
             "stages": [
                 {"name": "read", "max_len": 16, "token_budget": 64, "lr": 1e-3, "warmup": 2,
@@ -174,7 +193,7 @@ def main():
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(tiny_plan, f, ensure_ascii=False)
             a.plan = f.name
-        a.build_data = True
+        a.build_data = False
         a.cpu = True
         a.steps_override = 3
     run(a.init, a.out, a.plan, gpu=not a.cpu, build_data=a.build_data, ckpt_minutes=a.ckpt_minutes,
