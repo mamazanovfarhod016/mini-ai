@@ -131,6 +131,11 @@ def run(init, out, plan=None, gpu=True, build_data=True, ckpt_minutes=15, steps_
     files = [
         (ROOT / "mini_ai", "mini_ai"), (ROOT / "server", "server"), (ROOT / "tools", "tools"),
         (ROOT / "train_curriculum.py", "train_curriculum.py"),
+        # make_intents_pairs.py импортирует train_transformer и читает data/intents.json
+        (ROOT / "train_transformer.py", "train_transformer.py"),
+        (ROOT / "data" / "intents.json", "data/intents.json"),
+        # make_parallel.py на Kaggle падает без кэша корпуса → берём готовый parallel.json
+        (ROOT / "data" / "parallel.json", "data/parallel.json"),
     ]
     plan_json = Path(plan).read_text(encoding="utf-8") if plan else ""
     b64 = bundle(files)
