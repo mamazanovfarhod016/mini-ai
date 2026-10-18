@@ -198,6 +198,12 @@ def main():
     ap.add_argument("--replay", default=str(ROOT / "data/replay_pairs.json"))
     ap.add_argument("--build", action="store_true", help="поднять версию и пересобрать APK")
     ap.add_argument("--dry-run", action="store_true", help="только метрики ДО, без обучения (проверка файла)")
+    ap.add_argument("--apply", action="store_true",
+                     help="ОПАСНО: перезаписать основной model_transformer.json. Без этого флага "
+                          "веса сохраняются в отдельный файл (--out-model), основная модель не трогается "
+                          "(18.10: прошлый агент испортил веса, запустив teach.py без этой защиты).")
+    ap.add_argument("--out-model", default=str(ROOT / "model_transformer.teach.json"),
+                     help="куда сохранить дообученные веса, если не указан --apply")
     args = ap.parse_args()
 
     if not MODEL_PATH.exists():
@@ -275,13 +281,21 @@ def main():
     meta["finetune_steps"] = args.steps
     out_dict = export_model(p, cfg, tok, meta)
     text = json.dumps(out_dict, ensure_ascii=False, separators=(",", ":"))
-    MODEL_PATH.write_text(text, encoding="utf-8")
-    (ROOT / "app/www/model_transformer.js").write_text(
-        "window.MINI_AI_TRANSFORMER=" + text + ";\n", encoding="utf-8")
-    print(f"\nВеса сохранены: {MODEL_PATH} ({len(text)/1024:.0f} КБ)")
+    save_path = MODEL_PATH if args.apply else Path(args.out_model)
+    save_path.write_text(text, encoding="utf-8")
+    if args.apply:
+        (ROOT / "app/www/model_transformer.js").write_text(
+            "window.MINI_AI_TRANSFORMER=" + text + ";\n", encoding="utf-8")
+        print(f"\nВеса сохранены (--apply): {save_path} ({len(text)/1024:.0f} КБ) + app/www/model_transformer.js")
+    else:
+        print(f"\nВеса сохранены В ОТДЕЛЬНЫЙ ФАЙЛ (основная модель НЕ тронута): "
+              f"{save_path} ({len(text)/1024:.0f} КБ)")
+        print("Чтобы применить к основной модели и приложению, перезапусти с флагом --apply.")
 
     # ---------- 7. сборка APK ----------
-    if args.build:
+    if args.build and not args.apply:
+        print("\n--build без --apply игнорируется: основная модель не менялась, APK пересобирать нет смысла.")
+    elif args.build:
         (old_code, old_name), (new_code, new_name) = bump_version(MANIFEST_PATH)
         print(f"\nВерсия приложения: {old_name} ({old_code}) → {new_name} ({new_code})")
         print("Пересборка APK (android/build.sh)…")

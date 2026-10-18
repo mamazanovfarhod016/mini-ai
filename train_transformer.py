@@ -33,7 +33,7 @@ import numpy as np
 from mini_ai.transformer import (
     BOS, EOS, PAD, SEP, CharTokenizer, KVModel, clean_question, clip_grads,
     export_model, forward, init_params, lr_schedule, n_params, softmax,
-    AdamW, loss_and_grads,
+    AdamW, loss_and_grads, TIME_TOK, DATE_TOK,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -101,17 +101,18 @@ def augment_pairs(pairs, rng, n_typo=2):
     return out
 
 
-PLACEHOLDER_TIME = ["08:15", "12:40", "19:05", "23:50", "06:30", "14:22"]
-PLACEHOLDER_DATE = ["17.10.2026", "01.01.2027", "23.05.2026", "09.09.2026"]
+def fill_placeholders(answer, rng=None):
+    """{time}/{date} заменяем на ОДИН фиксированный символ-сентинел (TIME_TOK/DATE_TOK).
 
-
-def fill_placeholders(answer, rng):
-    """{time}/{date} заменяем на случайные конкретные значения — модель учится
-    копировать ЧИСЛА из спецтокена-плейсхолдера, а не запоминать одно число.
-    На инференсе JS/Python сами вставляют час/дату с устройства — модель здесь
-    просто видит текст с уже подставленным (случайным на обучении) значением."""
-    answer = answer.replace("{time}", rng.choice(PLACEHOLDER_TIME))
-    answer = answer.replace("{date}", rng.choice(PLACEHOLDER_DATE))
+    ДИАГНОСТИКА (18.10): раньше сюда подставлялись случайные конкретные значения
+    ("08:15", "17.10.2026", ...) — модели приходилось угадывать произвольные цифры,
+    и на инференсе она их выдумывала («сегодня 0.0.2026»). Теперь модель учится
+    писать один и тот же символ-плейсхолдер — задача детерминирована и простая,
+    а настоящие дату/время подставляет приложение ПОСЛЕ генерации
+    (fill_placeholders_runtime в Python, fillPlaceholders в app.js), по этим же
+    символам TIME_TOK/DATE_TOK."""
+    answer = answer.replace("{time}", TIME_TOK)
+    answer = answer.replace("{date}", DATE_TOK)
     return answer
 
 
@@ -175,17 +176,16 @@ def greedy_answer(kv, tok, question, block):
 
 
 def answer_matches(generated, intent_tag, intents_by_tag, lang):
-    """Точная метрика: дословное совпадение с одним из эталонных ответов намерения."""
+    """Точная метрика: дословное совпадение с одним из эталонных ответов намерения.
+    {time}/{date} в эталоне заменяем на тот же сентинел TIME_TOK/DATE_TOK, который
+    видела модель при обучении (fill_placeholders) — сравнение становится точным,
+    без всяких «префиксов» (раньше плейсхолдер был случайным числом, теперь он
+    фиксированный символ, который модель обязана воспроизвести буквально)."""
     gold = intents_by_tag[intent_tag]["responses"].get(lang) or intents_by_tag[intent_tag]["responses"].get("ru")
-    gold_clean = [g.replace("{time}", "").replace("{date}", "").strip() for g in gold]
-    # т.к. плейсхолдеры заменены случайными значениями при обучении, сравниваем
-    # префикс/суффикс без динамической части
     gen = generated.strip()
     for g in gold:
-        g_pref = g.split("{")[0].strip()
-        if gen == g.strip():
-            return True
-        if g_pref and gen.startswith(g_pref) and ("{time}" in g or "{date}" in g):
+        g_filled = g.replace("{time}", TIME_TOK).replace("{date}", DATE_TOK).strip()
+        if gen == g_filled:
             return True
     return False
 
@@ -194,10 +194,38 @@ def softest_distance(generated, intent_tag, intents_by_tag, lang):
     """Мягкая метрика: нормированное расстояние Левенштейна до БЛИЖАЙШЕГО эталонного
     ответа правильного намерения (0 = идеально совпал, 1 = совсем не похож)."""
     gold = intents_by_tag[intent_tag]["responses"].get(lang) or intents_by_tag[intent_tag]["responses"].get("ru")
+    gold = [g.replace("{time}", TIME_TOK).replace("{date}", DATE_TOK) for g in gold]
     best = 1.0
     for g in gold:
         best = min(best, levenshtein(generated, g) / max(1, max(len(generated), len(g))))
     return best
+
+
+def intent_of_answer(gen, intents_by_tag):
+    """Какому намерению соответствует сгенерированный текст (точное совпадение
+    с любым эталонным ответом любого намерения, любого языка). Используется для
+    метрики «процент правильных НАМЕРЕНИЙ» — более честной, чем просто exact-match,
+    т.к. показывает, понимает ли модель СМЫСЛ вопроса (а не просто зазубрила фразу)."""
+    gen_s = gen.strip()
+    for tag, it in intents_by_tag.items():
+        for lang, answers in it["responses"].items():
+            for g in answers:
+                g_filled = g.replace("{time}", TIME_TOK).replace("{date}", DATE_TOK).strip()
+                if gen_s == g_filled:
+                    return tag
+    return None
+
+
+def intent_accuracy(kv, tok, intents_by_tag, qs, block):
+    """qs: список (q, true_tag, lang). Возвращает (доля верных намерений, детали)."""
+    hits, details = 0, []
+    for q, tag, lang in qs:
+        gen = greedy_answer(kv, tok, q, block)
+        pred = intent_of_answer(gen, intents_by_tag)
+        ok = pred == tag
+        hits += ok
+        details.append({"q": q, "intent": tag, "lang": lang, "answer": gen, "pred": pred, "ok": ok})
+    return hits / max(1, len(qs)), details
 
 
 def levenshtein(a, b):
@@ -233,6 +261,16 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=str(ROOT / "model_transformer.json"))
     ap.add_argument("--quick", action="store_true", help="мало шагов — для smoke-теста")
+    ap.add_argument("--balanced", action="store_true", default=True,
+                     help="сэмплировать батчи СБАЛАНСИРОВАННО по намерениям (по умолчанию включено — "
+                          "диагностика 18.10 показала, что случайная выборка по парам даёт разным "
+                          "намерениям разный вес, из-за чего редкие намерения недообучены)")
+    ap.add_argument("--no-balanced", dest="balanced", action="store_false")
+    ap.add_argument("--ckpt_dir", default="/tmp/mini-ai-ckpt",
+                     help="папка для чекпойнтов (на случай обрыва длинного обучения)")
+    ap.add_argument("--ckpt_every", type=int, default=1000)
+    ap.add_argument("--eval_every", type=int, default=1000,
+                     help="как часто (в шагах) считать intent-accuracy на train/test для подбора лучшего чекпойнта")
     args = ap.parse_args()
     if args.quick:
         args.steps = 40
@@ -272,9 +310,44 @@ def main():
 
     examples = [(q, a) for q, a, *_ in train_aug]
     n = len(examples)
+
+    # ---------- сбалансированное сэмплирование по намерениям ----------
+    # Диагностика (18.10): случайная выборка по ПАРАМ даёт намерениям с бОльшим
+    # числом готовых ответов (responses) больше представленности в батчах, чем
+    # намерениям с малым числом ответов — хотя по СМЫСЛУ все намерения равноважны.
+    # Сбалансированная схема: на каждом шаге сначала равновероятно выбираем
+    # намерение (28 штук), затем равновероятно — один из его train-примеров.
+    by_tag = {}
+    for i, (q, a, tag, lang) in enumerate(train_aug):
+        by_tag.setdefault(tag, []).append(i)
+    tags_list = sorted(by_tag.keys())
+    tag_arrays = {t: np.array(idxs) for t, idxs in by_tag.items()}
+    print(f"Сбалансированное сэмплирование: {'ВКЛ' if args.balanced else 'выкл'} "
+          f"({len(tags_list)} намерений)")
+
+    def sample_batch_idxs(batch_size):
+        if not args.balanced:
+            return np_rng.integers(0, n, size=batch_size)
+        chosen_tags = np_rng.choice(tags_list, size=batch_size, replace=True)
+        out = np.empty(batch_size, dtype=np.int64)
+        for i, t in enumerate(chosen_tags):
+            arr = tag_arrays[t]
+            out[i] = arr[np_rng.integers(0, len(arr))]
+        return out
+
+    # ---------- уникальные train/test вопросы для intent-accuracy во время обучения ----------
+    train_qs_eval = sorted({(q, tag, lang) for q, a, tag, lang in train_pairs})
+    test_qs_eval = sorted({(q, tag, lang) for q, a, tag, lang in test_pairs})
+
+    ckpt_dir = Path(args.ckpt_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    best_test_acc = -1.0
+    best_step = -1
+    progress_log = []
+
     log_every = max(1, args.steps // 20)
     for step in range(args.steps):
-        idxs = np_rng.integers(0, n, size=args.batch)
+        idxs = sample_batch_idxs(args.batch)
         batch_examples = [examples[i] for i in idxs]
         idx, targets, mask = make_batch(tok, batch_examples, args.max_q, args.block, np_rng)
         lr = lr_schedule(step, args.steps, args.lr, args.warmup)
@@ -284,20 +357,50 @@ def main():
         if step % log_every == 0 or step == args.steps - 1:
             elapsed = time.time() - t_start
             print(f"  шаг {step:5d}/{args.steps}  loss={loss:.3f}  lr={lr:.5f}  "
-                  f"||grad||={gnorm:.2f}  {elapsed:.0f}с")
+                  f"||grad||={gnorm:.2f}  {elapsed:.0f}с", flush=True)
+
+        is_ckpt_step = (step > 0 and step % args.ckpt_every == 0) or step == args.steps - 1
+        if is_ckpt_step:
+            kv_ckpt = KVModel(p, cfg)
+            train_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, train_qs_eval, args.block)
+            test_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, test_qs_eval, args.block)
+            elapsed = time.time() - t_start
+            msg = (f"[ckpt шаг {step}] train_intent_acc={train_acc*100:.1f}% "
+                   f"test_intent_acc={test_acc*100:.1f}% elapsed={elapsed/60:.1f}мин")
+            print(msg, flush=True)
+            progress_log.append({"step": step, "train_intent_acc": train_acc, "test_intent_acc": test_acc,
+                                  "elapsed_sec": elapsed})
+            meta_ckpt = {"step": step, "train_intent_acc": round(train_acc, 4),
+                         "test_intent_acc": round(test_acc, 4), "elapsed_sec": round(elapsed, 1)}
+            out_dict_ckpt = export_model(p, cfg, tok, meta_ckpt)
+            (ckpt_dir / f"ckpt_step{step}.json").write_text(
+                json.dumps(out_dict_ckpt, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            # лучший по test — отдельный файл "best.json" (не затираем все промежуточные,
+            # чтобы прогресс не терялся при обрыве; но держим явный указатель на лучший)
+            if test_acc > best_test_acc:
+                best_test_acc = test_acc
+                best_step = step
+                (ckpt_dir / "best.json").write_text(
+                    json.dumps(out_dict_ckpt, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                print(f"  -> новый лучший чекпойнт (test_intent_acc={test_acc*100:.1f}%)", flush=True)
+            (ckpt_dir / "progress.json").write_text(
+                json.dumps({"progress": progress_log, "best_step": best_step, "best_test_acc": best_test_acc},
+                           ensure_ascii=False, indent=1), encoding="utf-8")
 
     train_time = time.time() - t_start
     print(f"\nОбучение заняло {train_time/60:.1f} мин")
+    print(f"Лучший чекпойнт по test_intent_acc: шаг {best_step}, {best_test_acc*100:.1f}%")
 
-    # ---------- метрики train/test ----------
+    # ---------- метрики train/test (loss/perplexity) ----------
     train_loss, train_ppl = evaluate(p, cfg, tok, train_pairs, args.max_q, args.block)
     test_loss, test_ppl = evaluate(p, cfg, tok, test_pairs, args.max_q, args.block)
     print(f"Train: loss={train_loss:.3f}  perplexity={train_ppl:.2f}")
     print(f"Test:  loss={test_loss:.3f}  perplexity={test_ppl:.2f}")
 
-    # ---------- точность на НЕВИДЕННЫХ тестовых вопросах (greedy) ----------
+    # ---------- точность на train/test (greedy): намерение + дословный ответ ----------
     kv = KVModel(p, cfg)
-    test_qs = sorted({(q, tag, lang) for q, a, tag, lang in test_pairs})
+    train_intent_acc, train_intent_details = intent_accuracy(kv, tok, intents_by_tag, train_qs_eval, args.block)
+    test_qs = test_qs_eval
     exact_hits, soft_dists, examples_log = 0, [], []
     for q, tag, lang in test_qs:
         gen = greedy_answer(kv, tok, q, args.block)
@@ -307,7 +410,12 @@ def main():
         examples_log.append({"q": q, "intent": tag, "lang": lang, "answer": gen, "exact": ok})
     exact_acc = exact_hits / max(1, len(test_qs))
     soft_score = 1 - (sum(soft_dists) / max(1, len(soft_dists)))
-    print(f"\nТочная метрика (greedy-ответ дословно совпал с эталоном намерения): "
+    test_intent_acc, _ = intent_accuracy(kv, tok, intents_by_tag, test_qs_eval, args.block)
+    print(f"\nTRAIN — доля правильных НАМЕРЕНИЙ (greedy): {train_intent_acc*100:.1f}% "
+          f"({sum(d['ok'] for d in train_intent_details)}/{len(train_qs_eval)})")
+    print(f"TEST  — доля правильных НАМЕРЕНИЙ (greedy): {test_intent_acc*100:.1f}% "
+          f"({int(round(test_intent_acc*len(test_qs_eval)))}/{len(test_qs_eval)})")
+    print(f"Точная метрика (greedy-ответ дословно совпал с эталоном намерения): "
           f"{exact_acc*100:.1f}% ({exact_hits}/{len(test_qs)})")
     print(f"Мягкая метрика (1 − норм. расстояние Левенштейна до ближайшего эталона): "
           f"{soft_score*100:.1f}%")
@@ -318,10 +426,14 @@ def main():
         "test_loss": round(test_loss, 4), "test_ppl": round(test_ppl, 3),
         "test_exact_accuracy": round(exact_acc, 4),
         "test_soft_score": round(soft_score, 4),
+        "train_intent_accuracy": round(train_intent_acc, 4),
+        "test_intent_accuracy": round(test_intent_acc, 4),
         "n_params": n_params(p),
         "train_time_sec": round(train_time, 1),
         "train_pairs": len(train_pairs), "train_pairs_aug": len(train_aug),
         "test_pairs": len(test_pairs), "test_questions": len(test_qs),
+        "balanced_sampling": args.balanced,
+        "best_ckpt_step": best_step, "best_ckpt_test_intent_acc": round(best_test_acc, 4),
         "responses": {it["tag"]: it["responses"] for it in intents},
         "labels": {it["tag"]: it["description"] for it in intents},
     }
@@ -350,10 +462,16 @@ def main():
         f.write(f"Mini AI v0.2 — лог обучения трансформера\n")
         f.write(f"Архитектура: d={args.d}, layers={args.layers}, heads={args.heads}, "
                 f"block={args.block}, params={n_params(p):,}\n")
-        f.write(f"Время обучения: {train_time/60:.1f} мин ({args.steps} шагов, batch={args.batch})\n")
+        f.write(f"Время обучения: {train_time/60:.1f} мин ({args.steps} шагов, batch={args.batch}, "
+                f"сбалансированное сэмплирование={'да' if args.balanced else 'нет'})\n")
+        f.write(f"Лучший чекпойнт по test_intent_acc: шаг {best_step}, {best_test_acc*100:.1f}%\n")
         f.write(f"Train: loss={train_loss:.3f} ppl={train_ppl:.2f}\n")
         f.write(f"Test:  loss={test_loss:.3f} ppl={test_ppl:.2f}\n")
-        f.write(f"Точная метрика (exact match): {exact_acc*100:.1f}% ({exact_hits}/{len(test_qs)})\n")
+        f.write(f"TRAIN — доля правильных НАМЕРЕНИЙ (greedy): {train_intent_acc*100:.1f}% "
+                f"({sum(d['ok'] for d in train_intent_details)}/{len(train_qs_eval)})\n")
+        f.write(f"TEST  — доля правильных НАМЕРЕНИЙ (greedy): {test_intent_acc*100:.1f}% "
+                f"({int(round(test_intent_acc*len(test_qs_eval)))}/{len(test_qs_eval)})\n")
+        f.write(f"Точная метрика (exact match, дословно): {exact_acc*100:.1f}% ({exact_hits}/{len(test_qs)})\n")
         f.write(f"Мягкая метрика (1-Levenshtein): {soft_score*100:.1f}%\n")
         f.write(f"Размер model_transformer.json: {size_kb:.0f} КБ\n\n")
         f.write("Примеры (вопрос → ответ, невиденные тестовые вопросы):\n")

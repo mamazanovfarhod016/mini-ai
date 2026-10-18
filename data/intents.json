@@ -249,7 +249,13 @@
     "ishlaring qalay bot",
     "qalaysiz do'stim",
     "nima gap do'stim",
-    "как дела ничего"
+    "как дела ничего",
+    "что с тобой",
+    "что с тобой такое",
+    "что случилось с тобой",
+    "что с тобой происходит",
+    "senga nima bo'ldi",
+    "sizga nima bo'ldi"
    ],
    "responses": {
     "ru": [
@@ -1134,7 +1140,11 @@
     "soat nechi bo'ldi",
     "hozir soat necha bot",
     "vaqt qancha bot",
-    "hozir vaqt necha"
+    "hozir vaqt necha",
+    "скажи мне время",
+    "время покажи",
+    "который час покажи",
+    "скажи время пожалуйста"
    ],
    "responses": {
     "ru": [
@@ -1204,7 +1214,11 @@
     "sana nechchi",
     "bugun sana qanday",
     "hozir qaysi yil",
-    "qaysi yil"
+    "qaysi yil",
+    "дата какая",
+    "какой сейчас день",
+    "число какое",
+    "какое сегодня число покажи"
    ],
    "responses": {
     "ru": [
@@ -2047,7 +2061,16 @@
     "yangiliklar",
     "osh qanday pishiriladi",
     "qora tuynuk nima",
-    "nega osmon ko'k"
+    "nega osmon ko'k",
+    "почему",
+    "но почему",
+    "почему это",
+    "почему так",
+    "объясни почему",
+    "скажи почему",
+    "nega",
+    "nimaga",
+    "sababi nima"
    ],
    "responses": {
     "ru": [
@@ -2059,6 +2082,46 @@
      "Men hali kichkina neyron tarmoqman va buni bilmayman 🙈 Oddiyroq so'rang: «salom», «qalaysan».",
      "Bu men uchun juda murakkab. Oddiyroq narsa so'rang 🙂",
      "Rostini aytsam: bilmayman. Men kichkina oflayn tarmoqman."
+    ]
+   }
+  },
+  {
+   "tag": "wrong_feedback",
+   "description": "пользователь говорит, что ответ неправильный",
+   "patterns": [
+    "неправильно",
+    "не так",
+    "это неправильно",
+    "ты ошибся",
+    "неверно",
+    "ты не прав",
+    "ошибка",
+    "это не так",
+    "ты ответил неправильно",
+    "это неверный ответ",
+    "ты всё перепутал",
+    "не угадал",
+    "не то",
+    "ответ неверный",
+    "это не то",
+    "noto'g'ri",
+    "xato",
+    "sen xato qilding",
+    "bu noto'g'ri",
+    "bu xato javob",
+    "noto'g'ri javob berdiin",
+    "aynan emas"
+   ],
+   "responses": {
+    "ru": [
+     "Извини, я ещё учусь и иногда ошибаюсь 🙈 Попробуй спросить проще или по-другому.",
+     "Понял, что ошиблась. Фарход меня ещё дообучает — спасибо, что подсказал!",
+     "Прости, не угадала. Попробуй переформулировать вопрос."
+    ],
+    "uz": [
+     "Kechirasiz, men hali o'rganayapman va ba'zan xato qilaman 🙈 Savolni soddaroq yozing.",
+     "Tushundim, xato qildim. Farhod meni hali o'rgatayapti — maslahat uchun rahmat!",
+     "Kechirasiz, to'g'ri topolmadim. Savolni boshqacha yozib ko'ring."
     ]
    }
   }

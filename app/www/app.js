@@ -198,11 +198,18 @@
     tick();
   }
 
+  // Сентинелы даты/времени: модель трансформера (v0.2) обучена писать ОДИН фиксированный
+  // символ-плейсхолдер вместо реальных цифр (баг-фикс 18.10: раньше она должна была сама
+  // «угадывать» произвольные цифры и иногда выдумывала их — «сегодня 0.0.2026»).
+  // Эти символы должны совпадать с TIME_TOK/DATE_TOK в mini_ai/transformer.py.
+  var TIME_TOK = "\u2460";   // ①
+  var DATE_TOK = "\u2461";   // ②
+
   function fillPlaceholders(text, now) {
     function pad(n) { return (n < 10 ? "0" : "") + n; }
     return text
-      .replace("{time}", pad(now.getHours()) + ":" + pad(now.getMinutes()))
-      .replace("{date}", pad(now.getDate()) + "." + pad(now.getMonth() + 1) + "." + now.getFullYear());
+      .split(TIME_TOK).join(pad(now.getHours()) + ":" + pad(now.getMinutes()))
+      .split(DATE_TOK).join(pad(now.getDate()) + "." + pad(now.getMonth() + 1) + "." + now.getFullYear());
   }
 
   function ask(text) {

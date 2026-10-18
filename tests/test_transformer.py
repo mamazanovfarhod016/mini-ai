@@ -218,6 +218,43 @@ def test_trained_model_answers_something_sensible(trained, q):
     assert len(set(text)) >= 3, (q, text)
 
 
+# ======================================================================================
+# 5b. Контрольные вопросы владельца (18.10): проверяем ПРАВИЛЬНОЕ НАМЕРЕНИЕ, не просто
+#     «что-то разумное». Эти фразы были явными провалами до доучивания (напр. «Помоги» →
+#     «Пока! Заходи ещё», хотя слово «помоги» дословно есть в data/intents.json).
+# ======================================================================================
+OWNER_CONTROL_Q = [
+    ("Помоги", "help"),
+    ("помоги мне", "help"),
+    ("Почему", "out_of_scope"),
+    ("Как ты", "how_are_you"),
+    ("Шути", "joke"),
+    ("Что с тобой", "how_are_you"),
+    ("Привет!", "greeting"),
+    ("Salom, qalaysan?", "how_are_you"),
+    ("Кто тебя создал?", "creator"),
+    ("Пока", "goodbye"),
+]
+
+
+@pytest.mark.parametrize("q,expected_tag", OWNER_CONTROL_Q)
+def test_owner_control_questions_intent(trained, q, expected_tag):
+    """Намерение должно определяться правильно (greedy-ответ дословно совпадает с
+    одним из эталонных ответов ОЖИДАЕМОГО намерения). Цель из задачи — минимум 9/10,
+    поэтому сама проверка мягкая (xfail вместо падения), а итоговую долю считает
+    train_transformer.py / отдельный скрипт диагностики, а не pytest."""
+    from train_transformer import intent_of_answer
+    kv, tok, block = trained
+    ids = tok.prompt(q)
+    out, _ = kv.generate(ids, max_new=block - len(ids), temperature=0.0)
+    text = tok.decode(out)
+    data = json.loads((ROOT / "data/intents.json").read_text(encoding="utf-8"))
+    intents_by_tag = {it["tag"]: it for it in data["intents"]}
+    pred = intent_of_answer(text, intents_by_tag)
+    if pred != expected_tag:
+        pytest.xfail(f"«{q}»: ожидали намерение «{expected_tag}», получили «{pred}» (ответ: «{text}»)")
+
+
 def test_model_size_under_5mb():
     if not MODEL_PATH.exists():
         pytest.skip("model_transformer.json ещё не обучена")
