@@ -303,7 +303,62 @@
 
   function progress() { return call("/api/progress"); }
 
+  // ---------- арифметика: считаем сами, а не «учим» ----------
+  // «1+2», «1+2=», «сколько будет 7*8», «5 плюс 3», «12 / 4», «2+2=4?» → просто «3», «56», «8»…
+  // Нейронке такое учить бессмысленно (бесконечно много примеров), калькулятор точен всегда.
+  var WORD_OPS = [[/(умножить|умножь|умноженное)\s+на|ko'paytir(ilsa|sa)?|×|x(?=\s*\d)|х(?=\s*\d)/g, "*"],
+                  [/(разделить|раздели|делить|делённое|деленное)\s+на|bo'lin(sa|gan)?|÷|:/g, "/"],
+                  [/плюс|qo'sh(ilsa|sa)?/g, "+"], [/минус|ayir(ilsa|sa)?/g, "-"]];
+  function mathAnswer(text, lang) {
+    var t = String(text).toLowerCase().replace(/ё/g, "е").replace(/[’ʻʼ`]/g, "'").replace(/,(?=\d)/g, ".");
+    t = t.replace(/^(а\s+)?(сколько|скок)\s+(будет|равно|получится)\s*|^(посчитай|вычисли|реши)\s*|^(nechchi|necha)\s+(bo'ladi)?\s*/, "");
+    t = t.replace(/\s*(сколько|nechchi|necha|bo'ladi|будет)\s*\??$/, "");
+    WORD_OPS.forEach(function (r) { t = t.replace(r[0], r[1]); });
+    t = t.replace(/[?!\s]+$/, "");
+    var claim = /=\s*(-?\d+(\.\d+)?)$/.exec(t);          // «2+2=5» — пользователь сам написал ответ
+    t = t.replace(/=\s*-?\d*(\.\d+)?$/, "").replace(/\s+/g, "");
+    if (!/^[\d.+\-*/()]+$/.test(t) || !/\d[+\-*/]|\)[+\-*/]/.test(t) || !/[+\-*/]\(?-?\d/.test(t)) return null;
+    var i = 0;
+    function num() {
+      var m = /^\d+(\.\d+)?/.exec(t.slice(i));
+      if (!m) throw 0;
+      i += m[0].length; return parseFloat(m[0]);
+    }
+    function atom() {
+      if (t[i] === "-") { i++; return -atom(); }
+      if (t[i] === "(") { i++; var v = sum(); if (t[i++] !== ")") throw 0; return v; }
+      return num();
+    }
+    function prod() {
+      var v = atom();
+      while (t[i] === "*" || t[i] === "/") {
+        var op = t[i++], r = atom();
+        if (op === "/" && r === 0) throw "zero";
+        v = op === "*" ? v * r : v / r;
+      }
+      return v;
+    }
+    function sum() {
+      var v = prod();
+      while (t[i] === "+" || t[i] === "-") { var op = t[i++]; v = op === "+" ? v + prod() : v - prod(); }
+      return v;
+    }
+    try {
+      var v = sum();
+      if (i !== t.length || !isFinite(v)) return null;
+      var r = Math.round(v * 1e6) / 1e6;
+      var s = lang === "uz" ? String(r) : String(r).replace(".", ",");
+      if (claim) return parseFloat(claim[1]) === r ? (lang === "uz" ? "To'g'ri, " : "Верно, ") + s + "."
+                                                   : (lang === "uz" ? "Yo'q, " : "Нет, будет ") + s + ".";
+      return s;
+    } catch (e) {
+      if (e === "zero") return lang === "uz" ? "Nolga bo'lib bo'lmaydi." : "На ноль делить нельзя.";
+      return null;
+    }
+  }
+
   root.MiniLearn = {
+    mathAnswer: mathAnswer,
     progress: progress,
     start: start, afterAnswer: afterAnswer, recall: recall, remember: remember, storedModel: storedModel,
     isConfident: isConfident, needsWeb: needsWeb, intentOf: intentOf, _call: call, _setServer: function (u) { serverUrl = u; set(K.server, u); }

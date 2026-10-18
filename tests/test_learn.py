@@ -134,3 +134,20 @@ def test_learn_js_needs_web():
     res = json.loads(out)
     assert res[:len(web)] == [True] * len(web), list(zip(web, res))
     assert res[len(web):] == [False] * len(chat), list(zip(chat, res[len(web):]))
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="нет node")
+def test_calculator_short_answers():
+    js = r"""
+    global.window = global; global.localStorage = { _s: {}, getItem(k){return this._s[k]??null}, setItem(k,v){this._s[k]=String(v)} };
+    global.fetch = () => Promise.reject(new Error("offline"));
+    eval(require('fs').readFileSync(process.argv[1] + '/app/www/learn.js','utf8'));
+    const qs = JSON.parse(process.argv[2]);
+    console.log(JSON.stringify(qs.map(q => window.MiniLearn.mathAnswer(q, 'ru'))));
+    """
+    cases = {"1+2": "3", "1+2=": "3", "2+2=4": "Верно, 4.", "2+2=5": "Нет, будет 4.", "сколько будет 7 умножить на 8": "56",
+             "10:4": "2,5", "(2+3)*4": "20", "1/0": "На ноль делить нельзя.", "привет": None, "2026": None,
+             "iphone 15 pro": None, "covid-19": None}
+    out = subprocess.run(["node", "-e", js, str(ROOT), json.dumps(list(cases), ensure_ascii=False)],
+                         capture_output=True, text=True, check=True).stdout
+    assert dict(zip(cases, json.loads(out))) == cases

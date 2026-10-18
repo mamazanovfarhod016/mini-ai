@@ -180,10 +180,13 @@
     if (!current) { current = { id: String(Date.now()), title: q.slice(0, 40), ts: Date.now(), msgs: [] }; chats.unshift(current); }
     app.classList.add("has-msgs");
     var lang = isLatinText(q) ? "uz" : "ru";
-    var text = (lang === "uz" ? "Ustozning javobi — «" : "Наставник ответил на «") + q + "»: " + answer;
     var el = addAI();
-    el.querySelector(".text").textContent = text;
-    current.msgs.push({ role: "ai", text: text, thought: { engine: "memory", source: "mentor" }, q: q });
+    el.querySelector(".text").textContent = answer;
+    var meta = document.createElement("div"); meta.className = "meta";
+    var chip = document.createElement("button");
+    chip.textContent = (lang === "uz" ? "ustoz javobi · «" : "ответ наставника · «") + (q.length > 28 ? q.slice(0, 28) + "…" : q) + "»";
+    meta.appendChild(chip); el.querySelector(".text").parentNode.appendChild(meta);
+    current.msgs.push({ role: "ai", text: answer, thought: { engine: "memory", source: "mentor" }, q: q });
     save(); renderList(); scrollDown();
   }
   if (window.MiniLearn) window.MiniLearn.start({ onMentorAnswer: addMentorAnswer });
@@ -274,6 +277,18 @@
         q: text, answer: finalText, raw: raw != null ? raw : finalText, lang: lang, engine: thought && thought.engine,
         thought: thought, memory: !!fromMemory, host: el.querySelector(".text").parentNode, scroll: scrollDown
       });
+    }
+
+    // Арифметика — считаем сами, коротко: «1+2» → «3».
+    var calc = window.MiniLearn && window.MiniLearn.mathAnswer(text, lang);
+    if (calc != null) {
+      setTimeout(function () {
+        out.textContent = calc;
+        out.classList.remove("caret"); logo.classList.remove("spin");
+        current.msgs.push({ role: "ai", text: calc, thought: { engine: "calc" }, q: text });
+        save(); busy = false; scrollDown();
+      }, fast ? 0 : 250);
+      return;
     }
 
     // Выученное (от наставника / подтверждено в интернете) — отвечаем сразу, до ночного дообучения.
