@@ -307,7 +307,7 @@ def main():
                      help="файл намерений (сервер самообучения подаёт сюда intents.json + выученные темы)")
     ap.add_argument("--log", default=str(ROOT / "docs/train_log_transformer.txt"))
     ap.add_argument("--no-app", action="store_true", help="не перезаписывать app/www/model_transformer.js")
-    ap.add_argument("--math", default="", help="data/math_pairs.json — учить считать (tools/make_math.py)")
+    ap.add_argument("--math", default="", help="data/math_pairs.json[,data/school_math.json] — учить считать/решать (tools/make_math.py, tools/make_school_math.py)")
     ap.add_argument("--math_frac", type=float, default=0.4, help="доля примеров на счёт в каждом батче")
     ap.add_argument("--gpu", action="store_true", help="считать на видеокарте (CuPy), если она есть")
     ap.add_argument("--vocab", type=int, default=1000, help="размер словаря BPE (только для --tokenizer bpe)")
@@ -335,9 +335,10 @@ def main():
     # примеры на счёт — БЕЗ опечаток (опечатка в цифре меняет правильный ответ)
     math_train, math_test = [], []
     if args.math:
-        md = json.loads(Path(args.math).read_text(encoding="utf-8"))
-        math_train = [(x["q"], x["a"], "math_" + x["kind"], x["lang"]) for x in md["train"]]
-        math_test = [(x["q"], x["a"], x["kind"]) for x in md["test"]]
+        for mp in args.math.split(","):          # можно несколько файлов: счёт + школьная математика
+            md = json.loads(Path(mp).read_text(encoding="utf-8"))
+            math_train += [(x["q"], x["a"], "math_" + x["kind"], x["lang"]) for x in md["train"]]
+            math_test += [(x["q"], x["a"], x["kind"]) for x in md["test"]]
         print(f"Счёт: train {len(math_train)}, test {len(math_test)} (тест — примеры, которых модель НЕ видела)")
 
     # ---------- словарь: char или bpe ----------

@@ -63,9 +63,16 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
             "--intents", "data/intents.json", *extra]
     if gpu:
         args.append("--gpu")      # те же формулы, но массивы на видеокарте (CuPy уже стоит на Kaggle)
+    maths = []
     if math:
         files.append((Path(math), "data/math_pairs.json"))
-        args += ["--math", "data/math_pairs.json"]
+        maths.append("data/math_pairs.json")
+    school = ROOT / "data/school_math.json"        # школьная математика 1–6 класс (tools/make_school_math.py)
+    if school.exists():
+        files.append((school, "data/school_math.json"))
+        maths.append("data/school_math.json")
+    if maths:
+        args += ["--math", ",".join(maths)]
     b64 = bundle(files)
     script = f"BUNDLE = {b64!r}\nARGS = {json.dumps(args)}\n" + RUNNER
     with tempfile.TemporaryDirectory() as d:
