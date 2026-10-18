@@ -31,8 +31,9 @@
 
   function isLatinText(t) { return window.MiniBrain.isLatin(t); }
 
-  // 18.10.2026: пока трансформер доучивается, по умолчанию — классификатор v0.1 (точнее); трансформер — по выбору.
-  var engine = (localStorage.getItem(ENGINE_KEY) === "transformer" && txModel) ? "transformer" : "mlp";
+  // 18.10.2026: BPE-трансформер (v0.3) точнее классификатора на новых фразах → он по умолчанию;
+  // классификатор v0.1 — только если пользователь сам выбрал его в меню.
+  var engine = (localStorage.getItem(ENGINE_KEY) !== "mlp" && txModel) ? "transformer" : "mlp";
 
   function paramsOfCurrentEngine() {
     return engine === "transformer" && txModel ? window.MINI_AI_TRANSFORMER.n_params : mlpModel.n_params;
