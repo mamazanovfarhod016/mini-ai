@@ -21,3 +21,6 @@ server_data/
 
 # сырые скачанные тексты для корпуса (пересобираются tools/make_corpus.py)
 .cache_corpus/
+
+# Задачи по Python — большой файл, пересобирается tools/make_python_tasks.py
+data/python_tasks.json
