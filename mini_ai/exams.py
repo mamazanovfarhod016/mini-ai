@@ -8,7 +8,7 @@ import math
 import random
 from pathlib import Path
 
-from mini_ai.curriculum import encode_prompt, load_lm_lines, pack_lm_windows
+from mini_ai.curriculum import decode_answer, encode_prompt, load_lm_lines, pack_lm_windows
 from mini_ai.batched_generate import batched_generate
 from mini_ai.transformer import BOS, SEP, clean_question
 
@@ -57,8 +57,8 @@ def exam_qa_exact(engine, tok, items, max_q=40, batch=32, max_new=60, raw=False)
         prompts = [[BOS] + encode_prompt(tok, it["q"], raw)[:max_q] + [SEP] for it in chunk]
         outs = batched_generate(engine, prompts, max_new, temperature=0.0)
         for it, out in zip(chunk, outs):
-            gen = tok.decode(out).strip()
-            ok = gen == str(it["a"]).strip()
+            gen = decode_answer(tok, out).strip()
+            ok = gen == str(it["a"]).strip() or gen in [str(x).strip() for x in it.get("answers", [])]   # разговор: любой ответ темы
             kind = it.get("kind", "default")
             h, n = by_kind.get(kind, (0, 0))
             by_kind[kind] = (h + ok, n + 1)
@@ -77,7 +77,7 @@ def exam_reasoning(engine, tok, items, max_q=40, batch=16, max_new=200, raw=Fals
         prompts = [[BOS] + encode_prompt(tok, it["q"], raw)[:max_q] + [SEP] for it in chunk]
         outs = batched_generate(engine, prompts, max_new, temperature=0.0)
         for it, out in zip(chunk, outs):
-            gen = tok.decode(out)
+            gen = decode_answer(tok, out)
             r = reasoncheck.check(it, gen, it.get("lang", "ru"))
             results["n"] += 1
             results["answer_ok"] += bool(r.get("answer_ok"))
@@ -96,11 +96,11 @@ def exam_context(engine, tok, items, max_q=400, batch=4, max_new=60, raw=True):
         prompts = []
         for it in chunk:
             ctx_ids = encode_prompt(tok, it["context"], raw=True)
-            q_ids = encode_prompt(tok, "\n" + it["q"], raw)
+            q_ids = encode_prompt(tok, "\n" + it["q"], True)
             prompts.append([BOS] + ctx_ids + q_ids + [SEP])
         outs = batched_generate(engine, prompts, max_new, temperature=0.0)
         for it, out in zip(chunk, outs):
-            gen = tok.decode(out)
+            gen = decode_answer(tok, out)
             r = contextcheck.check(it, gen)
             kind = it.get("kind", "fact")
             h, n = by_kind.get(kind, (0, 0))
@@ -121,7 +121,7 @@ def exam_transfer(engine, tok, test_items, max_q=40, batch=32, max_new=20, raw=F
         prompts = [[BOS] + encode_prompt(tok, it["q"], raw)[:max_q] + [SEP] for it in chunk]
         outs = batched_generate(engine, prompts, max_new, temperature=0.0)
         for it, out in zip(chunk, outs):
-            results.append((it, tok.decode(out)))
+            results.append((it, decode_answer(tok, out)))
     return score(results)
 
 
@@ -169,16 +169,31 @@ def run_exams(engine, tok, tokenizer_type, max_q, exam_data, log=print):
         out["intents"] = {"acc": acc, "wrong_sample": wrong[:5]}
         log(f"  экзамен intents: acc={acc:.3f}")
     if exam_data.get("python_tasks_test"):
-        sample_texts = [it.get("code", "") for it in exam_data["python_tasks_test"][:20] if it.get("code")]
-        if sample_texts and tokenizer_is_lossless(tok, sample_texts):
-            from server import codecheck
-            hits, n = 0, 0
-            for it in exam_data["python_tasks_test"]:
-                n += 1
-                # генерация кода — отдельный путь, здесь просто считаем заготовку (минимально,
-                # т.к. полноценный критерий дан в codecheck.check(task, code))
-            out["python_tasks"] = {"note": "lossless tokenizer detected; full codecheck run left to caller"}
-        else:
-            out["python_tasks"] = {"skipped": "tokenizer not lossless for code (round-trip failed)"}
+        out["python_tasks"] = exam_python(engine, tok, exam_data["python_tasks_test"])
         log(f"  экзамен python_tasks: {out['python_tasks']}")
     return out
+
+
+def exam_python(engine, tok, items, batch=8, max_new=220, max_q=200):
+    """Python: модель пишет код → server/codecheck.check: скрытые тесты + оценка качества (passed = тесты И качество ≥ 80).
+    Вопрос подаём raw (без clean_question — иначе код в вопросе испортится)."""
+    from mini_ai.batched_generate import batched_generate
+    from server import codecheck
+    by = {}
+    passed = runs = 0
+    qual = []
+    for s in range(0, len(items), batch):
+        chunk = items[s:s + batch]
+        prompts = [[BOS] + encode_prompt(tok, it["q"], True)[:max_q] + [SEP] for it in chunk]
+        outs = batched_generate(engine, prompts, max_new=max_new, temperature=0.0)
+        for it, ids in zip(chunk, outs):
+            code = decode_answer(tok, ids)
+            r = codecheck.check(it, code)
+            passed += bool(r.get("passed"))
+            runs += bool(r.get("runs"))
+            qual.append(r.get("quality", 0))
+            h, n = by.get(it["kind"], (0, 0))
+            by[it["kind"]] = (h + bool(r.get("passed")), n + 1)
+    n = max(1, len(items))
+    return {"passed": passed / n, "runs": runs / n, "avg_quality": sum(qual) / max(1, len(qual)),
+            "by_kind": {k: [h, m] for k, (h, m) in by.items()}}

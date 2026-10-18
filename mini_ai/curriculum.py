@@ -46,10 +46,24 @@ def encode_prompt(tok, text, raw=False):
     появится prompt_ids(tok, text, raw=True) с честным lossless-путём, здесь достаточно
     будет позвать его вместо tok.encode — остальной код curriculum.py не меняется."""
     if raw:
-        if hasattr(tok, "encode_raw"):
-            return tok.encode_raw(text)
-        return tok.encode(text)
+        try:
+            return tok.encode(text, raw=True)       # lossless: регистр, переносы, отступы — как есть
+        except TypeError:                           # CharTokenizer: raw-режима нет
+            return tok.encode(text)
     return tok.encode(clean_question(text))
+
+
+def encode_answer(tok, text):
+    """ОТВЕТ всегда кодируем без потерь (raw): модель учится писать «Ответ: 17», заглавные, код с отступами.
+    Вопрос же по умолчанию чистится clean_question — как его чистит приложение."""
+    return encode_prompt(tok, text, raw=True)
+
+
+def decode_answer(tok, ids):
+    try:
+        return tok.decode(ids, raw=True)
+    except TypeError:
+        return tok.decode(ids)
 
 
 # ======================================================================================
@@ -102,7 +116,7 @@ def lm_example_to_seq(window):
 def qa_example_to_seq(tok, q, a, max_q, raw=False):
     """<bos> q <sep> a <eos>, loss только на ответе (как в train_transformer.py)."""
     q_ids = encode_prompt(tok, q, raw)[:max_q]
-    a_ids = encode_prompt(tok, a, raw)
+    a_ids = encode_answer(tok, a)
     seq = [BOS] + q_ids + [SEP] + a_ids + [EOS]
     ans_start = 1 + len(q_ids) + 1
     full_seq = seq[:-1]
@@ -116,8 +130,8 @@ def qa_example_to_seq(tok, q, a, max_q, raw=False):
 def context_example_to_seq(tok, context, q, a, max_len, raw=False):
     """<bos> context \n q <sep> a <eos>, loss только на ответе."""
     ctx_ids = encode_prompt(tok, context, raw=True)
-    q_ids = encode_prompt(tok, "\n" + q, raw)
-    a_ids = encode_prompt(tok, a, raw)
+    q_ids = encode_prompt(tok, "\n" + q, True)
+    a_ids = encode_answer(tok, a)
     seq = [BOS] + ctx_ids + q_ids + [SEP] + a_ids + [EOS]
     ans_start = 1 + len(ctx_ids) + len(q_ids) + 1
     if len(seq) > max_len:

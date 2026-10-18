@@ -1,0 +1,156 @@
+{
+ "init_model": "model_transformer_school.json",
+ "target_vocab": 5000,
+ "arch": {
+  "d": 192,
+  "n_layer": 20,
+  "n_head": 8,
+  "block": 10000,
+  "pos": "rope"
+ },
+ "time_budget_hours": 7.0,
+ "stages": [
+  {
+   "name": "read",
+   "max_len": 512,
+   "token_budget": 16384,
+   "lr": 0.002,
+   "warmup": 300,
+   "time_frac": 0.3,
+   "sources": [
+    {
+     "type": "lm",
+     "weight": 0.85,
+     "files": [
+      "data/corpus/uz.txt",
+      "data/corpus/ru.txt",
+      "data/corpus/en.txt"
+     ]
+    },
+    {
+     "type": "qa",
+     "weight": 0.15,
+     "file": "data/intents_pairs.json"
+    }
+   ]
+  },
+  {
+   "name": "reason",
+   "max_len": 400,
+   "token_budget": 12288,
+   "lr": 0.0015,
+   "warmup": 200,
+   "time_frac": 0.35,
+   "sources": [
+    {
+     "type": "qa",
+     "weight": 0.22,
+     "file": "data/reasoning.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.18,
+     "file": "data/school_math.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.12,
+     "file": "data/math_pairs.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.13,
+     "file": "data/parallel.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.1,
+     "file": "data/transfer.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.05,
+     "file": "data/intents_pairs.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.1,
+     "file": "data/python_tasks.json",
+     "raw": true
+    },
+    {
+     "type": "lm",
+     "weight": 0.1,
+     "files": [
+      "data/corpus/uz.txt",
+      "data/corpus/ru.txt",
+      "data/corpus/en.txt"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "context",
+   "max_len": 10000,
+   "token_budget": 8192,
+   "lr": 0.001,
+   "warmup": 150,
+   "time_frac": 0.25,
+   "sources": [
+    {
+     "type": "context",
+     "weight": 0.75,
+     "file": "data/context_tasks.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.15,
+     "file": "data/reasoning.json"
+    },
+    {
+     "type": "lm",
+     "weight": 0.1,
+     "files": [
+      "data/corpus/uz.txt",
+      "data/corpus/ru.txt",
+      "data/corpus/en.txt"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "selfplay",
+   "max_len": 400,
+   "token_budget": 8192,
+   "lr": 0.0005,
+   "warmup": 50,
+   "time_frac": 0.1,
+   "selfplay": {
+    "task_files": [
+     "data/reasoning.json",
+     "data/school_math.json"
+    ],
+    "n": 40,
+    "tries": 2,
+    "temp": 0.7
+   },
+   "sources": [
+    {
+     "type": "selfplay",
+     "weight": 0.6,
+     "file": "__selfplay_out__"
+    },
+    {
+     "type": "qa",
+     "weight": 0.2,
+     "file": "data/reasoning.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.2,
+     "file": "data/intents_pairs.json"
+    }
+   ]
+  }
+ ]
+}

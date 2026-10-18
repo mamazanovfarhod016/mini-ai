@@ -409,14 +409,14 @@
    ],
    "responses": {
     "ru": [
-     "Я Mini AI — очень маленькая нейросеть. Меня написали с нуля на numpy, и я живу прямо в твоём телефоне, без интернета.",
-     "Я маленькая нейронка-собеседник. Понимаю простые фразы: привет, как дела, кто тебя создал и всё такое.",
-     "Я не человек и не ChatGPT — я крошечная сеть из двух слоёв. Зато честная и офлайн!"
+     "Я Mini AI — маленький трансформер, как ChatGPT, только крошечный. Меня написали с нуля, и я живу прямо в твоём телефоне, без интернета.",
+     "Я Mini AI — нейросеть Фархода. Считаю, рассуждаю по шагам, перевожу между тремя языками и каждую ночь учусь новому.",
+     "Я не человек и не ChatGPT — я маленькая нейросеть-трансформер. Зато своя, честная и офлайн!"
     ],
     "uz": [
-     "Men Mini AI — juda kichkina neyron tarmoqman. Meni noldan numpy'da yozishgan, internetsiz telefoningizda ishlayman.",
-     "Men kichkina suhbatdosh neyron tarmoqman. Oddiy gaplarni tushunaman.",
-     "Men odam emasman va ChatGPT ham emasman — ikki qatlamli kichkina tarmoqman."
+     "Men Mini AI — kichkina transformer, ChatGPT kabi, faqat juda kichkina. Meni noldan yozishgan, internetsiz telefoningizda ishlayman.",
+     "Men Mini AI — Farhodning neyron tarmog'iman. Hisoblayman, qadamma-qadam fikrlayman, uch til orasida tarjima qilaman.",
+     "Men odam ham, ChatGPT ham emasman — kichkina transformer tarmoqman. Lekin o'zimizniki va oflayn!"
     ]
    }
   },
@@ -919,14 +919,14 @@
    ],
    "responses": {
     "ru": [
-     "Я умею отвечать на простые фразы: привет, как дела, кто ты, спасибо, шутка, время, дата… Я маленькая, но честная.",
-     "Понимаю около 27 типов фраз на русском и узбекском. Могу сказать время, пошутить и поддержать.",
-     "Немного: поздороваться, поболтать, пошутить, сказать время и дату с твоего телефона. На сложное я честно скажу «не знаю»."
+     "Я умею считать: сложение, вычитание, умножение, деление, дроби, проценты, НОД и НОК. Решаю задачи со словами по шагам и проверяю себя. Говорю на русском, узбекском и английском.",
+     "Могу посчитать пример или решить задачу по шагам, перевести фразу между русским, узбекским и английским, ответить на вопрос по тексту. Сложное пока даётся с трудом — я учусь каждую ночь.",
+     "Математика 1–6 класса, рассуждение по шагам, переводы, простой разговор. Ещё учусь писать понятный код на Python."
     ],
     "uz": [
-     "Oddiy gaplarga javob bera olaman: salom, qalaysan, kimsan, rahmat, latifa, soat, sana…",
-     "Rus va o'zbek tilida 27 xil gapni tushunaman.",
-     "Salomlashish, hazil, vaqt va sanani aytish. Murakkab narsaga «bilmayman» deyman."
+     "Hisoblay olaman: qo'shish, ayirish, ko'paytirish, bo'lish, kasrlar, foizlar, EKUB va EKUK. Masalalarni qadamma-qadam yechaman va o'zimni tekshiraman. Rus, o'zbek va ingliz tillarida gaplashaman.",
+     "Misol hisoblash, masalani qadamma-qadam yechish, rus, o'zbek va ingliz tillari orasida tarjima qilish, matn bo'yicha savolga javob berish. Har kecha o'qiyman.",
+     "1–6 sinf matematikasi, qadamma-qadam fikrlash, tarjima, oddiy suhbat. Python'da tushunarli kod yozishni ham o'rganyapman."
     ]
    }
   },
@@ -2003,14 +2003,14 @@
    ],
    "responses": {
     "ru": [
-     "Я MLP: слова → мешок слов и символьных n-грамм → скрытый слой с ReLU → softmax по намерениям. Меня обучили обратным распространением ошибки (backprop) и Adam — всё написано руками на numpy.",
-     "Я разбиваю твою фразу на кусочки по 3 буквы, превращаю в вектор, умножаю на матрицы весов и выбираю самое вероятное намерение. Открой «Как я работаю» в меню — там видно мои вероятности!",
-     "Внутри меня два слоя весов. Обучение: прямой проход → ошибка (cross-entropy) → градиенты назад → шаг Adam. И так тысячи раз."
+     "Я трансформер: разрезаю текст на кусочки (токены), механизм внимания решает, на какие слова смотреть, и я пишу ответ по одному кусочку. Обучили меня backprop и Adam — формулы написаны с нуля.",
+     "Внутри меня слои внимания и много чисел-параметров. Учусь так: пишу ответ → сравниваю с правильным → считаю ошибку → backprop находит, какие числа поправить → Adam чуть-чуть их правит. И так тысячи раз.",
+     "Сначала я училась по готовым примерам, теперь ещё и сама решаю задачи — скрипт проверяет, и на верных решениях я учусь дальше."
     ],
     "uz": [
-     "Men MLP'man: so'zlar → n-gramma vektor → ReLU qatlami → softmax. Backprop va Adam bilan o'qitilganman, hammasi numpy'da qo'lda yozilgan.",
-     "Gapingizni 3 harfli bo'laklarga ajrataman, matritsalarga ko'paytiraman va eng ehtimolli niyatni tanlayman.",
-     "Ichimda ikki qatlam og'irliklar bor. O'qitish: oldinga o'tish → xato → gradientlar → Adam qadami."
+     "Men transformerman: matnni bo'laklarga (tokenlarga) ajrataman, diqqat mexanizmi qaysi so'zlarga qarashni hal qiladi va javobni bo'lakma-bo'lak yozaman. Backprop va Adam bilan o'qitilganman.",
+     "Ichimda diqqat qatlamlari va ko'p sonlar bor. O'qish: javob yozaman → to'g'risi bilan solishtiraman → xatoni hisoblayman → backprop qaysi sonlarni tuzatishni topadi → Adam ozgina tuzatadi.",
+     "Avval tayyor misollardan o'rgandim, endi o'zim masala yechaman — skript tekshiradi va to'g'ri yechimlardan o'rganaman."
     ]
    }
   },

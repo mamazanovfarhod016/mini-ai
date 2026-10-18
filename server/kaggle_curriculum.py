@@ -61,6 +61,7 @@ if BUILD_DATA:
     if not os.path.exists("data/parallel.json"):
         run([sys.executable, "tools/make_parallel.py"])
     run([sys.executable, "tools/make_python_tasks.py"])
+    run([sys.executable, "tools/make_intents_pairs.py"])
 else:
     # smoke-режим: не тратим время на полный корпус/генераторы — крошечный текст для проверки
     os.makedirs("data/corpus", exist_ok=True)

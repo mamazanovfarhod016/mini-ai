@@ -94,16 +94,35 @@ UNITS = [  # (из, в, множитель, {lang: (из, в)})
 ]
 UNIT_Q = {"uz": "{n} {u1} necha {u2}", "ru": "{n} {u1} это сколько {u2}", "en": "how many {u2} in {n} {u1}"}
 
-NAMES = {"uz": ["Ali", "Malika", "Sardor", "Dilnoza"], "ru": ["Аня", "Тимур", "Саша", "Лола"], "en": ["Tom", "Anna", "Sam", "Lily"]}
+NAMES = {"uz": ["Ali", "Malika", "Sardor", "Dilnoza", "Jasur", "Nodira", "Bobur", "Zarina", "Aziz", "Madina"],
+         "ru": ["Аня", "Тимур", "Саша", "Лола", "Маша", "Дима", "Катя", "Рустам", "Оля", "Игорь"],
+         "en": ["Tom", "Anna", "Sam", "Lily", "Max", "Emma", "Jack", "Mia", "Leo", "Sara"]}
+# русский: после «у» — родительный падеж («у Маши», а не «у Маша»)
+NAMES_GEN_RU = ["Ани", "Тимура", "Саши", "Лолы", "Маши", "Димы", "Кати", "Рустама", "Оли", "Игоря"]
 ITEMS = {"uz": ["olma", "qalam", "kitob", "konfet"], "ru": ["яблок", "карандашей", "книг", "конфет"],
          "en": ["apples", "pencils", "books", "candies"]}
 WORD = {
     "add": {"uz": "{n}da {a} ta {i} bor edi, yana {b} ta berishdi. Endi nechta",
-            "ru": "у {n} было {a} {i}, дали ещё {b}. сколько стало",
+            "ru": "у {ng} было {a} {i}, дали ещё {b}. сколько стало",
             "en": "{n} had {a} {i} and got {b} more. how many now"},
+    "add2": {"uz": "{n} {a} ta {i} topdi, keyin yana {b} ta topdi",
+             "ru": "сначала {n} нашёл {a} {i}, потом ещё {b}. сколько всего",
+             "en": "{n} found {a} {i} and then {b} more"},
+    "add3": {"uz": "{n} {a} ta {i} sotib oldi va {b} tasini sovg'a qilishdi. Hammasi qancha bo'ldi",
+             "ru": "у {ng} было {a} {i}, и ещё {b} подарили. сколько теперь",
+             "en": "{n} bought {a} {i} and was given {b} more. how many does he have"},
     "sub": {"uz": "{n}da {a} ta {i} bor edi, {b} tasini berdi. Nechta qoldi",
-            "ru": "у {n} было {a} {i}, {b} отдал. сколько осталось",
+            "ru": "у {ng} было {a} {i}, {b} отдали. сколько осталось",
             "en": "{n} had {a} {i} and gave away {b}. how many are left"},
+    "sub2": {"uz": "{n}da {a} ta {i} bor edi, u {b} tasini yo'qotdi",
+             "ru": "у {ng} было {a} {i}, потерялось {b}",
+             "en": "{n} had {a} {i} and lost {b}"},
+    "sub3": {"uz": "{n} {a} ta {i}dan {b} tasini yedi. Qancha qoldi",
+             "ru": "было {a} {i}, {n} взял {b}. сколько осталось",
+             "en": "{n} ate {b} of {a} {i}. how many are left"},
+    "sub4": {"uz": "Savatda {a} ta {i} bor edi. {n} {b} tasini oldi. Savatda nechta qoldi",
+             "ru": "в корзине было {a} {i}. из неё взяли {b}. сколько осталось в корзине",
+             "en": "a basket had {a} {i}. {n} took {b}. how many are left in the basket"},
     "mul": {"uz": "{a} ta qutida {b} tadan {i} bor. Hammasi nechta",
             "ru": "в {a} коробках по {b} {i}. сколько всего",
             "en": "there are {a} boxes with {b} {i} each. how many in total"},
@@ -173,9 +192,10 @@ def main():
             calc("order", 3, ("a-b*c", a, b, c), f"{a} − {b} * {c}", a - b * c)
 
     # --- 1–4 класс: задачи со словами ---
-    for _ in range(2500):
-        op = rng.choice(["add", "sub", "mul", "div"])
-        ni, ii = rng.randrange(4), rng.randrange(4)
+    for _ in range(6000):
+        form = rng.choice(["add", "add2", "add3", "sub", "sub2", "sub3", "sub4", "mul", "div"])
+        op = form.rstrip("0123456789")
+        ni, ii = rng.randrange(len(NAMES["ru"])), rng.randrange(4)
         if op == "add":
             a, b = rng.randint(2, 60), rng.randint(2, 40); ans = a + b
         elif op == "sub":
@@ -184,8 +204,9 @@ def main():
             a, b = rng.randint(2, 9), rng.randint(2, 12); ans = a * b
         else:
             b = rng.randint(2, 9); ans = rng.randint(2, 12); a = b * ans
-        put("word", 2, (op, a, b, ni, ii),
-            [(l, WORD[op][l].format(n=NAMES[l][ni], i=ITEMS[l][ii], a=a, b=b), ans) for l in LANGS],
+        put("word", 2, (form, a, b, ni, ii),
+            [(l, WORD[form][l].format(n=NAMES[l][ni], ng=NAMES_GEN_RU[ni], i=ITEMS[l][ii], a=a, b=b), ans)
+             for l in LANGS],
             hide_key=(op, a, b))
 
     # --- 4 класс: округление ---

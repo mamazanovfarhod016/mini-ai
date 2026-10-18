@@ -14,6 +14,7 @@
 """
 import argparse
 import json
+import random
 import time
 from pathlib import Path
 
@@ -65,7 +66,8 @@ def default_plan():
                     {"type": "qa", "weight": 0.13, "file": str(ROOT / "data/parallel.json")},
                     {"type": "qa", "weight": 0.10, "file": str(ROOT / "data/transfer.json")},
                     {"type": "qa", "weight": 0.05, "file": str(ROOT / "data/intents_pairs.json")},
-                    {"type": "lm", "weight": 0.20,
+                    {"type": "qa", "weight": 0.10, "file": str(ROOT / "data/python_tasks.json"), "raw": True},
+                    {"type": "lm", "weight": 0.10,
                      "files": [str(corpus / "uz.txt"), str(corpus / "ru.txt"), str(corpus / "en.txt")]},
                 ],
             },
@@ -134,16 +136,26 @@ def exam_data_for_stage(stage_name, root):
             except Exception:
                 return []
         return []
-    out["school_math_test"] = load_test("data/school_math.json")
-    out["reasoning_test"] = load_test("data/reasoning.json")
+    def sample(items, n):            # экзамен на фиксированной случайной выборке — быстро и одинаково для всех стадий
+        return random.Random(0).sample(items, min(n, len(items))) if items else []
+    out["school_math_test"] = sample(load_test("data/school_math.json"), 1500)
+    out["reasoning_test"] = sample(load_test("data/reasoning.json"), 600)
     out["transfer_test"] = load_test("data/transfer.json")
+    out["intents_test"] = load_test("data/intents_pairs.json")
+    py = [x for x in load_test("data/python_tasks.json") if x.get("kind") != "what_prints"]
+    out["python_tasks_test"] = random.Random(0).sample(py, min(300, len(py))) if py else []
     if stage_name in ("context", "selfplay"):
         ctx = root / "data/context_tasks.json"
         if ctx.exists():
             from tools.make_context_tasks import load as load_ctx
             try:
                 d = load_ctx(ctx)
-                out["context_test"] = d.get("test", [])
+                ct = d.get("test", [])
+                # по 40 на каждый вид и длину (needle s/m/l/xl ≈ до 10k токенов) — честно и не слишком долго
+                by = {}
+                for it in ct:
+                    by.setdefault((it.get("kind"), it.get("bucket"), it.get("lang")), []).append(it)
+                out["context_test"] = [x for k in sorted(by, key=str) for x in random.Random(0).sample(by[k], min(14, len(by[k])))]
             except Exception:
                 out["context_test"] = []
     return out
