@@ -6,6 +6,8 @@ Mini AI — сервер самообучения (только стандарт
 Эндпоинты (JSON, CORS открыт — приложение работает из file:// внутри WebView):
   POST /api/log          {q, a, ok, lang, device}      — каждый вопрос из приложения → questions.jsonl
   POST /api/research     {q, lang}                     — поиск ответа в интернете (server/research.py)
+  POST /api/confirm      {q, a, web, lang}             — «Верно» под ответом из интернета → наставнику на обобщение
+  GET  /api/progress                                   — история экзаменов (график «Как я умнею»)
   POST /api/mentor       {q, a, web, lang, device}     — «отправить наставнику» → mentor_inbox.jsonl
   GET  /api/mentor/answers?ids=1,2                     — ответы наставника для приложения
   GET  /api/model/latest                               — {version, url, test_intent_acc}
@@ -64,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         if u.path == "/health":
             return self._send(200, {"ok": True})
+        if u.path == "/api/progress":
+            return self._send(200, store.read_json(self.data / "progress.json", []))
         if u.path == "/api/model/latest":
             latest = store.read_json(self.data / "models/latest.json", None)
             return self._send(200, latest or {"version": 0})
@@ -102,10 +106,16 @@ class Handler(BaseHTTPRequestHandler):
             with self.lock:
                 store.append_jsonl(self.data / "research.jsonl", {**rec, "result": res})
             return self._send(200, res)
+        if u.path == "/api/confirm":
+            # пользователь нажал «Верно» под ответом из интернета → наставник превратит его в тему
+            web = body.get("web") if isinstance(body.get("web"), dict) else {}
+            with self.lock:
+                item = store.add_mentor_item(self.data, {**rec, "kind": "confirm", "web": web})
+            return self._send(200, {"ok": True, "id": item["id"]})
         if u.path == "/api/mentor":
             web = body.get("web") if isinstance(body.get("web"), dict) else None
             with self.lock:
-                item = store.add_mentor_item(self.data, {**rec, "web": web})
+                item = store.add_mentor_item(self.data, {**rec, "kind": "question", "web": web})
             return self._send(200, {"ok": True, "id": item["id"]})
         return self._send(404, {"error": "not found"})
 

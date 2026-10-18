@@ -329,6 +329,7 @@
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 
   function openSheet(data) {
+    $("#sheetTitle").textContent = "Как я работаю";
     data = data || lastThought;
     if (data && data.t && data.t.engine === "transformer") return openSheetTransformer(data);
     return openSheetMLP(data);
@@ -523,6 +524,43 @@
   $("#newBtn").onclick = newChat;
   $("#drawerNew").onclick = function () { newChat(); closeDrawer(); };
   $("#drawerHow").onclick = function () { closeDrawer(); openSheet(); };
+
+  // ---------- «Как я умнею»: экзамены на вопросах, которых модель не видела ----------
+  function openGrowth() {
+    var body = $("#sheetBody");
+    $("#sheetTitle").textContent = "Как я умнею";
+    body.innerHTML = "<h3>Как я умнею</h3><p class=\"small-note\">Загружаю историю экзаменов…</p>";
+    app.classList.add("sheet-open"); $("#sheet").setAttribute("aria-hidden", "false");
+    var m = window.MINI_AI_TRANSFORMER || {};
+    var render = function (hist) {
+      var html = "<h3>Экзамены на новом <span class=\"hint\" title=\"Каждую ночь я сдаю экзамен на вопросах, которых никогда не видела. Новая версия ставится, только если сдала.\">!</span></h3>";
+      html += "<p class=\"small-note\">Экзамен — только на формулировках, которых я <b>не видела</b> при обучении. Так видно, что я понимаю смысл, а не зубрю.</p>";
+      html += "<div class=\"grow-now\"><div><b>" + Math.round((m.test_intent_accuracy || 0) * 100) + "%</b><small>понимаю старые темы</small></div>" +
+        "<div><b>" + (m.new_topics_accuracy == null ? "—" : Math.round(m.new_topics_accuracy * 100) + "%") + "</b><small>понимаю новые темы</small></div>" +
+        "<div><b>" + (m.learned_topics || 0) + "</b><small>выучено тем</small></div></div>";
+      var ok = (hist || []).filter(function (h) { return h.kind !== "rejected"; });
+      if (ok.length) {
+        var W = 300, H = 120, n = ok.length;
+        var x = function (i) { return n === 1 ? W / 2 : 10 + i * (W - 20) / (n - 1); };
+        var y = function (v) { return H - 10 - v * (H - 20); };
+        var line = function (key) { return ok.map(function (h, i) { return h[key] == null ? "" : (i ? "L" : "M") + x(i).toFixed(1) + "," + y(h[key]).toFixed(1); }).join(""); };
+        html += "<svg class=\"grow-chart\" viewBox=\"0 0 " + W + " " + H + "\"><path d=\"" + line("base") + "\" class=\"g-base\"/><path d=\"" + line("new") + "\" class=\"g-new\"/>" +
+          ok.map(function (h, i) { return h.new == null ? "" : "<circle cx=\"" + x(i) + "\" cy=\"" + y(h.new) + "\" r=\"3\" class=\"g-dot\"/>"; }).join("") + "</svg>";
+        html += "<p class=\"small-note\"><span class=\"key g-new\"></span> новые темы · <span class=\"key g-base\"></span> старые темы</p>";
+      }
+      html += "<h3>Экзамены</h3>";
+      if (!hist || !hist.length) html += "<p class=\"small-note\">Пока не было — первый пройдёт ночью, когда появятся новые знания.</p>";
+      (hist || []).slice().reverse().slice(0, 10).forEach(function (h) {
+        var verdict = h.kind === "rejected" ? "не сдала — осталась прежняя версия" : (h.kind === "full" ? "переобучилась с нуля, v" : "дообучилась, v") + (h.kind === "rejected" ? "" : h.version);
+        html += "<div class=\"grow-row\"><span>" + esc(h.at) + "</span><span>" + esc(verdict) + "</span><b>" +
+          (h.new_total ? h.new_hits + "/" + h.new_total + " новых" : "") + "</b></div>";
+      });
+      body.innerHTML = html;
+    };
+    if (window.MiniLearn) window.MiniLearn.progress().then(render).catch(function () { render(null); });
+    else render(null);
+  }
+  $("#drawerGrow").onclick = function () { closeDrawer(); openGrowth(); };
   $("#howBtn").onclick = function () { openSheet(); };
   $("#modelBtn").onclick = function () { openSheet(); };
   $("#sheetScrim").onclick = closeSheet;

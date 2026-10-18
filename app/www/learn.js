@@ -216,7 +216,8 @@
       var row = el("div", "learn-row");
       row.appendChild(btn(t.right, true, function () {
         remember(q, r.answer, r.url);
-        call("/api/log", { q: q, a: r.answer, ok: true, lang: lang, device: device, web_confirmed: true }).catch(function () {});
+        // наставник превратит это в ТЕМУ: 8+ формулировок, часть спрячет для экзамена → модель учит смысл
+        call("/api/confirm", { q: q, a: r.answer, web: r, lang: lang, device: device }).catch(function () {});
         var c3 = card(host, ui); c3.appendChild(el("p", "learn-note", t.saved));
       }));
       row.appendChild(btn(t.wrong, false, function () { askMentor(host, ui, q, a, r, lang); }));
@@ -300,7 +301,10 @@
     setInterval(pollMentor, 60000);
   }
 
+  function progress() { return call("/api/progress"); }
+
   root.MiniLearn = {
+    progress: progress,
     start: start, afterAnswer: afterAnswer, recall: recall, remember: remember, storedModel: storedModel,
     isConfident: isConfident, needsWeb: needsWeb, intentOf: intentOf, _call: call, _setServer: function (u) { serverUrl = u; set(K.server, u); }
   };

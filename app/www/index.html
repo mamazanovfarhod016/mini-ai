@@ -25,9 +25,13 @@
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
       <span>Как я работаю</span>
     </button>
+    <button class="drawer-link" id="drawerGrow">
+      <svg viewBox="0 0 24 24"><path d="M4 19h16M6 16l4-5 3 3 5-7"/></svg>
+      <span>Как я умнею</span>
+    </button>
     <div class="drawer-label">Модель</div>
     <div class="engine-switch" id="engineSwitch">
-      <button class="engine-opt" data-engine="transformer">Трансформер <small>v0.2</small></button>
+      <button class="engine-opt" data-engine="transformer">Трансформер <small>v0.3</small></button>
       <button class="engine-opt" data-engine="mlp">Классификатор <small>v0.1</small></button>
     </div>
     <div class="drawer-label">Недавние</div>
@@ -83,7 +87,7 @@
   <div class="sheet-scrim" id="sheetScrim"></div>
   <section class="sheet" id="sheet" aria-hidden="true">
     <div class="grabber"></div>
-    <h2>Как я работаю</h2>
+    <h2 id="sheetTitle">Как я работаю</h2>
     <div id="sheetBody"></div>
   </section>
 </div>

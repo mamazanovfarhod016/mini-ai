@@ -287,6 +287,10 @@ def main():
     ap.add_argument("--tokenizer", choices=["char", "bpe"], default="char",
                      help="char — старое посимвольное разбиение (по умолчанию, не ломаем старое поведение); "
                           "bpe — свой byte-pair encoding токенизатор (mini_ai/bpe.py)")
+    ap.add_argument("--intents", default=str(ROOT / "data/intents.json"),
+                     help="файл намерений (сервер самообучения подаёт сюда intents.json + выученные темы)")
+    ap.add_argument("--log", default=str(ROOT / "docs/train_log_transformer.txt"))
+    ap.add_argument("--no-app", action="store_true", help="не перезаписывать app/www/model_transformer.js")
     ap.add_argument("--vocab", type=int, default=1000, help="размер словаря BPE (только для --tokenizer bpe)")
     args = ap.parse_args()
     if args.quick:
@@ -295,7 +299,7 @@ def main():
         args.max_q = 24   # дефолт в ТОКЕНАХ (не в символах) — короче, т.к. 1 bpe-токен ~ несколько символов
 
     t_start = time.time()
-    data = json.loads((ROOT / "data/intents.json").read_text(encoding="utf-8"))
+    data = json.loads(Path(args.intents).read_text(encoding="utf-8"))
     intents = data["intents"]
     intents_by_tag = {it["tag"]: it for it in intents}
     rng_py = random.Random(args.seed)
@@ -488,7 +492,8 @@ def main():
     size_kb = len(text.encode()) / 1024
     print(f"\nmodel_transformer.json: {size_kb:.0f} КБ ({size_kb/1024:.2f} МБ)")
     Path(args.out).write_text(text, encoding="utf-8")
-    (ROOT / "app/www/model_transformer.js").write_text(
+    if not args.no_app:
+      (ROOT / "app/www/model_transformer.js").write_text(
         "window.MINI_AI_TRANSFORMER=" + text + ";\n", encoding="utf-8")
 
     # ---------- примеры генерации (для README/лога) ----------
@@ -502,7 +507,7 @@ def main():
         examples_log.append({"q": q, "answer": gen, "demo": True})
 
     # ---------- лог в файл ----------
-    log_path = ROOT / "docs/train_log_transformer.txt"
+    log_path = Path(args.log)
     log_path.parent.mkdir(exist_ok=True)
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"Mini AI v0.2 — лог обучения трансформера\n")

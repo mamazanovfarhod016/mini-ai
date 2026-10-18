@@ -42,6 +42,7 @@ def relevance(q, text):
 
 
 def first_sentences(text, max_chars=220):
+    text = text.replace("\u0301", "").replace("\u0300", "")   # ударения (Пари́ж) — их нет в словаре модели
     text = re.sub(r"\s*\([^()]*\)", "", text)          # убираем скобки (транскрипции, даты)
     text = re.sub(r"\s+", " ", text).strip()
     parts = re.split(r"(?<=[.!?])\s+", text)
