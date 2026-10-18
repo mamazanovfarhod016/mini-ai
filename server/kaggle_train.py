@@ -34,6 +34,8 @@ os.makedirs("/kaggle/working/w", exist_ok=True)
 os.chdir("/kaggle/working/w")
 tarfile.open(fileobj=io.BytesIO(base64.b64decode(BUNDLE)), mode="r:gz").extractall(".")
 print("CPU:", os.cpu_count(), flush=True)
+if os.path.exists("tools/make_school_math.py"):
+    subprocess.run([sys.executable, "tools/make_school_math.py"], check=True)
 t = time.time()
 r = subprocess.run([sys.executable, "train_transformer.py"] + ARGS + ["--out", "/kaggle/working/model.json",
                     "--no-app", "--log", "/kaggle/working/train_log.txt", "--ckpt_dir", "/kaggle/working/ckpt",
@@ -67,9 +69,11 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
     if math:
         files.append((Path(math), "data/math_pairs.json"))
         maths.append("data/math_pairs.json")
-    school = ROOT / "data/school_math.json"        # школьная математика 1–6 класс (tools/make_school_math.py)
-    if school.exists():
-        files.append((school, "data/school_math.json"))
+    # школьная математика 1–6 класс: файл 8 МБ не влезает в посылку Kaggle (лимит ~1 МБ) —
+    # шлём генератор (он детерминированный, seed=0) и собираем задания прямо там
+    gen = ROOT / "tools/make_school_math.py"
+    if gen.exists():
+        files.append((gen, "tools/make_school_math.py"))
         maths.append("data/school_math.json")
     if maths:
         args += ["--math", ",".join(maths)]
