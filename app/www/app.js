@@ -31,7 +31,8 @@
 
   function isLatinText(t) { return window.MiniBrain.isLatin(t); }
 
-  var engine = (localStorage.getItem(ENGINE_KEY) === "mlp" || !txModel) ? "mlp" : "transformer";
+  // 18.10.2026: пока трансформер доучивается, по умолчанию — классификатор v0.1 (точнее); трансформер — по выбору.
+  var engine = (localStorage.getItem(ENGINE_KEY) === "transformer" && txModel) ? "transformer" : "mlp";
 
   function paramsOfCurrentEngine() {
     return engine === "transformer" && txModel ? window.MINI_AI_TRANSFORMER.n_params : mlpModel.n_params;
