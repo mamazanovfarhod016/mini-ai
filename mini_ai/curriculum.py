@@ -323,6 +323,16 @@ def setup_model(init_path, train_texts, target_vocab=5000, d=192, n_layer=20, n_
     if tokenizer_type == "bpe" and hasattr(tok, "extend"):
         added = tok.extend(train_texts, extra=max(0, target_vocab - len(tok)), verbose=True)
         log(f"Словарь расширен: +{added} токенов, V={len(tok)}")
+    if hasattr(tok, "_add_symbol"):
+        # 18.10.2026 (Kaggle IndexError 5081 ≥ V=5080): byte-fallback добавляет токены <0xXX> в словарь
+        # ПРИ КОДИРОВАНИИ данных, уже после того как размер эмбеддинга зафиксирован. Резервируем все 256
+        # байтовых токенов заранее (в конец — старые id не меняются), тогда encode больше не растит словарь.
+        from mini_ai.bpe import _byte_token
+        n0 = len(tok)
+        for b in range(256):
+            tok._add_symbol(_byte_token(b))
+        if len(tok) > n0:
+            log(f"Байтовые токены зарезервированы: +{len(tok) - n0}, V={len(tok)}")
     V = len(tok)
     p_new, cfg_new = init_params(V, d=d, n_layer=n_layer, n_head=n_head, block=block, pos=pos)
     p_new = grow_params(p_new, cfg_new, p_old, cfg_old)
