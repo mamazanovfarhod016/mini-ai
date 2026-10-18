@@ -196,13 +196,22 @@ def main():
                "--ckpt_dir", str(data / "ckpt_full"), "--ckpt_every", "100000",
                "--log", str(data / "logs/train_full.txt")]
         t0 = time.time()
-        r = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
-        if r.returncode != 0:
-            log(data, f"ОШИБКА полного обучения: {r.stderr[-500:]}")
-            return
+        where = "свой сервер"
+        try:                                       # сначала Kaggle (бесплатно, не грузит сервер METTA)
+            from server import kaggle_train
+            kaggle_train.run(intents=merged, math=math_file if MATH.exists() else None, steps=6000,
+                             extra=["--d", str(d), "--layers", str(layers), "--heads", "4"], out=out,
+                             log=lambda m: log(data, m))
+            where = "Kaggle"
+        except Exception as e:                     # нет токена / квота / сбой → учимся у себя
+            log(data, f"Kaggle недоступен ({str(e)[:150]}) — учусь на своём сервере")
+            r = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+            if r.returncode != 0:
+                log(data, f"ОШИБКА полного обучения: {r.stderr[-500:]}")
+                return
         p2, cfg2, tok2, meta2 = load_model(str(out))
         max_q2 = meta2.get("max_q", 24)
-        log(data, f"обучено с нуля за {(time.time()-t0)/60:.0f} мин: d={d}, слоёв={layers}, {n_params(p2):,} параметров")
+        log(data, f"обучено с нуля ({where}) за {(time.time()-t0)/60:.0f} мин: d={d}, слоёв={layers}, {n_params(p2):,} параметров")
         after = exam(p2, cfg2, tok2, max_q2, base_tests, topics, base_resp)
         after["weak"] = weak_acc(p2, cfg2, tok2, max_q2)
         cur_score = before["base"] + (before["new"] or 0) + (before["math"] or 0)

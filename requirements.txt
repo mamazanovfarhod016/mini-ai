@@ -1,2 +1,3 @@
 numpy>=1.26
 pytest>=8
+kaggle>=2.2  # только для сервера: обучение на Kaggle (server/kaggle_train.py)
