@@ -67,7 +67,7 @@ def run(path, qs, intents_by_tag):
 
 
 def main():
-    char_path = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "model_transformer_char.json")
+    char_path = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "model_transformer.json")
     bpe_path = sys.argv[2] if len(sys.argv) > 2 else str(ROOT / "model_transformer_bpe.json")
     data = json.loads((ROOT / "data/intents.json").read_text(encoding="utf-8"))
     intents_by_tag = {it["tag"]: it for it in data["intents"]}

@@ -121,8 +121,8 @@ def test_python_js_bpe_encode_parity(tok_and_texts, tmp_path):
 def test_python_js_bpe_transformer_parity():
     if not BPE_MODEL_PATH.exists():
         pytest.skip("model_transformer_bpe.json ещё не обучена")
-    from train_transformer import load_model, build_prompt
-    from mini_ai.transformer import KVModel
+    from train_transformer import build_prompt
+    from mini_ai.transformer import KVModel, load_model
 
     data = json.loads((ROOT / "data/intents.json").read_text(encoding="utf-8"))
     questions = []

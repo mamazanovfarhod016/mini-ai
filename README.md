@@ -279,6 +279,36 @@ PyTorch/TensorFlow — только numpy, вручную прямой и обр
 
 ---
 
+## v0.3 — свой BPE-токенизатор
+
+Раньше трансформер читал и писал **по буквам**. Теперь — **кусочками слов** (byte-pair encoding),
+токенизатор написан с нуля: `mini_ai/bpe.py` (обучение + encode/decode) и идентичный `app/www/bpe.js`.
+
+Как учится: каждое слово → `▁` + буквы; 782 раза сливаем самую частую пару соседних кусочков
+(«a»+«n» → «an», … «▁теле»+«фо» → «▁телефо»). Итог — словарь 1000 токенов. `①/②` (время/дата)
+никогда не сливаются; незнакомый символ → `<unk>`.
+
+```bash
+.venv/bin/python train_transformer.py --tokenizer bpe --vocab 1000 --steps 6000 \
+  --warmup 300 --drop 0.05 --out model_transformer_bpe.json      # ≈ 54 мин на CPU
+.venv/bin/python tools/compare_tokenizers.py                       # → docs/tokenizer_comparison.md
+```
+
+| | char (v0.2) | BPE (v0.3) |
+|---|---|---|
+| Новые перефразировки (нет в данных), намерение верно | 35% (6/17) | **94% (16/17)** |
+| Held-out тест из лога обучения | 32% точных ответов | **84% намерений (270/322)** |
+| Шагов генерации на ответ | 49,5 | **24,4** |
+| Скорость ответа (Python) | 64 мс | **21 мс** |
+| Размер модели | 986 КБ | 1196 КБ |
+
+Честно: char-модель — старый прогон (3000 шагов, без сбалансированного сэмплирования), так что
+часть разницы — не только от токенизатора. Подробности и все ответы — `docs/tokenizer_comparison.md`.
+Найден и исправлен баг: train/test-сплит зависел от `hash()` (разный в каждом запуске) → теперь crc32.
+
+Тесты (`tests/test_bpe.py`): encode→decode восстанавливает 100% корпуса; Python и JS дают **одинаковые id
+на всех 1 789 фразах**; логиты и greedy-ответы BPE-модели в Python и JS совпадают. Всего: 58 passed.
+
 ## English (v0.2 — transformer from scratch)
 
 Branch `feat/transformer` adds a tiny **decoder-only transformer** (GPT-style), still pure numpy, no

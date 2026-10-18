@@ -391,13 +391,13 @@
     }
 
     html += '<h3>Архитектура</h3><div class="tf-diagram">' +
-      '<div class="tf-row"><b>символы вопроса</b></div>' +
+      '<div class="tf-row"><b>' + (txModel.tokenizerType === "bpe" ? "кусочки слов вопроса (BPE, словарь " + cfg.V + ")" : "символы вопроса") + '</b></div>' +
       '<div class="tf-arrow">↓ эмбеддинг символа + позиции</div>' +
       '<div class="tf-block">×' + cfg.n_layer + ' блока:<br>LayerNorm → внимание (' + cfg.n_head + ' головы) → +residual<br>LayerNorm → MLP (GELU) → +residual</div>' +
       '<div class="tf-arrow">↓ LayerNorm → умножение на эмбеддинги</div>' +
-      '<div class="tf-row"><b>softmax → вероятность следующего символа</b></div></div>';
+      '<div class="tf-row"><b>softmax → вероятность следующего ' + (txModel.tokenizerType === "bpe" ? "кусочка" : "символа") + '</b></div></div>';
     html += '<p>' + m.n_params.toLocaleString("ru-RU") + ' параметров · d_model=' + cfg.d + ' · контекст=' + cfg.block +
-      ' · perplexity на тесте ≈ ' + (m.test_ppl || "?") + ' · точность (точн. совпадение) ≈ ' + Math.round((m.test_exact_accuracy || 0) * 100) + '%.</p>';
+      ' · perplexity на тесте ≈ ' + (m.test_ppl || "?") + ' · точность (точн. совпадение) ≈ ' + Math.round((m.test_exact_accuracy || 0) * 100) + '%' + (txModel.tokenizerType === "bpe" ? ' · свой BPE-токенизатор (написан с нуля)' : '') + '.</p>';
     html += '<p class="small-note">Автор: Фарход. Это настоящая генерация текста по буквам (как крошечный GPT), написанная с нуля на numpy — не выбор заготовки.</p>';
 
     body.innerHTML = html;

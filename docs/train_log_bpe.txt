@@ -1,0 +1,85 @@
+Вопросов всего: train 1293, test 322 (test — вопросы, НЕ виденные моделью)
+Пар (вопрос→ответ): train 3956, test 986
+Train-пар с опечатками: 11868
+  merge #0: 'a'+'n' -> 'an' (freq=344) vocab=219
+  merge #50: 'm'+'an' -> 'man' (freq=74) vocab=269
+  merge #100: 'м'+'а' -> 'ма' (freq=39) vocab=319
+  merge #150: 'g'+'a' -> 'ga' (freq=30) vocab=369
+  merge #200: '▁i'+'sh' -> '▁ish' (freq=22) vocab=419
+  merge #250: 'f'+'a' -> 'fa' (freq=18) vocab=469
+  merge #300: '▁o'+'la' -> '▁ola' (freq=15) vocab=519
+  merge #350: '▁теле'+'фо' -> '▁телефо' (freq=12) vocab=569
+  merge #400: '▁ola'+'san' -> '▁olasan' (freq=11) vocab=619
+  merge #450: 'm'+'ay' -> 'may' (freq=10) vocab=669
+  merge #500: '▁ска'+'з' -> '▁сказ' (freq=8) vocab=719
+  merge #550: 'may'+'man' -> 'mayman' (freq=8) vocab=769
+  merge #600: '▁Ф'+'ар' -> '▁Фар' (freq=7) vocab=819
+  merge #650: '▁о'+'ш' -> '▁ош' (freq=6) vocab=869
+  merge #700: 'р'+'аст' -> 'раст' (freq=6) vocab=919
+  merge #750: '▁на'+'зы' -> '▁назы' (freq=5) vocab=969
+Словарь BPE: 1000 токенов (782 слияний)
+Максимальная длина последовательности в токенах: 113, block=117
+Архитектура: d=96, слоёв=3, голов=4, контекст=117, d_ff=384
+Параметров: 443,944
+Сбалансированное сэмплирование: ВКЛ (28 намерений)
+  шаг     0/6000  loss=6.912  lr=0.00001  ||grad||=1.85  3с
+  шаг   300/6000  loss=0.898  lr=0.00250  ||grad||=1.50  149с
+  шаг   600/6000  loss=0.235  lr=0.00248  ||grad||=0.92  291с
+  шаг   900/6000  loss=0.214  lr=0.00244  ||grad||=0.84  447с
+[ckpt шаг 1000] train_intent_acc=74.3% test_intent_acc=59.6% elapsed=8.8мин
+  -> новый лучший чекпойнт (test_intent_acc=59.6%)
+  шаг  1200/6000  loss=0.110  lr=0.00236  ||grad||=0.50  624с
+  шаг  1500/6000  loss=0.101  lr=0.00226  ||grad||=0.64  777с
+  шаг  1800/6000  loss=0.110  lr=0.00214  ||grad||=0.46  927с
+[ckpt шаг 2000] train_intent_acc=93.8% test_intent_acc=78.6% elapsed=17.8мин
+  -> новый лучший чекпойнт (test_intent_acc=78.6%)
+  шаг  2100/6000  loss=0.078  lr=0.00199  ||grad||=0.41  1118с
+  шаг  2400/6000  loss=0.075  lr=0.00183  ||grad||=0.27  1267с
+  шаг  2700/6000  loss=0.053  lr=0.00165  ||grad||=0.26  1418с
+  шаг  3000/6000  loss=0.068  lr=0.00147  ||grad||=0.24  1564с
+[ckpt шаг 3000] train_intent_acc=98.0% test_intent_acc=80.7% elapsed=26.6мин
+  -> новый лучший чекпойнт (test_intent_acc=80.7%)
+  шаг  3300/6000  loss=0.081  lr=0.00128  ||grad||=0.39  1740с
+  шаг  3600/6000  loss=0.068  lr=0.00110  ||grad||=0.25  1889с
+  шаг  3900/6000  loss=0.051  lr=0.00092  ||grad||=0.22  2047с
+[ckpt шаг 4000] train_intent_acc=99.6% test_intent_acc=84.5% elapsed=35.5мин
+  -> новый лучший чекпойнт (test_intent_acc=84.5%)
+  шаг  4200/6000  loss=0.057  lr=0.00076  ||grad||=0.18  2237с
+  шаг  4500/6000  loss=0.042  lr=0.00061  ||grad||=0.17  2389с
+  шаг  4800/6000  loss=0.046  lr=0.00049  ||grad||=0.18  2543с
+[ckpt шаг 5000] train_intent_acc=99.7% test_intent_acc=83.5% elapsed=44.6мин
+  шаг  5100/6000  loss=0.046  lr=0.00039  ||grad||=0.19  2728с
+  шаг  5400/6000  loss=0.041  lr=0.00031  ||grad||=0.17  2875с
+  шаг  5700/6000  loss=0.037  lr=0.00027  ||grad||=0.16  3028с
+  шаг  5999/6000  loss=0.045  lr=0.00025  ||grad||=0.20  3179с
+[ckpt шаг 5999] train_intent_acc=99.8% test_intent_acc=83.9% elapsed=53.5мин
+
+Обучение заняло 53.5 мин
+Лучший чекпойнт по test_intent_acc: шаг 4000, 84.5%
+Train: loss=0.049  perplexity=1.05
+Test:  loss=0.092  perplexity=1.10
+
+TRAIN — доля правильных НАМЕРЕНИЙ (greedy): 99.8% (1292/1294)
+TEST  — доля правильных НАМЕРЕНИЙ (greedy): 83.9% (270/322)
+Точная метрика (greedy-ответ дословно совпал с эталоном намерения): 83.9% (270/322)
+Мягкая метрика (1 − норм. расстояние Левенштейна до ближайшего эталона): 87.6%
+
+model_transformer.json: 1196 КБ (1.17 МБ)
+
+=== Примеры генерации ===
+  «ahvollar qalay» → «Yaxshi! Men kichkina neyron tarmoqman, lekin so'raganingiz yoqdi. Sizda nima gap?»
+  «assalomu alaykum do'stim» → «Salom! Ishlar qalay?»
+  «bandmisan» → «Savollaringizni kutyapman va matritsalarni ko'paytiryapman.»
+  «barakalla» → «Rahmat, juda yoqimli! 🥰»
+  «bugun nechanchi» → «Bugun ② 📅»
+  «bugun sana» → «② — telefoningiz shunday deydi.»
+  «превет как дила» → «Привет! 👋 Чем могу помочь?»
+  «qalaysan do'stim» → «Zo'r, rahmat! Sizning ishlaringiz qalay?»
+  «кто тбея создал» → «Меня создал Фарход — с нуля, на Python и numpy, без готовых библиотек для нейросетей.»
+  «расскажи анекдот про программиста» → «Мой градиент сегодня спускается быстрее, чем я успеваю пошутить 😅»
+  «столица франции» → «Я совсем новорождённая — меня обучили в 2026 году, и обучение заняло несколько секунд 😄»
+  «xyzqwrty bla bla» → «Men Mini AI — juda kichkina neyron tarmoqman. Meni noldan numpy'da yozishgan, internetsiz telefoningizda ishlayman.»
+  «который час сейчас покажи» → «① — время с твоего телефона.»
+  «менга hayrli kun» → «Не за что! Обращайся.»
+
+Лог сохранён: /home/hermes/Developer/mini-ai/docs/train_log_transformer.txt
