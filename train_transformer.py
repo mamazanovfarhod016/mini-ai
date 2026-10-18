@@ -280,6 +280,8 @@ def main():
     ap.add_argument("--layers", type=int, default=3)
     ap.add_argument("--heads", type=int, default=4)
     ap.add_argument("--block", type=int, default=224)
+    ap.add_argument("--pos", choices=["rope", "learned"], default="rope",
+                     help="позиция: rope (по умолчанию, контекст можно сделать длинным) или learned (старый wpe)")
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--steps", type=int, default=2600)
     ap.add_argument("--lr", type=float, default=2.5e-3)
@@ -364,6 +366,7 @@ def main():
         args.max_q = meta_old.get("max_q", args.max_q)
         args.d, args.layers = max(args.d, cfg_old["d"]), max(args.layers, cfg_old["n_layer"])
         args.heads = args.heads if args.d % args.heads == 0 else cfg_old["n_head"]
+        args.pos = cfg_old.get("pos", "learned")   # позицию при продолжении обучения не меняем
         enc = (lambda s_: tok.encode(s_)) if args.tokenizer == "bpe" else (lambda s_: tok.encode(s_))
         max_len = 0
         for q, a, *_ in train_aug + test_pairs + math_train:
@@ -402,7 +405,7 @@ def main():
         print(f"Словарь: {V} символов")
 
     p, cfg = init_params(V, d=args.d, n_layer=args.layers, n_head=args.heads,
-                          block=args.block, seed=args.seed)
+                          block=args.block, seed=args.seed, pos=args.pos)
     if init:
         p = grow_params(p, cfg, *init)
     print(f"Архитектура: d={args.d}, слоёв={args.layers}, голов={args.heads}, "

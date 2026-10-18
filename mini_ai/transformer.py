@@ -116,15 +116,24 @@ class CharTokenizer:
 # ======================================================================================
 # 2. Инициализация весов
 # ======================================================================================
-def init_params(V, d=128, n_layer=3, n_head=4, block=160, d_ff=None, seed=0, dtype=np.float32):
+def init_params(V, d=128, n_layer=3, n_head=4, block=None, d_ff=None, seed=0, dtype=np.float32,
+                 pos="rope", rope_base=10000.0):
     """Маленькие случайные веса ~ N(0, 0.02), как в GPT-2. Выходные проекции residual-веток
-    уменьшаем в 1/sqrt(2·n_layer), чтобы сумма многих residual не «раздувалась» в начале обучения."""
+    уменьшаем в 1/sqrt(2·n_layer), чтобы сумма многих residual не «раздувалась» в начале обучения.
+
+    pos: "rope" (НОВЫЙ стандарт — вращающиеся позиционные эмбеддинги, без параметров wpe,
+         контекст можно сделать длинным — 10000 токенов) или "learned" (старые модели —
+         обучаемая таблица wpe[block, d], как раньше; оставлена для обратной совместимости)."""
     rng = np.random.default_rng(seed)
     d_ff = d_ff or 4 * d
+    if block is None:
+        block = 10000 if pos == "rope" else 160
     n = lambda *s, std=0.02: (rng.normal(0, std, s)).astype(dtype)
     z = lambda *s: np.zeros(s, dtype)
     o = lambda *s: np.ones(s, dtype)
-    p = {"wte": n(V, d), "wpe": n(block, d, std=0.01)}
+    p = {"wte": n(V, d)}
+    if pos == "learned":
+        p["wpe"] = n(block, d, std=0.01)
     proj_std = 0.02 / math.sqrt(2 * n_layer)
     for l in range(n_layer):
         p.update({
@@ -137,7 +146,10 @@ def init_params(V, d=128, n_layer=3, n_head=4, block=160, d_ff=None, seed=0, dty
         })
     p["lnf.g"], p["lnf.b"] = o(d), z(d)
     p["bout"] = z(V)          # смещение выходного слоя (сама матрица связана с wte)
-    cfg = {"V": V, "d": d, "n_layer": n_layer, "n_head": n_head, "block": block, "d_ff": d_ff}
+    cfg = {"V": V, "d": d, "n_layer": n_layer, "n_head": n_head, "block": block, "d_ff": d_ff,
+           "pos": pos}
+    if pos == "rope":
+        cfg["rope_base"] = rope_base
     p = {k: bk.to_xp(v) for k, v in p.items()}   # с видеокартой веса сразу живут на ней
     return p, cfg
 
@@ -152,9 +164,21 @@ def grow_params(p_new, cfg_new, p_old, cfg_old):
     • Шире (больше d) → старые числа кладём в «левый верхний угол» новых матриц (для wqkv — отдельно
       в части Q, K и V). Ответы меняются чуть-чуть (LayerNorm считает среднее по всем d), и сеть
       быстро это доучивает — знания не пропадают.
-    • Длиннее контекст (block) → старые позиции копируем, новые остаются случайными.
+    • Длиннее контекст (block) → для 'learned' старые позиции копируем, новые остаются случайными;
+      для RoPE параметров нет, менять block можно свободно (ничего не копируется).
     • Словарь больше (BPETokenizer.extend добавил токены В КОНЕЦ) → старые строки wte/bout копируем,
       новые токены получают свои случайные векторы. Старые номера значат то же, что и раньше.
+    • learned → rope: старая модель имела wpe, у новой его нет — просто пропускаем (его нет в p_new,
+      цикл ниже копирует только то, что есть в обеих сетях). Остальные веса (wte, attn, mlp, ln...)
+      копируются как обычно — старые «знания» остаются, только позиция теперь считается поворотом.
+    • rope → rope, шире d (heads могут измениться, например 4→8): copy в «левый верхний угол» для
+      wqkv всё равно корректен для RoPE, т.к. углы RoPE зависят только от ПОЗИЦИИ ВНУТРИ ГОЛОВЫ
+      (0..dh/2-1), а не от номера головы — старые головы продолжают работать с теми же парами
+      координат и теми же углами, что и раньше (dh = d/n_head может поменяться, если меняется
+      n_head непропорционально d — тогда соответствие пар «старая голова → старая пара» нарушится;
+      в этом проекте n_head всегда растёт вместе с d так, что dh = d/n_head остаётся тем же или
+      растёт — тогда старые dh координат каждой старой головы лежат в начале новой головы, и RoPE
+      на них действует как раньше).
     """
     if cfg_new["V"] < cfg_old["V"]:
         raise ValueError(f"словарь можно только дополнять: {cfg_old['V']} → {cfg_new['V']}")
@@ -249,10 +273,54 @@ def softmax(x, axis=-1):
     return e / e.sum(axis, keepdims=True)
 
 
-def attention_forward(h, wqkv, bqkv, wo, bo, n_head):
+# ----------------------------------------------------------------------------------
+# RoPE (Rotary Position Embeddings): вместо ТАБЛИЦЫ wpe[позиция] каждую пару
+# координат вектора q (и k) поворачиваем на угол, зависящий от АБСОЛЮТНОЙ позиции.
+# Параметров нет (нечего обучать и нечего ограничивать по размеру) — поэтому
+# контекст можно сделать сколь угодно длинным (cfg['block'] = 10000).
+#
+#   theta_i = base^(-2i/dh),   i = 0..dh/2-1     (разная «скорость вращения» для пар)
+#   угол пары i на позиции t:  t·theta_i
+#   поворот пары (x_{2i}, x_{2i+1}) на угол a:
+#       x'_{2i}   = x_{2i}·cos(a) − x_{2i+1}·sin(a)
+#       x'_{2i+1} = x_{2i}·sin(a) + x_{2i+1}·cos(a)
+#   Это ОБЫЧНАЯ матрица поворота R(a) — она ортогональна (R(a)ᵗ = R(-a) = R(a)⁻¹),
+#   поэтому обратный проход — это просто поворот градиента на −a (тот же apply_rope
+#   с sin → −sin, никаких новых формул).
+# ----------------------------------------------------------------------------------
+def rope_cos_sin(positions, dh, base, xp=np):
+    """cos/sin углов для каждой позиции и каждой пары координат: форма (len(positions), dh/2)."""
+    i = xp.arange(0, dh, 2, dtype=np.float64)
+    theta = base ** (-i / dh)                       # (dh/2,)
+    ang = xp.asarray(positions, dtype=np.float64)[:, None] * theta[None, :]   # (T, dh/2)
+    return xp.cos(ang), xp.sin(ang)
+
+
+def apply_rope(x, cos, sin):
+    """Поворачиваем пары координат последней оси x (...,T,dh) на углы cos/sin (T,dh/2).
+    Работает и для (B,H,T,dh), и для (H,dh) при T=1 (один шаг в KVModel) — cos/sin
+    в этом случае форма (1,dh/2) и просто transmit'ятся по всем ведущим осям."""
+    xp = bk.xp_of(x)
+    *lead, T, dh = x.shape
+    xr = x.reshape(*lead, T, dh // 2, 2)
+    x0, x1 = xr[..., 0], xr[..., 1]
+    c = cos.reshape((1,) * len(lead) + cos.shape).astype(x.dtype)
+    s = sin.reshape((1,) * len(lead) + sin.shape).astype(x.dtype)
+    o0 = x0 * c - x1 * s
+    o1 = x0 * s + x1 * c
+    return xp.stack([o0, o1], axis=-1).reshape(*lead, T, dh)
+
+
+def apply_rope_backward(dout, cos, sin):
+    """Поворот ортогонален ⇒ обратный проход = поворот на -угол (знак sin меняем)."""
+    return apply_rope(dout, cos, -sin)
+
+
+def attention_forward(h, wqkv, bqkv, wo, bo, n_head, rope=None):
     """Многоголовое causal self-attention.
 
         Q = h·Wq,  K = h·Wk,  V = h·Wv            (одна матрица wqkv делает все три сразу)
+        (если rope задан: Q, K поворачиваем RoPE — см. apply_rope выше)
         S = Q·Kᵀ / √dh                             (насколько символ i «интересуется» символом j)
         S[i, j] = −∞  для j > i                    (causal-маска: будущее запрещено)
         A = softmax(S)  по j                       (веса внимания, в строке сумма = 1)
@@ -260,12 +328,19 @@ def attention_forward(h, wqkv, bqkv, wo, bo, n_head):
         out = concat(головы)·Wo + bo
 
     Каждая голова (H штук) делает это в своём подпространстве размера dh = d/H — одна может
-    следить за «какое было слово», другая — за «какую букву я сейчас пишу» и т.д."""
+    следить за «какое было слово», другая — за «какую букву я сейчас пишу» и т.д.
+
+    rope = (cos, sin) формы (T, dh/2) — углы поворота для каждой АБСОЛЮТНОЙ позиции (или None,
+    если модель старая и использует обучаемую таблицу wpe)."""
     B, T, d = h.shape
     dh = d // n_head
     qkv = h @ wqkv + bqkv                                        # (B,T,3d)
     qkv = qkv.reshape(B, T, 3, n_head, dh).transpose(2, 0, 3, 1, 4)  # (3,B,H,T,dh)
     q, k, v = qkv[0], qkv[1], qkv[2]
+    if rope is not None:
+        cos, sin = rope
+        q = apply_rope(q, cos, sin)
+        k = apply_rope(k, cos, sin)
     scale = 1.0 / math.sqrt(dh)
     S = (q @ k.transpose(0, 1, 3, 2)) * scale                    # (B,H,T,T)
     mask = causal_mask(T)
@@ -274,7 +349,7 @@ def attention_forward(h, wqkv, bqkv, wo, bo, n_head):
     Y = A @ v                                                    # (B,H,T,dh)
     Ym = Y.transpose(0, 2, 1, 3).reshape(B, T, d)                # склеиваем головы
     out = Ym @ wo + bo
-    return out, (h, q, k, v, A, Ym, wqkv, wo, scale, n_head)
+    return out, (h, q, k, v, A, Ym, wqkv, wo, scale, n_head, rope)
 
 
 def attention_backward(dout, cache):
@@ -284,8 +359,9 @@ def attention_backward(dout, cache):
         A = softmax(S)       →  dS = A ⊙ (dA − Σ_j dA⊙A)        (якобиан softmax)
            (на замаскированных местах A = 0, значит и dS = 0: градиент в будущее не течёт)
         S = Q·Kᵀ·scale       →  dQ = dS·K·scale,  dK = dSᵀ·Q·scale
+        (если был RoPE: dQ,dK поворачиваем НАЗАД — apply_rope_backward — прежде чем попасть в dqkv)
         qkv = h·Wqkv + b     →  dWqkv = hᵀ·dqkv,  dh = dqkv·Wqkvᵀ"""
-    h, q, k, v, A, Ym, wqkv, wo, scale, n_head = cache
+    h, q, k, v, A, Ym, wqkv, wo, scale, n_head, rope = cache
     B, T, d = h.shape
     dh_ = d // n_head
     dwo = Ym.reshape(-1, d).T @ dout.reshape(-1, d)
@@ -298,6 +374,10 @@ def attention_backward(dout, cache):
     dS *= scale
     dq = dS @ k
     dk = dS.transpose(0, 1, 3, 2) @ q
+    if rope is not None:
+        cos, sin = rope
+        dq = apply_rope_backward(dq, cos, sin)
+        dk = apply_rope_backward(dk, cos, sin)
     dqkv = bk.xp.stack([dq, dk, dv]).transpose(1, 3, 0, 2, 4).reshape(B, T, 3 * d)
     dwqkv = h.reshape(-1, d).T @ dqkv.reshape(-1, 3 * d)
     dbqkv = dqkv.reshape(-1, 3 * d).sum(0)
@@ -315,13 +395,13 @@ def dropout_mask(shape, p, rng, dtype):
     return (r >= p).astype(dtype) / (1.0 - p)
 
 
-def block_forward(x, p, l, n_head, drop=0.0, rng=None):
+def block_forward(x, p, l, n_head, drop=0.0, rng=None, rope=None):
     """Один блок трансформера (pre-LN, как GPT-2):
         x = x + Attn(LN1(x))
         x = x + MLP(LN2(x)),   MLP(z) = GELU(z·W1 + b1)·W2 + b2
     «+ x» — residual-связь: градиент свободно течёт насквозь, глубокую сеть легко учить."""
     h1, c_ln1 = layernorm_forward(x, p[f"{l}.ln1.g"], p[f"{l}.ln1.b"])
-    a, c_att = attention_forward(h1, p[f"{l}.attn.wqkv"], p[f"{l}.attn.bqkv"], p[f"{l}.attn.wo"], p[f"{l}.attn.bo"], n_head)
+    a, c_att = attention_forward(h1, p[f"{l}.attn.wqkv"], p[f"{l}.attn.bqkv"], p[f"{l}.attn.wo"], p[f"{l}.attn.bo"], n_head, rope)
     m1 = dropout_mask(a.shape, drop, rng, x.dtype)
     if m1 is not None:
         a = a * m1
@@ -373,13 +453,21 @@ def forward(p, cfg, idx, drop=0.0, rng=None):
     """idx (B,T) номера символов → logits (B,T,V): «оценки» каждого возможного следующего символа."""
     idx = bk.to_xp(idx)                            # номера символов → туда же, где веса
     B, T = idx.shape
-    x = p["wte"][idx] + p["wpe"][:T]              # эмбеддинг символа + эмбеддинг позиции
+    pos = cfg.get("pos", "learned")
+    if pos == "rope":
+        x = p["wte"][idx]                          # позицию кодирует RoPE внутри внимания, не сумма
+        dh = cfg["d"] // cfg["n_head"]
+        cos, sin = rope_cos_sin(bk.xp.arange(T), dh, cfg.get("rope_base", 10000.0), bk.xp)
+        rope = (cos, sin)
+    else:
+        x = p["wte"][idx] + p["wpe"][:T]           # эмбеддинг символа + эмбеддинг позиции
+        rope = None
     m0 = dropout_mask(x.shape, drop, rng, x.dtype)
     if m0 is not None:
         x = x * m0
     caches = []
     for l in range(cfg["n_layer"]):
-        x, c = block_forward(x, p, l, cfg["n_head"], drop, rng)
+        x, c = block_forward(x, p, l, cfg["n_head"], drop, rng, rope)
         caches.append(c)
     hf, c_lnf = layernorm_forward(x, p["lnf.g"], p["lnf.b"])
     logits = hf @ p["wte"].T + p["bout"]          # связанные веса: выход = эмбеддинг «наоборот»
@@ -419,9 +507,10 @@ def backward(p, cfg, dlogits, cache):
         dx = block_backward(dx, caches[l], p, l, grads)
     if m0 is not None:
         dx = dx * m0
-    # эмбеддинги: x = wte[idx] + wpe[t]  ⇒  градиент «складываем» в строки, которые использовались
+    # эмбеддинги: x = wte[idx] (+ wpe[t], если модель старая, pos='learned')
     T = idx.shape[1]
-    grads["wpe"][:T] += dx.sum(0)
+    if "wpe" in grads:
+        grads["wpe"][:T] += dx.sum(0)
     bk.scatter_add(grads["wte"], idx.reshape(-1), dx.reshape(-1, d))
     return grads
 
@@ -487,21 +576,38 @@ class KVModel:
     def __init__(self, p, cfg):
         self.p = {k: bk.to_np(v).astype(np.float64) for k, v in p.items()}
         self.cfg = cfg
+        self._rope_cache = {}   # pos -> (cos, sin) формы (dh/2,); считаем лениво, по одной позиции
 
     def new_cache(self):
         return [{"k": [], "v": []} for _ in range(self.cfg["n_layer"])]
+
+    def _rope_at(self, pos):
+        """cos/sin для ОДНОЙ позиции (ленивый расчёт + маленький кэш — не 10000×dh заранее)."""
+        c = self._rope_cache.get(pos)
+        if c is None:
+            dh = self.cfg["d"] // self.cfg["n_head"]
+            cos, sin = rope_cos_sin([pos], dh, self.cfg.get("rope_base", 10000.0), np)
+            c = self._rope_cache[pos] = (cos[0], sin[0])   # (dh/2,)
+        return c
 
     def step(self, tok, pos, cache, want_attn=False):
         p, cfg = self.p, self.cfg
         H = cfg["n_head"]
         d = cfg["d"]
         dh = d // H
-        x = p["wte"][tok] + p["wpe"][pos]
+        use_rope = cfg.get("pos", "learned") == "rope"
+        x = p["wte"][tok] if use_rope else p["wte"][tok] + p["wpe"][pos]
         attn = []
+        if use_rope:
+            cos, sin = self._rope_at(pos)   # (dh/2,) — углы для ЭТОЙ абсолютной позиции
         for l in range(cfg["n_layer"]):
             h, _ = layernorm_forward(x, p[f"{l}.ln1.g"], p[f"{l}.ln1.b"])
             qkv = h @ p[f"{l}.attn.wqkv"] + p[f"{l}.attn.bqkv"]
             q, k, v = qkv[:d].reshape(H, dh), qkv[d:2 * d].reshape(H, dh), qkv[2 * d:].reshape(H, dh)
+            if use_rope:
+                # поворачиваем q и k текущего шага на угол позиции pos (кэш хранит УЖЕ ПОВЁРНУТЫЕ k)
+                q = apply_rope(q[:, None, :], cos[None, :], sin[None, :])[:, 0, :]
+                k = apply_rope(k[:, None, :], cos[None, :], sin[None, :])[:, 0, :]
             cache[l]["k"].append(k)
             cache[l]["v"].append(v)
             K = np.stack(cache[l]["k"], 1)       # (H, t, dh) — все прошлые ключи + текущий
