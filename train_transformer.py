@@ -482,7 +482,7 @@ def main():
 
     train_time = time.time() - t_start
     print(f"\nОбучение заняло {train_time/60:.1f} мин")
-    print(f"Лучший чекпойнт по test_intent_acc: шаг {best_step}, {best_test_acc*100:.1f}%")
+    print(f"Лучший чекпойнт (намерения + счёт): шаг {best_step}, сумма {best_test_acc:.3f}")
 
     # ---------- метрики train/test (loss/perplexity) ----------
     train_loss, train_ppl = evaluate(p, cfg, tok, train_pairs, args.max_q, args.block)
@@ -570,7 +570,7 @@ def main():
                 f"block={args.block}, params={n_params(p):,}\n")
         f.write(f"Время обучения: {train_time/60:.1f} мин ({args.steps} шагов, batch={args.batch}, "
                 f"сбалансированное сэмплирование={'да' if args.balanced else 'нет'})\n")
-        f.write(f"Лучший чекпойнт по test_intent_acc: шаг {best_step}, {best_test_acc*100:.1f}%\n")
+        f.write(f"Лучший чекпойнт (намерения + счёт): шаг {best_step}, сумма {best_test_acc:.3f}\n")
         f.write(f"Train: loss={train_loss:.3f} ppl={train_ppl:.2f}\n")
         f.write(f"Test:  loss={test_loss:.3f} ppl={test_ppl:.2f}\n")
         f.write(f"TRAIN — доля правильных НАМЕРЕНИЙ (greedy): {train_intent_acc*100:.1f}% "
