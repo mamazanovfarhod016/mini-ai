@@ -33,13 +33,19 @@ ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / ".cache_corpus"
 OUT = ROOT / "data/corpus"
 UA = "MiniAI/0.4 (https://github.com/mamazanovfarhod016/mini-ai; study project)"
-TARGET_CHARS = 2_500_000          # на язык (≈ 0,5 млн слов) — по силам маленькой сети
+TARGET_CHARS = 12_000_000         # на язык (≈ 2 млн слов); узбекского и русского может быть меньше — берём сколько есть
 HF = "https://huggingface.co/datasets"
 
 SOURCES = {
     "tinystories_en": f"{HF}/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-valid.txt",
     "tinystories_ml": f"{HF}/Dxniz/TinyStories-Multilingual/resolve/main/tinystories.jsonl",
     "uzwiki": f"{HF}/ffatty/plaintext-wikipedia-full-uzbek/resolve/main/data/uzwiki_01_of_03_part01_of_02.txt.gz",
+    "uzwiki_02": f"{HF}/ffatty/plaintext-wikipedia-full-uzbek/resolve/main/data/uzwiki_02_of_03_part01_of_02.txt.gz",
+    "uzwiki_03": f"{HF}/ffatty/plaintext-wikipedia-full-uzbek/resolve/main/data/uzwiki_03_of_03_part01_of_02.txt.gz",
+    # первые 200 МБ большого файла TinyStories (скачиваются через Range — см. README корпуса)
+    "tinystories_en_train": f"{HF}/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-train.txt",
+    # узбекские новости (tahrirchi/uz-crawl, Apache-2.0), один файл из 7
+    "uz_news3": f"{HF}/tahrirchi/uz-crawl/resolve/main/data/news-00002-of-00007.parquet",
 }
 ALPHA = {
     "uz": re.compile(r"^[a-zA-Zʻʼ‘’'`ʻ\s.,!?:;\-—–\"«»()0-9]+$"),
@@ -84,7 +90,7 @@ def ru_wiki_intros(n_calls=1000):
 
 
 def sentences(text):
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+", " ", text).replace("ʻ", "'").replace("‘", "'").replace("’", "'").replace("ʼ", "'")
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-ZА-ЯЁ\"«])", text) if s.strip()]
 
 
@@ -125,6 +131,9 @@ def main():
     src_count = Counter()
 
     en = fetch("tinystories_en", SOURCES["tinystories_en"]).read_text(encoding="utf-8", errors="ignore")
+    big = CACHE / "tinystories_en_train.txt"
+    if big.exists():
+        en += "\n" + big.read_text(encoding="utf-8", errors="ignore")
     for story in en.split("<|endoftext|>"):
         ss = sentences(story)
         raw["en"] += ss
@@ -137,11 +146,21 @@ def main():
             raw[d["language_code"]] += ss
             src_count[f"{d['language_code']}: TinyStories-Multilingual"] += len(ss)
 
-    with gzip.open(fetch("uzwiki", SOURCES["uzwiki"]), "rt", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            ss = sentences(line)
+    for key in ("uzwiki", "uzwiki_02", "uzwiki_03"):
+        with gzip.open(fetch(key, SOURCES[key]), "rt", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                ss = sentences(line)
+                raw["uz"] += ss
+                src_count["uz: Википедия"] += len(ss)
+    try:
+        import pyarrow.parquet as pq
+        table = pq.read_table(fetch("uz_news3", SOURCES["uz_news3"]), columns=["text"])
+        for t in table.column("text").to_pylist()[:300_000]:
+            ss = sentences(t or "")
             raw["uz"] += ss
-            src_count["uz: Википедия"] += len(ss)
+            src_count["uz: новости (uz-crawl)"] += len(ss)
+    except ImportError:
+        print("  pyarrow нет — узбекские новости пропускаю")
 
     for t in ru_wiki_intros():
         ss = sentences(t)
