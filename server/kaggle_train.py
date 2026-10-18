@@ -89,7 +89,9 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
     args = ["--tokenizer", "bpe", "--vocab", "1000", "--steps", str(steps), "--warmup", "300", "--drop", "0.05",
             "--intents", "data/intents.json", *extra]
     if gpu:
-        args.append("--gpu")      # те же формулы, но массивы на видеокарте (CuPy уже стоит на Kaggle)
+        # на видеокарте backprop считает PyTorch (он уже стоит на Kaggle); сеть и Adam — наши,
+        # совпадение с numpy-эталоном проверяет tests/test_torch_engine.py
+        args += ["--engine", "torch"]
     maths = []
     if math:
         files.append((Path(math), "data/math_pairs.json"))

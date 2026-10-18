@@ -310,6 +310,8 @@ def main():
     ap.add_argument("--math", default="", help="data/math_pairs.json[,data/school_math.json] — учить считать/решать (tools/make_math.py, tools/make_school_math.py)")
     ap.add_argument("--math_frac", type=float, default=0.4, help="доля примеров на счёт в каждом батче")
     ap.add_argument("--init", default="", help="модель, с которой продолжать (постоянные знания); можно увеличить --d/--layers")
+    ap.add_argument("--engine", choices=["numpy", "torch"], default="numpy",
+                    help="numpy — наши формулы backprop (эталон); torch — backprop считает PyTorch (быстрее на видеокарте)")
     ap.add_argument("--gpu", action="store_true", help="считать на видеокарте (CuPy), если она есть")
     ap.add_argument("--vocab", type=int, default=1000, help="размер словаря BPE (только для --tokenizer bpe)")
     args = ap.parse_args()
@@ -407,8 +409,15 @@ def main():
           f"контекст={args.block}, d_ff={cfg['d_ff']}")
     print(f"Параметров: {n_params(p):,}")
 
-    opt = AdamW(p, lr=args.lr, wd=0.01)
     np_rng = np.random.default_rng(args.seed)
+    engine = None
+    if args.engine == "torch":
+        # PyTorch считает только backprop; сеть, AdamW, lr и обрезка градиента — наши (mini_ai/torch_engine.py)
+        from mini_ai.torch_engine import TorchEngine
+        engine = TorchEngine({k: bk.to_np(v) for k, v in p.items()}, cfg, lr=args.lr, wd=0.01, seed=args.seed)
+        print(f"Движок обучения: PyTorch ({engine.dev}); эталон — numpy (tests/test_torch_engine.py)", flush=True)
+    else:
+        opt = AdamW(p, lr=args.lr, wd=0.01)
 
     examples = [(q, a) for q, a, *_ in train_aug]
     n = len(examples)
@@ -462,15 +471,20 @@ def main():
         batch_examples = sample_batch(args.batch)
         idx, targets, mask = make_batch(tok, batch_examples, args.max_q, args.block, np_rng)
         lr = lr_schedule(step, args.steps, args.lr, args.warmup)
-        loss, grads = loss_and_grads(p, cfg, idx, targets, mask, drop=args.drop, rng=np_rng)
-        gnorm = clip_grads(grads, max_norm=1.0)
-        opt.step(p, grads, lr)
+        if engine:
+            loss, gnorm = engine.step(idx, targets, mask, lr, drop=args.drop)
+        else:
+            loss, grads = loss_and_grads(p, cfg, idx, targets, mask, drop=args.drop, rng=np_rng)
+            gnorm = clip_grads(grads, max_norm=1.0)
+            opt.step(p, grads, lr)
         if step % log_every == 0 or step == args.steps - 1:
             elapsed = time.time() - t_start
             print(f"  шаг {step:5d}/{args.steps}  loss={loss:.3f}  lr={lr:.5f}  "
                   f"||grad||={gnorm:.2f}  {elapsed:.0f}с", flush=True)
 
         is_ckpt_step = (step > 0 and step % args.ckpt_every == 0) or step == args.steps - 1
+        if is_ckpt_step and engine:
+            p = engine.params_numpy()            # экзамен и сохранение — всегда на numpy-весах
         if is_ckpt_step:
             kv_ckpt = KVModel(p, cfg)
             train_acc, _ = intent_accuracy(kv_ckpt, tok, intents_by_tag, train_qs_eval, args.block, args.max_q)
@@ -504,6 +518,8 @@ def main():
                 json.dumps({"progress": progress_log, "best_step": best_step, "best_test_acc": best_test_acc},
                            ensure_ascii=False, indent=1), encoding="utf-8")
 
+    if engine:
+        p = engine.params_numpy()
     # страховка: сохраняем веса СРАЗУ после обучения — если упадёт экзамен, обученная модель не пропадёт
     Path(args.out).write_text(json.dumps(export_model(p, cfg, tok, {"step": args.steps, "exam": "pending"},
                                                       tokenizer_type=args.tokenizer, max_q=args.max_q,
