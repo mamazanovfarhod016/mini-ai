@@ -90,6 +90,24 @@ def normalize_math(t):
     return t
 
 
+def prompt_ids(tok, text, raw=False, max_q_tok=24):
+    """<bos> + вопрос/код + <sep>. raw=False — старое поведение (clean_question + encode,
+    id идентичны старым моделям). raw=True — lossless encode БЕЗ clean_question (регистр,
+    пунктуация и пробелы сохраняются как есть) — используем для Python-кода и длинных
+    контекстов, где clean_question испортил бы текст.
+    Работает и с CharTokenizer (у него нет raw/clean_fn, но clean_question всё равно
+    применяется так же, как раньше), и с BPETokenizer."""
+    if raw:
+        enc = getattr(tok, "encode")
+        try:
+            q = enc(text, raw=True)[:max_q_tok]
+        except TypeError:
+            q = enc(text)[:max_q_tok]
+    else:
+        q = tok.encode(clean_question(text))[:max_q_tok]
+    return [BOS] + q + [SEP]
+
+
 class CharTokenizer:
     """Словарь = спецтокены + все символы, которые встретились в данных."""
 
