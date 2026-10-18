@@ -48,7 +48,7 @@ def default_plan():
             {
                 "name": "read",
                 "max_len": 512, "token_budget": 16384, "lr": 2e-3, "warmup": 300,
-                "time_frac": 0.30,
+                "time_frac": 0.2550,
                 "sources": [
                     {"type": "lm", "weight": 0.85,
                      "files": [str(corpus / "uz.txt"), str(corpus / "ru.txt"), str(corpus / "en.txt")]},
@@ -58,7 +58,7 @@ def default_plan():
             {
                 "name": "reason",
                 "max_len": 400, "token_budget": 12288, "lr": 1.5e-3, "warmup": 200,
-                "time_frac": 0.35,
+                "time_frac": 0.2975,
                 "sources": [
                     {"type": "qa", "weight": 0.22, "file": str(ROOT / "data/reasoning.json")},
                     {"type": "qa", "weight": 0.18, "file": str(ROOT / "data/school_math.json")},
@@ -74,11 +74,25 @@ def default_plan():
             {
                 "name": "context",
                 "max_len": 10000, "token_budget": 8192, "lr": 1e-3, "warmup": 150,
-                "time_frac": 0.25,
+                "time_frac": 0.2125,
                 "sources": [
                     {"type": "context", "weight": 0.75, "file": str(ROOT / "data/context_tasks.json")},
                     {"type": "qa", "weight": 0.15, "file": str(ROOT / "data/reasoning.json")},
                     {"type": "lm", "weight": 0.10,
+                     "files": [str(corpus / "uz.txt"), str(corpus / "ru.txt"), str(corpus / "en.txt")]},
+                ],
+            },
+            {
+                "name": "dialog",
+                "max_len": 1024, "token_budget": 12288, "lr": 1e-3, "warmup": 150,
+                "time_frac": 0.15,
+                "sources": [
+                    {"type": "dialog", "weight": 0.6, "glob": str(ROOT / "data/dialogs_*.jsonl")},
+                    {"type": "qa", "weight": 0.1, "file": str(ROOT / "data/intents_pairs.json")},
+                    {"type": "qa", "weight": 0.1, "file": str(ROOT / "data/reasoning.json")},
+                    {"type": "qa", "weight": 0.05, "file": str(ROOT / "data/school_math.json")},
+                    {"type": "qa", "weight": 0.05, "file": str(ROOT / "data/parallel.json")},
+                    {"type": "lm", "weight": 0.1,
                      "files": [str(corpus / "uz.txt"), str(corpus / "ru.txt"), str(corpus / "en.txt")]},
                 ],
             },
@@ -93,7 +107,8 @@ def default_plan():
                 "sources": [
                     {"type": "selfplay", "weight": 0.6, "file": "__selfplay_out__"},
                     {"type": "qa", "weight": 0.2, "file": str(ROOT / "data/reasoning.json")},
-                    {"type": "qa", "weight": 0.2, "file": str(ROOT / "data/intents_pairs.json")},
+                    {"type": "qa", "weight": 0.05, "file": str(ROOT / "data/intents_pairs.json")},
+                    {"type": "dialog", "weight": 0.15, "glob": str(ROOT / "data/dialogs_*.jsonl")},
                 ],
             },
         ],
@@ -158,6 +173,15 @@ def exam_data_for_stage(stage_name, root):
                 out["context_test"] = [x for k in sorted(by, key=str) for x in random.Random(0).sample(by[k], min(14, len(by[k])))]
             except Exception:
                 out["context_test"] = []
+    if stage_name in ("dialog", "selfplay"):
+        from mini_ai.dialog import load_dialogs, split_train_test_dialogs
+        dialogs = load_dialogs(str(root / "data/dialogs_*.jsonl"))
+        if not dialogs:
+            print("ПРЕДУПРЕЖДЕНИЕ: data/dialogs_*.jsonl не найдены — экзамен dialog пропущен")
+            out["dialog_test"] = []
+        else:
+            _train, test_dialogs = split_train_test_dialogs(dialogs)
+            out["dialog_test"] = random.Random(0).sample(test_dialogs, min(300, len(test_dialogs)))
     return out
 
 
@@ -317,8 +341,9 @@ def main():
     # финальная модель
     p_final = engine.params_numpy()
     from mini_ai.transformer import export_model
-    final_doc = export_model(p_final, engine.cfg, tok, {"max_q": max_q}, tokenizer_type=tokenizer_type,
-                              max_q=max_q, merges=getattr(tok, "merges", None))
+    dialog_stage_present = any(s["name"] == "dialog" for s in plan["stages"])
+    final_doc = export_model(p_final, engine.cfg, tok, {"max_q": max_q, "dialog": dialog_stage_present},
+                              tokenizer_type=tokenizer_type, max_q=max_q, merges=getattr(tok, "merges", None))
     (out_dir / "model_final.json").write_text(json.dumps(final_doc, ensure_ascii=False), encoding="utf-8")
     log(f"Готово. Параметров: {n_params(p_final):,}. Модель: {out_dir / 'model_final.json'}")
 

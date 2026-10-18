@@ -137,6 +137,13 @@ def run(init, out, plan=None, gpu=True, build_data=True, ckpt_minutes=15, steps_
         # make_parallel.py на Kaggle падает без кэша корпуса → берём готовый parallel.json
         (ROOT / "data" / "parallel.json", "data/parallel.json"),
     ]
+    dialog_files = sorted(ROOT.glob("data/dialogs_*.jsonl"))
+    if dialog_files:
+        for f in dialog_files:
+            files.append((f, f"data/{f.name}"))
+        log(f"Kaggle: диалоги ({[f.name for f in dialog_files]}) включены в бандл")
+    else:
+        log("Kaggle: data/dialogs_*.jsonl не найдены — стадия 'dialog' будет пропущена с предупреждением")
     plan_json = Path(plan).read_text(encoding="utf-8") if plan else ""
     b64 = bundle(files)
     script = (f"BUNDLE = {b64!r}\nINIT_PATH = {f'/kaggle/input/{DATASET}/model.json'!r}\n"

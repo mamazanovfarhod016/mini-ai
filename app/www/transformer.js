@@ -182,6 +182,15 @@
     return out;
   };
 
+  // encodeRaw — lossless-кодирование (raw=true у BPE): нужно для диалога/контекста, где
+  // текст НЕ прогоняется через cleanQuestion и должен раскодироваться буква в букву обратно
+  // (mini_ai/curriculum.py: encode_prompt(tok, text, raw=True)). Для char-токенизатора
+  // encode() уже посимвольный (raw по определению) — отдельного раскодирования не нужно.
+  TransformerModel.prototype.encodeRaw = function (s) {
+    if (this.tokenizerType === "bpe") return this.bpe.encode(s, true);
+    return this.encode(s);
+  };
+
   TransformerModel.prototype.decode = function (ids) {
     if (this.tokenizerType === "bpe") return this.bpe.decode(ids);
     var out = "";
@@ -194,6 +203,28 @@
   TransformerModel.prototype.promptIds = function (question) {
     var q = this.encode(cleanQuestion(question)).slice(0, this.maxQ);
     return [BOS].concat(q, [SEP]);
+  };
+
+  /*
+   * promptIdsDialog — промпт диалога: ПОСЛЕДНИЕ 8 реплик истории (строки "U: .../A: ..."
+   * через "\n", raw-кодирование, без cleanQuestion) + текущий вопрос пользователя.
+   * Зеркало mini_ai/dialog.py: build_prompt_text/encode_dialog_prompt_ids (паритет
+   * проверяется tests/test_dialog_js.py через node). history — массив {role, text}
+   * (role: "user"/"bot"), БЕЗ последнего вопроса. lastUserText — текущий вопрос.
+   * Режем историю слева ЦЕЛЫМИ репликами, берём максимум последние 8.
+   */
+  function dialogTurnLine(t) {
+    return (t.role === "user" ? "U: " : "A: ") + String(t.text || "");
+  }
+
+  TransformerModel.prototype.promptIdsDialog = function (history, lastUserText, maxHistoryTurns) {
+    var hist = history || [];
+    var limit = maxHistoryTurns || 8;
+    if (hist.length > limit) hist = hist.slice(hist.length - limit);
+    var lines = hist.map(dialogTurnLine);
+    var text = lines.length ? lines.join("\n") + "\nU: " + String(lastUserText) : "U: " + String(lastUserText);
+    var ids = this.encodeRaw(text);
+    return [BOS].concat(ids, [SEP]);
   };
 
   // Один шаг декодирования: tok, позиция pos, cache (массив {k:[],v:[]} по слоям).
@@ -303,6 +334,40 @@
     return temperature > 0 ? sampleWithTemperature(logits, temperature, rnd) : argmax(logits);
   };
 
+  /*
+   * applyAntiRepeat — ЗЕРКАЛО mini_ai/batched_generate.py: apply_anti_repeat_ (тот же порядок:
+   * сначала repetition penalty, потом полный запрет no-repeat-ngram). Мутирует logits (Float64Array
+   * одного примера) IN-PLACE. genIds — уже сгенерированные id ответа (без промпта).
+   */
+  function applyAntiRepeat(logits, genIds, repetitionPenalty, noRepeatNgram) {
+    var n = noRepeatNgram || 0;
+    if (repetitionPenalty && repetitionPenalty !== 1.0 && genIds.length) {
+      var seen = {};
+      for (var i = 0; i < genIds.length; i++) seen[genIds[i]] = true;
+      for (var t in seen) {
+        var ti = Number(t);
+        var v = logits[ti];
+        logits[ti] = v > 0 ? v / repetitionPenalty : v * repetitionPenalty;
+      }
+    }
+    if (n && genIds.length >= n - 1) {
+      var prefix = n > 1 ? genIds.slice(genIds.length - (n - 1)) : [];
+      var banned = {};
+      for (var j = 0; j + n - 1 <= genIds.length - 1; j++) {
+        var cand = genIds.slice(j, j + n - 1);
+        if (arraysEqual(cand, prefix)) banned[genIds[j + n - 1]] = true;
+      }
+      for (var b in banned) logits[Number(b)] = -1e9;
+    }
+    return logits;
+  }
+
+  function arraysEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
   // Топ-k вероятностей следующего символа (для экрана «Как я работаю»)
   TransformerModel.prototype.topK = function (logits, k) {
     var probs = Float64Array.from(logits);
@@ -335,6 +400,8 @@
     var temperature = opts.temperature || 0;
     var maxNew = opts.maxNew || (this.cfg.block - promptIds.length);
     var wantAttn = !!opts.onToken || !!opts.wantAttn;
+    var repetitionPenalty = opts.repetitionPenalty || 1.0;
+    var noRepeatNgram = opts.noRepeatNgram || 0;
     var cache = this.newCache();
     var last = null;
     for (var i = 0; i < promptIds.length; i++) {
@@ -342,7 +409,12 @@
     }
     var out = [], pos = promptIds.length, steps = [];
     for (var n = 0; n < maxNew; n++) {
-      var nxt = temperature > 0 ? sampleWithTemperature(last.logits, temperature, opts.rnd) : argmax(last.logits);
+      var logits = last.logits;
+      if (repetitionPenalty !== 1.0 || noRepeatNgram) {
+        logits = Float64Array.from(last.logits);
+        applyAntiRepeat(logits, out, repetitionPenalty, noRepeatNgram);
+      }
+      var nxt = temperature > 0 ? sampleWithTemperature(logits, temperature, opts.rnd) : argmax(logits);
       steps.push({ logits: last.logits, attn: last.attn });
       if (nxt === EOS || pos >= this.cfg.block) break;
       out.push(nxt);
@@ -353,8 +425,36 @@
     return { ids: out, text: this.decode(out), steps: steps };
   };
 
+  /*
+   * generateDialogReply — один диалоговый ответ с анти-повтором (ЗЕРКАЛО
+   * mini_ai/batched_generate.py: generate_dialog_reply). history — последние реплики (role/text,
+   * БЕЗ последнего вопроса), lastUserText — текущий вопрос, pastBotAnswers — все прошлые ОТВЕТЫ
+   * БОТА в этом диалоге (строки). Если greedy-ответ буква-в-букву совпал с одним из
+   * pastBotAnswers — одна попытка пересэмплировать с temperature=0.7 (rnd с фикс. seed не нужен —
+   * опционально передаётся opts.rnd для тестов детерминизма).
+   */
+  TransformerModel.prototype.generateDialogReply = function (history, lastUserText, pastBotAnswers, opts) {
+    opts = opts || {};
+    var maxNew = opts.maxNew || 60;
+    var repetitionPenalty = opts.repetitionPenalty != null ? opts.repetitionPenalty : 1.3;
+    var noRepeatNgram = opts.noRepeatNgram != null ? opts.noRepeatNgram : 3;
+    var promptIds = this.promptIdsDialog(history, lastUserText, opts.maxHistoryTurns || 8);
+    var past = {};
+    (pastBotAnswers || []).forEach(function (a) { past[String(a).trim()] = true; });
+    var temps = [0, 0.7];
+    var text = "";
+    for (var i = 0; i < temps.length; i++) {
+      var r = this.generate(promptIds, { temperature: temps[i], maxNew: maxNew,
+        repetitionPenalty: repetitionPenalty, noRepeatNgram: noRepeatNgram, rnd: opts.rnd });
+      text = r.text;
+      if (!past[text.trim()]) return text;
+    }
+    return text;
+  };
+
   var api = { TransformerModel: TransformerModel, cleanQuestion: cleanQuestion, f16ToFloat: f16ToFloat,
-              base64ToF16Array: base64ToF16Array, SPECIALS: SPECIALS, BOS: BOS, SEP: SEP, EOS: EOS, PAD: PAD };
+              base64ToF16Array: base64ToF16Array, SPECIALS: SPECIALS, BOS: BOS, SEP: SEP, EOS: EOS, PAD: PAD,
+              applyAntiRepeat: applyAntiRepeat };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.MiniTransformer = api;
 })(typeof window !== "undefined" ? window : this);

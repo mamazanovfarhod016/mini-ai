@@ -16,7 +16,7 @@
    "token_budget": 16384,
    "lr": 0.002,
    "warmup": 300,
-   "time_frac": 0.3,
+   "time_frac": 0.255,
    "sources": [
     {
      "type": "lm",
@@ -40,7 +40,7 @@
    "token_budget": 12288,
    "lr": 0.0015,
    "warmup": 200,
-   "time_frac": 0.35,
+   "time_frac": 0.2975,
    "sources": [
     {
      "type": "qa",
@@ -95,7 +95,7 @@
    "token_budget": 8192,
    "lr": 0.001,
    "warmup": 150,
-   "time_frac": 0.25,
+   "time_frac": 0.2125,
    "sources": [
     {
      "type": "context",
@@ -106,6 +106,50 @@
      "type": "qa",
      "weight": 0.15,
      "file": "data/reasoning.json"
+    },
+    {
+     "type": "lm",
+     "weight": 0.1,
+     "files": [
+      "data/corpus/uz.txt",
+      "data/corpus/ru.txt",
+      "data/corpus/en.txt"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dialog",
+   "max_len": 1024,
+   "token_budget": 12288,
+   "lr": 0.001,
+   "warmup": 150,
+   "time_frac": 0.15,
+   "sources": [
+    {
+     "type": "dialog",
+     "weight": 0.6,
+     "glob": "data/dialogs_*.jsonl"
+    },
+    {
+     "type": "qa",
+     "weight": 0.1,
+     "file": "data/intents_pairs.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.1,
+     "file": "data/reasoning.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.05,
+     "file": "data/school_math.json"
+    },
+    {
+     "type": "qa",
+     "weight": 0.05,
+     "file": "data/parallel.json"
     },
     {
      "type": "lm",
@@ -130,7 +174,7 @@
      "data/reasoning.json",
      "data/school_math.json"
     ],
-    "n": 40,
+    "n": 400,
     "tries": 2,
     "temp": 0.7
    },
@@ -147,8 +191,13 @@
     },
     {
      "type": "qa",
-     "weight": 0.2,
+     "weight": 0.05,
      "file": "data/intents_pairs.json"
+    },
+    {
+     "type": "dialog",
+     "weight": 0.15,
+     "glob": "data/dialogs_*.jsonl"
     }
    ]
   }

@@ -134,6 +134,119 @@ def tokenizer_is_lossless(tok, sample_texts):
     return True
 
 
+import re as _re
+_WORD_RE = _re.compile(r"[а-яёa-z]{4,}", _re.I)
+
+
+def _dialog_memory_ok(turns, bot_idx, gen_text):
+    """Та же логика, что в mini-ai-drafts/dialogs_ru_v2/check_dialogs.py memory_not_used:
+    в ответе бота должно быть слово (≥4 буквы, по первым 5 буквам-"стему") из РАННИХ реплик
+    пользователя (до предпоследней), которого нет в последней реплике пользователя."""
+    prior_users = [t["text"] for i, t in enumerate(turns[:bot_idx]) if t.get("role") == "user"]
+    if len(prior_users) < 2:
+        return None  # недостаточно истории для проверки памяти на этом шаге
+    early = set(_WORD_RE.findall(" ".join(prior_users[:-1])))
+    last_u = set(_WORD_RE.findall(prior_users[-1]))
+    gen_words = set(_WORD_RE.findall(str(gen_text)))
+    stems = lambda ws: {w.lower()[:5] for w in ws}
+    target = stems(early) - stems(last_u)
+    if not target:
+        return None
+    return bool(stems(gen_words) & target)
+
+
+def _ngram_repeat_share(text, n=3):
+    words = str(text).lower().split()
+    if len(words) < n + 1:
+        return 0.0
+    grams = [tuple(words[i:i + n]) for i in range(len(words) - n + 1)]
+    seen, repeated = set(), 0
+    for g in grams:
+        if g in seen:
+            repeated += 1
+        else:
+            seen.add(g)
+    return repeated / len(grams)
+
+
+def exam_dialog(engine, tok, test_dialogs, max_new=60, batch=1,
+                 repetition_penalty=1.3, no_repeat_ngram=3):
+    """Экзамен диалога на held-out диалогах (test-сплит, НИКОГДА не участвовали в обучении):
+    бот генерирует РЕАЛЬНЫЙ ответ (с анти-повтором, тем же, что в проде) на каждом шаге, с
+    ИСТИННОЙ историей (а не со своими прошлыми сгенерированными ответами — честная оценка
+    каждого шага по отдельности).
+      memory      — доля шагов с проверкой памяти (как check_dialogs.py), прошедших;
+      non_repeat_exact — доля ответов, НЕ совпавших буква-в-букву с ЛЮБЫМ прошлым ответом
+                        бота в этом же диалоге;
+      ngram_repeat_share — средняя доля повторяющихся 3-грамм внутри самого ответа (ниже лучше);
+      lang_ok     — доля ответов, где скрипт совпадает с языком диалога (ru);
+      avg_reply_words — средняя длина ответа в словах;
+      examples    — до 5 пар (вопрос → ответ модели).
+    """
+    from mini_ai.dialog import _prior_and_last_user, detect_script, encode_dialog_prompt_ids
+
+    tasks = []
+    for d in test_dialogs:
+        turns = d.get("turns", [])
+        for i, t in enumerate(turns):
+            if t.get("role") == "bot" and i > 0 and turns[i - 1].get("role") == "user":
+                hist, last_q = _prior_and_last_user(turns, i)
+                tasks.append({"dialog": d, "turns": turns, "bot_idx": i, "history": hist, "last_q": last_q})
+
+    if not tasks:
+        return {"memory": None, "non_repeat_exact": None, "ngram_repeat_share": None,
+                "lang_ok": None, "avg_reply_words": None, "n": 0, "examples": []}
+
+    def enc(text):
+        return encode_prompt(tok, text, raw=True)
+
+    gen_texts = [None] * len(tasks)
+    for s in range(0, len(tasks), batch):
+        chunk = tasks[s:s + batch]
+        prompts = [[BOS] + encode_dialog_prompt_ids(tok, it["history"], it["last_q"], enc) + [SEP] for it in chunk]
+        outs = batched_generate(engine, prompts, max_new, temperature=0.0,
+                                 repetition_penalty=repetition_penalty, no_repeat_ngram=no_repeat_ngram)
+        for j, out in enumerate(outs):
+            gen_texts[s + j] = decode_answer(tok, out)
+
+    mem_hits, mem_total = 0, 0
+    nonrep_hits, nonrep_total = 0, 0
+    lang_hits, lang_total = 0, 0
+    ngram_shares, word_counts = [], []
+    examples = []
+    # прошлые ОТВЕТЫ БОТА В ЭТОМ ДИАЛОГЕ (истинные, до текущего шага) — для non_repeat_exact
+    by_dialog_prev_bots = {}
+    for it, gen in zip(tasks, gen_texts):
+        did = id(it["dialog"])
+        prev_bots = by_dialog_prev_bots.setdefault(did, [])
+        word_counts.append(len(str(gen).split()))
+        ngram_shares.append(_ngram_repeat_share(gen))
+        script = detect_script(gen)
+        if script is not None:
+            lang_total += 1
+            lang_hits += int(script == it["dialog"].get("lang", "ru"))
+        if prev_bots:
+            nonrep_total += 1
+            nonrep_hits += int(gen.strip() not in prev_bots)
+        mem = _dialog_memory_ok(it["turns"], it["bot_idx"], gen)
+        if mem is not None:
+            mem_total += 1
+            mem_hits += int(mem)
+        if len(examples) < 5:
+            examples.append({"q": it["last_q"], "a": gen})
+        prev_bots.append(str(it["turns"][it["bot_idx"]].get("text", "")).strip())
+
+    return {
+        "memory": mem_hits / mem_total if mem_total else None,
+        "non_repeat_exact": nonrep_hits / nonrep_total if nonrep_total else None,
+        "ngram_repeat_share": sum(ngram_shares) / len(ngram_shares) if ngram_shares else None,
+        "lang_ok": lang_hits / lang_total if lang_total else None,
+        "avg_reply_words": sum(word_counts) / len(word_counts) if word_counts else None,
+        "n": len(tasks),
+        "examples": examples,
+    }
+
+
 def run_exams(engine, tok, tokenizer_type, max_q, exam_data, log=print):
     """exam_data: словарь с путями/данными, собранными вызывающим кодом (train_curriculum.py).
     Ключи (все опциональны — чего нет, то пропускается с меткой 'skipped'):
@@ -171,6 +284,13 @@ def run_exams(engine, tok, tokenizer_type, max_q, exam_data, log=print):
     if exam_data.get("python_tasks_test"):
         out["python_tasks"] = exam_python(engine, tok, exam_data["python_tasks_test"])
         log(f"  экзамен python_tasks: {out['python_tasks']}")
+    if exam_data.get("dialog_test"):
+        out["dialog"] = exam_dialog(engine, tok, exam_data["dialog_test"])
+        d = out["dialog"]
+        log(f"  экзамен dialog: n={d['n']} memory={d['memory']} non_repeat_exact={d['non_repeat_exact']} "
+            f"ngram_repeat_share={d['ngram_repeat_share']} lang_ok={d['lang_ok']} avg_words={d['avg_reply_words']}")
+        for ex in d.get("examples", []):
+            log(f"    Q: {ex['q']!r} -> A: {ex['a']!r}")
     return out
 
 

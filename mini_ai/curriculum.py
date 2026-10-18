@@ -262,6 +262,16 @@ def make_pool_from_source(tok, src, max_len, rng, raw_default=False):
         max_q = src.get("max_q", 40)
         for item in data.get("train", []):
             examples.append(qa_example_to_seq(tok, item["q"], item["a"], max_q, raw))
+    elif typ == "dialog":
+        from mini_ai.dialog import dialog_examples_from_dialogs, load_dialogs, split_train_test_dialogs
+        files_or_glob = src.get("glob") or src.get("files") or src.get("file")
+        if not files_or_glob:
+            raise ValueError("источник 'dialog' требует 'glob' или 'files'")
+        dialogs = load_dialogs(files_or_glob)
+        if not dialogs:
+            print(f"ПРЕДУПРЕЖДЕНИЕ: источник 'dialog' ({files_or_glob}) — файлы не найдены/пусты, стадия без диалогов")
+        train_dialogs, _test_dialogs = split_train_test_dialogs(dialogs)
+        examples = dialog_examples_from_dialogs(tok, train_dialogs, max_len, raw=src.get("raw", True))
     else:
         raise ValueError(f"неизвестный тип источника: {typ}")
     return SourcePool(examples, rng)
