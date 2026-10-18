@@ -26,5 +26,5 @@ cp build/base.apk build/unsigned.apk
   --ks "$KS" --ks-key-alias miniai --ks-pass "pass:$PASS" --key-pass "pass:$PASS" --out build/MiniAI.apk build/aligned.apk
 "$BT/apksigner" verify build/MiniAI.apk && echo "apksigner: verified"
 echo "Разрешения:"; "$BT/aapt2" dump permissions build/MiniAI.apk
-if "$BT/aapt2" dump permissions build/MiniAI.apk | grep -q INTERNET; then echo "ОШИБКА: есть INTERNET"; exit 1; fi
+"$BT/aapt2" dump permissions build/MiniAI.apk | grep -q "android.permission.INTERNET" || { echo "ОШИБКА: нет INTERNET"; exit 1; }
 ls -la build/MiniAI.apk

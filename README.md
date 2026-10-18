@@ -29,7 +29,7 @@
 | Точность на тесте (20% фраз, сеть их не видела) | **88.1%** в среднем по 3 сплитам (86.2 / 91.0 / 87.2) |
 | …только разговорные намерения (без «сложных вопросов») | **90.4%** (88.4 / 93.4 / 89.4) |
 | Обучение | ~20 секунд на CPU |
-| APK | ≈ 182 КБ, **без разрешения INTERNET** |
+| APK | ≈ 1,1 МБ, есть разрешение INTERNET (для будущего самообучения), сама нейросеть считается в телефоне |
 
 Полный лог обучения и список ошибок — [`docs/train_log.txt`](docs/train_log.txt), матрица ошибок — [`docs/confusion_matrix.csv`](docs/confusion_matrix.csv).
 
@@ -111,7 +111,7 @@ keytool -genkeypair -keystore ~/.config/mini-ai/release.jks -alias miniai -keyal
   -validity 10000 -storepass "$(cat ~/.config/mini-ai/keystore.txt)" -keypass "$(cat ~/.config/mini-ai/keystore.txt)" \
   -dname "CN=Your Name"
 
-./android/build.sh                 # → android/build/MiniAI.apk (подписан, проверен, без INTERNET)
+./android/build.sh                 # → android/build/MiniAI.apk (подписан, проверен, с INTERNET)
 ```
 
 Готовый APK — в [Releases](../../releases). Интерфейс можно открыть и просто в браузере: `app/www/index.html`.
