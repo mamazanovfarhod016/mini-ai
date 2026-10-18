@@ -202,7 +202,7 @@ def layernorm_forward(x, g, b):
     mu = x.mean(-1, keepdims=True)
     xc = x - mu
     var = (xc * xc).mean(-1, keepdims=True)
-    rstd = 1.0 / bk.xp.sqrt(var + LN_EPS)
+    rstd = 1.0 / bk.xp_of(x).sqrt(var + LN_EPS)   # KVModel считает на numpy даже при видеокарте
     xhat = xc * rstd
     return xhat * g + b, (xhat, rstd, g)
 
@@ -226,7 +226,7 @@ def gelu_forward(x):
     """GELU (как в GPT-2), tanh-приближение:  gelu(x) = ½·x·(1 + tanh(c·(x + 0.044715·x³))),  c = √(2/π).
     Похож на ReLU, но гладкий: маленькие отрицательные значения не обнуляются резко."""
     u = GELU_C * (x + 0.044715 * x ** 3)
-    t = bk.xp.tanh(u)
+    t = bk.xp_of(x).tanh(u)
     return 0.5 * x * (1.0 + t), (x, t)
 
 

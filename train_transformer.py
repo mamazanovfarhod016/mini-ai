@@ -504,6 +504,11 @@ def main():
                 json.dumps({"progress": progress_log, "best_step": best_step, "best_test_acc": best_test_acc},
                            ensure_ascii=False, indent=1), encoding="utf-8")
 
+    # страховка: сохраняем веса СРАЗУ после обучения — если упадёт экзамен, обученная модель не пропадёт
+    Path(args.out).write_text(json.dumps(export_model(p, cfg, tok, {"step": args.steps, "exam": "pending"},
+                                                      tokenizer_type=args.tokenizer, max_q=args.max_q,
+                                                      merges=tok.merges if args.tokenizer == "bpe" else None),
+                                         ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     train_time = time.time() - t_start
     print(f"\nОбучение заняло {train_time/60:.1f} мин")
     print(f"Лучший чекпойнт (намерения + счёт): шаг {best_step}, сумма {best_test_acc:.3f}")
