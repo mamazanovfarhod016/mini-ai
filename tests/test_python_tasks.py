@@ -16,12 +16,17 @@ def _generate():
     import random
     rng = random.Random(0)
     train, test = [], []
-    for kind in [k for k in gen.PYTHON_KINDS if k in gen.A]:
-        gen.build_basic(rng, kind, train, test)
-    gen.build_what_prints(random.Random(0), train, test)
-    gen.build_fix_bug(random.Random(0), train, test)
-    gen.build_cleanup(random.Random(0), train, test)
+    seen = set()
+    for kind in gen.VARIANTS:
+        gen.build_basic(rng, kind, train, test, seen)
+    gen.build_what_prints(random.Random(0), train, test, seen)
+    gen.build_fix_bug(random.Random(0), train, test, seen)
+    gen.build_cleanup(random.Random(0), train, test, seen)
     return train, test
+
+
+def _unique(records):
+    return {(r["q"], r["a"]) for r in records}
 
 
 def test_generator_deterministic():
@@ -30,21 +35,33 @@ def test_generator_deterministic():
     t2, e2 = _generate()
     assert t1 == t2
     assert e1 == e2
-    assert len(t1) > 15000
-    assert len(e1) > 1000
+    assert len(t1) > 8000
+    assert len(e1) > 1500
+
+
+def test_no_qa_duplication_within_train():
+    """Каждая пара (q, a) встречается в train не более одного раза (без накрутки количества)."""
+    train, _ = _generate()
+    sigs = [(r["q"], r["a"]) for r in train]
+    assert len(sigs) == len(set(sigs))
 
 
 def test_no_family_leakage_between_train_and_test():
-    """Семья параметров (func_name, конкретные значения) не встречается и в train, и в test."""
+    """Семья параметров (kind, func_name, вопрос, эталон) не встречается и в train, и в test."""
     train, test = _generate()
 
     def sig(rec):
-        # сигнатура семьи: kind + func_name + вопрос + эталон (точная параметризация)
         return (rec["kind"], rec["func_name"], rec["q"], rec["a"])
 
-    train_sigs = {sig(r) for r in train if r["kind"] != "what_prints"}
-    test_sigs = {sig(r) for r in test if r["kind"] != "what_prints"}
+    train_sigs = {sig(r) for r in train}
+    test_sigs = {sig(r) for r in test}
     assert not (train_sigs & test_sigs)
+
+
+def test_no_qa_overlap_between_train_and_test():
+    """Ни одна пара (q, a) не встречается одновременно в train и в test."""
+    train, test = _generate()
+    assert not (_unique(train) & _unique(test))
 
 
 def test_three_languages_present_per_family():
@@ -57,6 +74,32 @@ def test_three_languages_present_per_family():
         assert n % 3 == 0, (k, n)  # каждая семья выдаёт ровно 3 записи (uz/ru/en)
 
 
+def test_every_kind_has_unique_train_and_exam_items():
+    """Каждый kind имеет значимое разнообразие train и НЕ НУЛЕВОЙ экзамен."""
+    train, test = _generate()
+    code_kinds = [k for k in gen.PYTHON_KINDS if k != "what_prints"]
+    for kind in code_kinds:
+        train_unique = len(_unique([r for r in train if r["kind"] == kind]))
+        test_unique = len(_unique([r for r in test if r["kind"] == kind]))
+        assert train_unique >= 100, (kind, "train", train_unique)
+        assert test_unique >= 1, (kind, "test (exam)", test_unique)
+
+
+def test_overall_diversity_targets():
+    """Общие пороги разнообразия, заданные интегратором."""
+    train, test = _generate()
+    all_recs = train + test
+    excl_wp = [r for r in all_recs if r["kind"] != "what_prints"]
+    wp = [r for r in all_recs if r["kind"] == "what_prints"]
+    fix_bug = [r for r in all_recs if r["kind"] == "fix_bug"]
+    cleanup = [r for r in all_recs if r["kind"] == "cleanup"]
+
+    assert len(_unique(excl_wp)) >= 3000, len(_unique(excl_wp))
+    assert len(_unique(wp)) >= 1500, len(_unique(wp))
+    assert len(_unique(fix_bug)) >= 600, len(_unique(fix_bug))
+    assert len(_unique(cleanup)) >= 600, len(_unique(cleanup))
+
+
 def test_reference_solutions_pass_codecheck_with_high_quality():
     """Каждое эталонное решение из generated data проходит codecheck с quality >= 90."""
     train, test = _generate()
@@ -64,28 +107,57 @@ def test_reference_solutions_pass_codecheck_with_high_quality():
     for r in train + test:
         if r["kind"] in ("fix_bug", "what_prints", "cleanup"):
             continue
-        sample.setdefault(r["kind"], r)  # одного представителя каждого kind достаточно
-    assert len(sample) >= 10
-    for kind, rec in sample.items():
+        sample.setdefault((r["kind"], r["func_name"]), r)
+    assert len(sample) >= 50
+    checked = 0
+    for key, rec in sample.items():
         res = codecheck.check(rec, rec["a"])
-        assert res["passed"], (kind, res)
-        assert res["quality"] >= 90, (kind, res)
+        assert res["passed"], (key, res)
+        assert res["quality"] >= 90, (key, res)
+        checked += 1
+        if checked >= 300:
+            break
+
+
+def test_fix_bug_buggy_code_fails_at_least_one_hidden_test():
+    """Для fix_bug: сломанный код из вопроса должен падать хотя бы на одном скрытом тесте."""
+    train, test = _generate()
+    fix_bug_recs = [r for r in (train + test) if r["kind"] == "fix_bug"]
+    assert fix_bug_recs
+    checked = 0
+    for rec in fix_bug_recs:
+        if checked >= 300:
+            break
+        # сломанный код встроен в вопрос после маркера "fix it:"/"исправь:"/"Tuzat:" — последняя строка с ':'
+        buggy_code = rec["q"].split(":\n", 1)[1]
+        clean_res = codecheck.check(rec, rec["a"])
+        buggy_res = codecheck.check(rec, buggy_code)
+        assert clean_res["passed"], (rec["func_name"], clean_res)
+        assert clean_res["quality"] >= 90, (rec["func_name"], clean_res)
+        assert not (buggy_res["tests_passed"] == buggy_res["tests_total"] and buggy_res["runs"]), \
+            (rec["func_name"], "buggy code did not fail any hidden test", buggy_res)
+        checked += 1
+    assert checked > 0
 
 
 def test_cleanup_ugly_fails_quality_but_passes_tests_logically():
-    """Для cleanup: ugly код работает (прошёл бы ручные тесты), но quality < 80 — не passed."""
+    """Для cleanup: ugly код проходит скрытые тесты, но quality < 80 — не passed."""
     train, test = _generate()
     cleanup_recs = [r for r in train + test if r["kind"] == "cleanup"]
     assert cleanup_recs
-    seen_fn = set()
+    checked = 0
     for rec in cleanup_recs:
-        if rec["func_name"] in seen_fn:
-            continue
-        seen_fn.add(rec["func_name"])
-        clean_res = codecheck.check({"func_name": rec["func_name"], "hidden_tests": []}, rec["a"])
-        ugly_res = codecheck.check({"func_name": rec["func_name"], "hidden_tests": []}, rec["ugly"])
+        if checked >= 300:
+            break
+        clean_res = codecheck.check(rec, rec["a"])
+        ugly_res = codecheck.check(rec, rec["ugly"])
+        assert clean_res["passed"], (rec["func_name"], clean_res)
         assert clean_res["quality"] >= 90, (rec["func_name"], clean_res)
+        assert ugly_res["runs"], (rec["func_name"], ugly_res)
+        assert ugly_res["tests_passed"] == ugly_res["tests_total"], (rec["func_name"], ugly_res)
         assert ugly_res["quality"] < 80, (rec["func_name"], ugly_res)
+        checked += 1
+    assert checked > 0
 
 
 def test_dangerous_code_rejected():
@@ -135,18 +207,13 @@ def test_what_prints_answers_are_correct_by_actually_running():
 
 def test_data_file_builds_and_is_well_formed(tmp_path):
     """Прогоняем сам CLI-скрипт генератора (как в проде) и проверяем формат файла."""
-    out_dir = tmp_path
     script = ROOT / "tools" / "make_python_tasks.py"
-    env_root = out_dir / "data"
-    env_root.mkdir()
-    # запускаем в отдельном процессе, но пишем во временный ROOT через monkeypatch нельзя,
-    # поэтому просто проверяем, что существующий сгенерированный файл (если есть) валиден.
     data_path = ROOT / "data" / "python_tasks.json"
     if not data_path.exists():
         subprocess.run([sys.executable, str(script)], check=True, cwd=ROOT)
     data = json.loads(data_path.read_text(encoding="utf-8"))
     assert "train" in data and "test" in data
-    assert len(data["train"]) + len(data["test"]) > 15000
+    assert len(data["train"]) + len(data["test"]) > 8000
     rec = data["train"][0]
     for key in ("q", "a", "kind", "lang", "func_name", "tests", "hidden_tests"):
         assert key in rec
