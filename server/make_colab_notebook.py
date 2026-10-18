@@ -32,11 +32,17 @@ CELLS = [
 assert torch.cuda.is_available(), "Нет GPU: Среда выполнения → Сменить среду → T4 GPU"
 print("GPU:", torch.cuda.get_device_name(0))"""),
     cell("""from google.colab import drive
-drive.mount("/content/drive")
-import os
+drive.mount("/content/drive", force_remount=True)
+import os, glob, shutil
 D = "/content/drive/MyDrive/mini-ai"
 os.makedirs(D + "/out", exist_ok=True)
-assert os.path.exists(D + "/model.json"), "Положи model.json в Google Drive → папка mini-ai"
+if not os.path.exists(D + "/model.json"):
+    # модель могла лечь в другую папку или как «model (1).json» — ищем по всему Диску
+    found = [p for p in glob.glob("/content/drive/MyDrive/**/*.json", recursive=True)
+             if os.path.basename(p).lower().startswith("model") and os.path.getsize(p) > 5_000_000]
+    print("нашёл:", found)
+    assert found, "model.json на Диске не найден"
+    shutil.copy(found[0], D + "/model.json")
 print("init:", os.path.getsize(D + "/model.json") // 1024, "КБ")"""),
     cell(f"""%cd /content
 !rm -rf mini-ai && git clone -q --depth 1 -b {BRANCH} https://github.com/mamazanovfarhod016/mini-ai.git
