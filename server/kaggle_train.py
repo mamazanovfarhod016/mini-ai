@@ -34,8 +34,9 @@ os.makedirs("/kaggle/working/w", exist_ok=True)
 os.chdir("/kaggle/working/w")
 tarfile.open(fileobj=io.BytesIO(base64.b64decode(BUNDLE)), mode="r:gz").extractall(".")
 print("CPU:", os.cpu_count(), flush=True)
-if os.path.exists("tools/make_school_math.py"):
-    subprocess.run([sys.executable, "tools/make_school_math.py"], check=True)
+for g in ("tools/make_school_math.py", "tools/make_reasoning.py", "tools/make_logic_math.py"):
+    if os.path.exists(g):
+        subprocess.run([sys.executable, g], check=True)
 t = time.time()
 r = subprocess.run([sys.executable, "train_transformer.py"] + ARGS + ["--out", "/kaggle/working/model.json",
                     "--no-app", "--log", "/kaggle/working/train_log.txt", "--ckpt_dir", "/kaggle/working/ckpt",
@@ -82,7 +83,7 @@ def upload_init(model_path, log=print, wait_s=600):
 
 
 def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=True, poll=60, max_wait_h=11,
-        init=None):
+        init=None, logic=False):
     """init — путь к текущей модели: учим ДАЛЬШЕ с неё (постоянные знания), а не с нуля."""
     files = [(ROOT / "mini_ai", "mini_ai"), (ROOT / "train_transformer.py", "train_transformer.py"),
              (Path(intents) if intents else ROOT / "data/intents.json", "data/intents.json")]
@@ -102,6 +103,13 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
     if gen.exists():
         files.append((gen, "tools/make_school_math.py"))
         maths.append("data/school_math.json")
+    # 19.10: логика — пошаговые рассуждения (make_reasoning) и цепочки/минусы/формулы (make_logic_math);
+    # файлы большие → шлём генераторы (детерминированные), задания собираются на Kaggle
+    for g, data in ((ROOT / "tools/make_reasoning.py", "data/reasoning.json"),
+                    (ROOT / "tools/make_logic_math.py", "data/logic_math.json")):
+        if logic and g.exists():
+            files.append((g, f"tools/{g.name}"))
+            maths.append(data)
     if maths:
         args += ["--math", ",".join(maths)]
     if init:
@@ -153,9 +161,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--cpu", action="store_true", help="без видеокарты")
     ap.add_argument("--init", help="модель, с которой продолжить обучение (постоянные знания)")
+    ap.add_argument("--logic", action="store_true", help="+ пошаговые рассуждения и логика (reasoning, logic_math)")
     ap.add_argument("extra", nargs="*", help="доп. аргументы train_transformer.py (после --)")
     a = ap.parse_args()
-    run(a.intents, a.math, a.steps, a.extra, a.out, gpu=not a.cpu, init=a.init)
+    run(a.intents, a.math, a.steps, a.extra, a.out, gpu=not a.cpu, init=a.init, logic=a.logic)
 
 
 if __name__ == "__main__":
