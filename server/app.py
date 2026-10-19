@@ -28,6 +28,7 @@ from server import research as research_mod
 from server import mathcheck, store
 
 MAX_BODY = 16 * 1024
+MAX_UPLOAD = 40 * 1024 * 1024   # модель из Colab
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -84,8 +85,32 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {k: v for k, v in answers.items() if int(k) in want})
         return self._send(404, {"error": "not found"})
 
+    def _colab_upload(self, u):
+        """19.10.2026: модель из Google Colab → карантин server_data/colab_incoming/ (в приложение сама НЕ идёт:
+        сначала экзамен, замена только если не хуже). Проверка: размер ≤ 40 МБ, валидный JSON с config/weights."""
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > MAX_UPLOAD:
+            return self._send(413, {"error": "bad size"})
+        raw = self.rfile.read(n)
+        kind = urllib.parse.parse_qs(u.query).get("kind", ["model"])[0]
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        inc = self.data / "colab_incoming"
+        inc.mkdir(parents=True, exist_ok=True)
+        if kind == "log":
+            (inc / f"{stamp}.log.txt").write_bytes(raw[:2_000_000])
+            return self._send(200, {"ok": True})
+        try:
+            obj = json.loads(raw.decode("utf-8"))
+            assert isinstance(obj, dict) and "config" in obj
+        except Exception:
+            return self._send(400, {"error": "not a Mini AI model"})
+        (inc / f"{stamp}.json").write_bytes(raw)
+        return self._send(200, {"ok": True, "saved": f"{stamp}.json"})
+
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/api/colab/upload":
+            return self._colab_upload(u)
         try:
             body = self._json_body()
         except Exception as e:
