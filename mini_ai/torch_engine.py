@@ -119,6 +119,9 @@ class TorchEngine:
         self.v = {k: torch.zeros_like(v) for k, v in self.p.items()}
         self.b1, self.b2, self.eps, self.wd, self.t = betas[0], betas[1], eps, wd, 0
         self.gen = torch.Generator(device=self.dev).manual_seed(seed)
+        import os
+        self.amp = self.dev.type == "cuda" and os.environ.get("MINI_AI_AMP", "0") == "1"   # включить после проверки на Kaggle (сверка loss с fp32)
+        self.scale, self._good = 2.0 ** 14, 0
 
     def _t(self, a, dtype):
         return torch.as_tensor(np.asarray(a), dtype=dtype, device=self.dev)
@@ -126,9 +129,12 @@ class TorchEngine:
     def loss_and_grads(self, idx, targets, mask, drop=0.0):
         for v in self.p.values():
             v.grad = None
-        logits = forward(self.p, self.cfg, self._t(idx, torch.long), drop, self.gen if drop > 0 else None)
-        loss = masked_ce(logits, self._t(targets, torch.long), self._t(mask, torch.bool))
-        loss.backward()
+        # 19.10 (план, нед. 1): fp16 на видеокарте — веса и AdamW остаются float32 (master), считаем в fp16 →
+        # в 2–3 раза быстрее на T4. Масштаб loss (динамический), чтобы мелкие градиенты не стали нулём.
+        with torch.autocast("cuda", dtype=torch.float16, enabled=self.amp):
+            logits = forward(self.p, self.cfg, self._t(idx, torch.long), drop, self.gen if drop > 0 else None)
+        loss = masked_ce(logits.float(), self._t(targets, torch.long), self._t(mask, torch.bool))
+        (loss * self.scale if self.amp else loss).backward()
         return loss
 
     @torch.no_grad()
@@ -136,6 +142,15 @@ class TorchEngine:
         with torch.enable_grad():
             loss = self.loss_and_grads(idx, targets, mask, drop)
         grads = {k: v.grad for k, v in self.p.items()}
+        if self.amp:
+            for g in grads.values():
+                g.div_(self.scale)
+            if not all(torch.isfinite(g).all() for g in grads.values()):
+                self.scale /= 2                                  # переполнение fp16 → шаг пропускаем
+                return float(loss.detach()), float("nan")
+            self._good += 1
+            if self._good % 1000 == 0:
+                self.scale = min(self.scale * 2, 2.0 ** 16)
         norm = math.sqrt(float(sum((g.double() ** 2).sum() for g in grads.values())))
         if norm > max_norm:                                     # обрезка градиента — как clip_grads
             s = max_norm / (norm + 1e-6)
