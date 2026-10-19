@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 BOOKS = Path.home() / "Developer/mini-ai-books"
 STATE = ROOT / "server_data/book_school.json"
-PASS, KEEP = 0.90, 0.85
+PASS, KEEP, FINAL = 0.90, 0.85, 0.95
 STEPS = 3000
 
 
@@ -90,12 +90,48 @@ def preflight(train, test, log=print):
     log(f"Проверка данных: {len(train)} заданий, все ответы верны, утечек в экзамен нет")
 
 
+def finish_grade(grade, model, log=print):
+    """Класс сдан на ≥95%: бенчмарки (server.benchmarks) → результаты в отчёт → материалы класса удаляем.
+    Удаляем: PDF учебников класса, текст уроков, задания для учёбы. Оставляем: (1) спрятанные экзамены —
+    чтобы проверять, что не забыла; (2) маленький набор повторения ≤300 заданий — исследование (2403.08763):
+    без повторения старого сеть забывает, а повторять больше нечего, если удалить всё."""
+    from server import benchmarks
+    rec = benchmarks.run(model, label=f"после {grade} класса")
+    summ = "; ".join(f"{k} {v['acc'] * 100:.0f}%" for k, v in rec["results"].items())
+    log(f"БЕНЧМАРК после {grade} класса: {summ}")
+    (ROOT / "server_data/benchmark_report.txt").write_text(f"{grade} класс сдан. {summ}\n", encoding="utf-8")
+    st = stages()
+    rng = random.Random(grade)
+    pool = [x for p in st if p["grade"] == grade for x in p["train"]]
+    keep = rng.sample(pool, min(300, len(pool)))
+    for p in st:
+        if p["grade"] == grade:
+            p["train"] = [x for x in keep if x["quarter"] == p["quarter"]]
+    (BOOKS / "tasks.json").write_text(json.dumps(st, ensure_ascii=False))
+    removed = 0
+    for f in (BOOKS / "pdf").glob(f"{grade:02d}_*.pdf"):
+        f.unlink()
+        removed += 1
+    ls_path = BOOKS / "lessons.json"
+    if ls_path.exists():
+        ls = [x for x in json.loads(ls_path.read_text()) if x["grade"] != grade]
+        ls_path.write_text(json.dumps(ls, ensure_ascii=False))
+    log(f"Материалы {grade} класса удалены: учебников {removed}, заданий {len(pool) - len(keep)} "
+        f"(оставлено {len(keep)} для повторения и все экзамены)")
+
+
 def step(log=print):
     from server import kaggle_train
     st = stages()
     s = load_state()
     i = idx_of(st, s["grade"], s["quarter"])
     cur, past = st[i], st[:i]
+    if s.get("review_grade"):     # не сдала итог класса → учим все четверти класса вместе
+        g = s["review_grade"]
+        qs = [p for p in st if p["grade"] == g]
+        cur = {"grade": g, "quarter": qs[-1]["quarter"], "train": [x for p in qs for x in p["train"]],
+               "test": [x for p in qs for x in p["test"]]}
+        past = [p for p in st if p["grade"] < g]
     rng = random.Random(len(s["history"]))
     # 19.10: ОЧЕНЬ много заданий — но только для ЭТОЙ четверти (по видам и числам из книги), после — удаляем
     from server.book_augment import augment
@@ -144,10 +180,24 @@ def step(log=print):
     if passed:
         nxt = st[i + 1] if i + 1 < len(st) else None
         s["attempts"] = 0
-        if nxt:
+        if not nxt or nxt["grade"] != s["grade"]:
+            # 19.10: класс пройден по четвертям → итоговый экзамен класса (все спрятанные задания класса).
+            # ≥95% → бенчмарки, отчёт, удаление материалов класса, следующий класс. Иначе — повтор всего класса.
+            final = [x for p in st if p["grade"] == s["grade"] for x in p["test"]]
+            acc_final, _ = exam(str(out), final)
+            rec["acc_class_final"] = round(acc_final, 3)
+            log(f"ИТОГОВЫЙ экзамен {s['grade']} класса: {acc_final:.0%} (нужно 95%)")
+            if acc_final >= FINAL:
+                s.pop("review_grade", None)
+                finish_grade(s["grade"], str(out), log)
+                if nxt:
+                    s["grade"], s["quarter"] = nxt["grade"], nxt["quarter"]
+                else:
+                    s["done"] = True
+            else:
+                s["review_grade"] = s["grade"]          # повтор всего класса (все четверти вместе)
+        elif nxt:
             s["grade"], s["quarter"] = nxt["grade"], nxt["quarter"]
-        else:
-            s["done"] = True
     else:
         s["attempts"] += 1
     STATE.write_text(json.dumps(s, ensure_ascii=False, indent=1))
