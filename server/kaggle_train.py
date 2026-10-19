@@ -35,7 +35,7 @@ os.chdir("/kaggle/working/w")
 tarfile.open(fileobj=io.BytesIO(base64.b64decode(BUNDLE)), mode="r:gz").extractall(".")
 print("CPU:", os.cpu_count(), flush=True)
 for g in ("tools/make_school_math.py", "tools/make_reasoning.py", "tools/make_logic_math.py"):
-    if os.path.exists(g):
+    if os.path.exists(g) and os.path.exists("tools/" + os.path.basename(g)):
         subprocess.run([sys.executable, g], check=True)
 t = time.time()
 r = subprocess.run([sys.executable, "train_transformer.py"] + ARGS + ["--out", "/kaggle/working/model.json",
@@ -83,7 +83,7 @@ def upload_init(model_path, log=print, wait_s=600):
 
 
 def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=True, poll=60, max_wait_h=11,
-        init=None, logic=False):
+        init=None, logic=False, school=True):
     """init — путь к текущей модели: учим ДАЛЬШЕ с неё (постоянные знания), а не с нуля."""
     files = [(ROOT / "mini_ai", "mini_ai"), (ROOT / "train_transformer.py", "train_transformer.py"),
              (Path(intents) if intents else ROOT / "data/intents.json", "data/intents.json")]
@@ -100,7 +100,7 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
     # школьная математика 1–6 класс: файл 8 МБ не влезает в посылку Kaggle (лимит ~1 МБ) —
     # шлём генератор (он детерминированный, seed=0) и собираем задания прямо там
     gen = ROOT / "tools/make_school_math.py"
-    if gen.exists():
+    if gen.exists() and school:
         files.append((gen, "tools/make_school_math.py"))
         maths.append("data/school_math.json")
     # 19.10: логика — пошаговые рассуждения (make_reasoning) и цепочки/минусы/формулы (make_logic_math);
