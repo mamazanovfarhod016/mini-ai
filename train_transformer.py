@@ -72,6 +72,34 @@ def is_latin(text):
     return lat > cyr
 
 
+# 19.10.2026: английский — отдельный язык (раньше любая латиница считалась узбекским → на «how are you»
+# модель отвечала по-узбекски). Английский = латиница, в которой есть английское слово-маркер и нет
+# узбекских примет (o', g', sh/ch-слов из списка, суффиксов -ing/-man/-san по-узбекски не трогаем).
+EN_MARKERS = frozenset(
+    "hi hello hey bye goodbye how are you what who where when why is the a your my me i im am do does can "
+    "thanks thank please tell joke time date today weather help name old made created doing up good fine "
+    "sad bored wrong right yes yeah yep no nope okay sure love like work trained think inside see later "
+    "morning evening night whats dont know mean smart cool great nice stupid dumb bad useless happy tired".split())
+UZ_MARKERS = frozenset(
+    "salom qalaysan rahmat nima kim qayer qachon qancha necha nega qanday qaysi men sen siz bu shu va bor yoq "
+    "yaxshi isming ismim bugun soat hazil yordam xayr kerak emas ha yo'q bot".split()) - {"bot"}
+
+
+def detect_lang(text):
+    """ru / uz / en — какой язык у вопроса (на этом языке модель учится отвечать)."""
+    if not is_latin(text):
+        return "ru"
+    t = text.lower()
+    if "o'" in t or "g'" in t or "ʻ" in t:
+        return "uz"
+    words = [w for w in "".join(c if c.isalpha() or c == "'" else " " for c in t).split()]
+    if any(w in UZ_MARKERS for w in words):
+        return "uz"
+    if words and sum(w in EN_MARKERS for w in words) * 2 >= len(words):
+        return "en"
+    return "uz"
+
+
 # ======================================================================================
 # 2. Строим пары (вопрос, ответ) из data/intents.json
 # ======================================================================================
@@ -90,8 +118,9 @@ def build_pairs(intents, rng, split_seed, test_frac=0.2):
         test_q, train_q = patterns[:n_test], patterns[n_test:]
         for q_list, bucket in ((train_q, train_pairs), (test_q, test_pairs)):
             for q in q_list:
-                lang = "uz" if is_latin(q) else "ru"
-                answers = it["responses"].get(lang) or it["responses"].get("ru")
+                lang = detect_lang(q)
+                answers = it["responses"].get(lang) or it["responses"].get("uz" if lang == "en" else "ru") \
+                    or it["responses"].get("ru")
                 for a in answers:
                     bucket.append((q, a, it["tag"], lang))
     return train_pairs, test_pairs
