@@ -145,17 +145,25 @@ def step(log=print):
         past = [p for p in st if p["grade"] < g]
     # 19.10 (вечер): продолжаем с ЛУЧШЕЙ попытки этой четверти (не с последней) — иначе откат 82% → 74–76%
     same = [h for h in s["history"] if h["grade"] == s["grade"] and h["quarter"] == s["quarter"]
-            and h.get("acc_past", 0) >= KEEP and Path(h["model"]).exists()]
-    init = max(same, key=lambda h: h["acc_cur"])["model"] if same else s["model"]
+            and h.get("acc_past", 0) >= KEEP - 0.05 and Path(h["model"]).exists()]
+    best = max(same, key=lambda h: h["acc_cur"] + h.get("acc_past", 0)) if same else None
+    init = best["model"] if best else s["model"]
     if init != s["model"]:
-        log(f"Старт с лучшей попытки: {Path(init).name} ({max(h['acc_cur'] for h in same):.0%})")
+        log(f"Старт с лучшей попытки: {Path(init).name} (текущая {best['acc_cur']:.0%}, прошлые {best.get('acc_past', 0):.0%})")
     rng = random.Random(len(s["history"]))
     # 19.10: ОЧЕНЬ много заданий — но только для ЭТОЙ четверти (по видам и числам из книги), после — удаляем
     from server.book_augment import augment
     all_test_q = {x["q"] for p in st for x in p["test"]}
     extra = augment(cur, seed=len(s["history"]), banned_q=all_test_q)
     review = [x for p in past for x in p["train"] if x["q"] not in all_test_q]
-    review = rng.sample(review, min(len(review), max(30, int(0.3 * (len(cur["train"]) + len(extra)) / 0.7))))
+    # 19.10 (ночь): 2-я четверть сдана на 100%, но 1-ю забыла (82% < 85%) — повторения было всего 71.
+    # Добавляем задания ПО ОБРАЗЦУ прошлых четвертей (те же виды и числа из книги), чтобы повторение было ~30%.
+    want = max(30, int(0.3 * (len(cur["train"]) + len(extra)) / 0.7))
+    if past and len(review) < want:
+        per = max(50, (want - len(review)) // len(past) + 1)
+        for j, p in enumerate(past):
+            review += augment(p, factor=100, cap=per, seed=1000 + j + len(s["history"]), banned_q=all_test_q)
+    review = rng.sample(review, min(len(review), want))
     train = [x for x in cur["train"] if x["q"] not in all_test_q] + extra + review
     # 19.10 (вечер): ошибки — на переходе через 10 (7 + 3, 8 + 2, 10 − 4): такие задания повторяем ×4
     hard = [x for x in train if x.get("kind") != "gsm8k" and _tens(x)]
