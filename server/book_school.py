@@ -5,7 +5,9 @@
     .venv/bin/python -m server.book_school --status   # где сейчас
 
 Состояние — server_data/book_school.json:
-  {"model": путь к текущей модели, "grade": 1, "quarter": 1, "attempts": n, "history": [...]}
+  {"model": путь к текущей модели, "grade": 1, "quarter": 1, "attempts": n, "layers": 13, "history": [...]}
+  layers — 19.10 Фарход: «вырасти хотя бы до 6 млн» → 13 слоёв × 192 ≈ 6,1 млн (рост без потери знаний:
+  новые слои сначала «молчат», проверено — ответы 8 из 8 те же).
 Шаг:
   1. берём задания текущей четверти (учить) + 30% повторения всех прошлых четвертей (чтобы не забывала);
   2. учим на Kaggle (server.kaggle_train, с текущей модели — знания не теряются);
@@ -84,7 +86,8 @@ def step(log=print):
     log(f"Учёба: {s['grade']} класс, {s['quarter']} четверть, попытка {s['attempts'] + 1}: "
         f"учить {len(cur['train'])} + повторение {len(review)}, экзамен {len(cur['test'])} + прошлые {len(past_test)}")
     kaggle_train.run(math=str(pairs), steps=STEPS, out=str(out), init=s["model"], school=False, log=log,
-                     extra=["--heads", "8", "--math_frac", "0.7", "--lr", "3e-4", "--warmup", "200", "--eval_every", "1000"])
+                     extra=["--heads", "8", "--layers", str(s.get("layers", 13)), "--math_frac", "0.7", "--lr", "3e-4",
+                            "--warmup", "200", "--eval_every", "1000"])
     acc_cur, wrong = exam(str(out), cur["test"])
     acc_past, _ = exam(str(out), past_test) if past_test else (1.0, [])
     old_past, _ = exam(s["model"], past_test) if past_test else (1.0, [])
