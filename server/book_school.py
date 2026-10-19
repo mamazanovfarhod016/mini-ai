@@ -72,9 +72,12 @@ def step(log=print):
     i = idx_of(st, s["grade"], s["quarter"])
     cur, past = st[i], st[:i]
     rng = random.Random(len(s["history"]))
+    # 19.10: ОЧЕНЬ много заданий — но только для ЭТОЙ четверти (по видам и числам из книги), после — удаляем
+    from server.book_augment import augment
+    extra = augment(cur, seed=len(s["history"]))
     review = [x for p in past for x in p["train"]]
-    review = rng.sample(review, min(len(review), max(30, int(0.3 * len(cur["train"]) / 0.7))))
-    train = cur["train"] + review
+    review = rng.sample(review, min(len(review), max(30, int(0.3 * (len(cur["train"]) + len(extra)) / 0.7))))
+    train = cur["train"] + extra + review
     # экзамен по текущей — ещё и на ru/uz-вариантах; прошлые — до 100 спрятанных
     past_test = [x for p in past for x in p["test"]]
     past_test = rng.sample(past_test, min(100, len(past_test)))
@@ -84,11 +87,13 @@ def step(log=print):
                                 ensure_ascii=False))
     out = ROOT / f"server_data/models/_book_g{s['grade']}q{s['quarter']}_try{s['attempts'] + 1}.json"
     log(f"Учёба: {s['grade']} класс, {s['quarter']} четверть, попытка {s['attempts'] + 1}: "
-        f"учить {len(cur['train'])} + повторение {len(review)}, экзамен {len(cur['test'])} + прошлые {len(past_test)}")
+        f"из книги {len(cur['train'])} + новых по образцу книги {len(extra)} + повторение {len(review)}, "
+        f"экзамен {len(cur['test'])} + прошлые {len(past_test)}")
     kaggle_train.run(math=str(pairs), steps=STEPS, out=str(out), init=s["model"], school=False, log=log,
                      extra=["--heads", "8", "--layers", str(s.get("layers", 13)), "--math_frac", "0.7", "--lr", "3e-4",
                             "--warmup", "200", "--eval_every", "1000"])
     acc_cur, wrong = exam(str(out), cur["test"])
+    pairs.unlink(missing_ok=True)   # материалы этой четверти больше не нужны — к следующей соберём заново
     acc_past, _ = exam(str(out), past_test) if past_test else (1.0, [])
     old_past, _ = exam(s["model"], past_test) if past_test else (1.0, [])
     passed = acc_cur >= PASS and acc_past >= KEEP
