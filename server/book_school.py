@@ -65,6 +65,29 @@ def exam(model_path, items):
     return ok / max(1, len(items)), wrong
 
 
+def preflight(train, test, log=print):
+    """Совет Карпаты: «посмотри на данные прямо перед сетью». Перед КАЖДОЙ отправкой на Kaggle:
+    1) каждый ответ пересчитан Python заново (ошибочный ответ в данных = сеть учит ошибку);
+    2) ни одно экзаменационное задание не попало в учёбу (иначе экзамен нечестный);
+    3) 5 случайных заданий — в лог, глазами."""
+    import re
+    from tools.book_tasks import calc
+    test_q = {x["q"] for x in test}
+    leak = [x["q"] for x in train if x["q"] in test_q]
+    bad = []
+    for x in train:
+        t = x["q"].split()
+        v = calc(t[0::2], t[1::2])
+        final = re.split(r"(?:Ответ|Javob|Answer):\s*", x["a"])[-1].strip()
+        if v is None or str(int(v)).replace("-", "−") != final:
+            bad.append((x["q"], x["a"]))
+    for x in random.Random(0).sample(train, min(5, len(train))):
+        log(f"  данные: {x['q']}  →  {x['a']}")
+    if leak or bad:
+        raise RuntimeError(f"Данные не прошли проверку: утечек в экзамен {len(leak)}, неверных ответов {len(bad)}: {bad[:3]}")
+    log(f"Проверка данных: {len(train)} заданий, все ответы верны, утечек в экзамен нет")
+
+
 def step(log=print):
     from server import kaggle_train
     st = stages()
@@ -74,14 +97,16 @@ def step(log=print):
     rng = random.Random(len(s["history"]))
     # 19.10: ОЧЕНЬ много заданий — но только для ЭТОЙ четверти (по видам и числам из книги), после — удаляем
     from server.book_augment import augment
-    extra = augment(cur, seed=len(s["history"]))
-    review = [x for p in past for x in p["train"]]
+    all_test_q = {x["q"] for p in st for x in p["test"]}
+    extra = augment(cur, seed=len(s["history"]), banned_q=all_test_q)
+    review = [x for p in past for x in p["train"] if x["q"] not in all_test_q]
     review = rng.sample(review, min(len(review), max(30, int(0.3 * (len(cur["train"]) + len(extra)) / 0.7))))
-    train = cur["train"] + extra + review
+    train = [x for x in cur["train"] if x["q"] not in all_test_q] + extra + review
     # экзамен по текущей — ещё и на ru/uz-вариантах; прошлые — до 100 спрятанных
     past_test = [x for p in past for x in p["test"]]
     past_test = rng.sample(past_test, min(100, len(past_test)))
     pairs = ROOT / "server_data/book_train.json"
+    preflight(train, cur["test"] + past_test, log=log)
     pairs.write_text(json.dumps({"train": [{"q": x["q"], "a": x["a"], "kind": x["kind"], "lang": x["lang"]} for x in train],
                                  "test": [{"q": x["q"], "a": x["a"], "kind": x["kind"]} for x in cur["test"]]},
                                 ensure_ascii=False))

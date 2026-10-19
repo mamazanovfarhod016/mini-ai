@@ -26,7 +26,7 @@ def _shape(item):
     return tuple(toks[1::2]), [int(t) for t in toks[0::2]]
 
 
-def augment(cur, factor=100, cap=20000, seed=0):
+def augment(cur, factor=100, cap=20000, seed=0, banned_q=()):
     rng = random.Random(seed)
     lim = defaultdict(lambda: {"num": [], "res": 0})   # вид → max каждого числа и результата в КНИГЕ
     for x in cur["train"] + cur["test"]:
@@ -34,7 +34,7 @@ def augment(cur, factor=100, cap=20000, seed=0):
         L = lim[ops]
         L["num"] = [max(a, b) for a, b in zip(L["num"] + [0] * len(nums), nums)] if L["num"] else nums[:]
         L["res"] = max(L["res"], int(Fraction(x["answer"].replace(M, "-"))))
-    banned = {x["q"] for x in cur["test"]}
+    banned = {x["q"] for x in cur["test"]} | set(banned_q)   # ни одного экзаменационного задания любой четверти
     have = {(x["q"], x["lang"]) for x in cur["train"]}
     langs = sorted({x["lang"] for x in cur["train"]}) or ["ru", "uz"]
     target = min(cap, factor * max(1, len(cur["train"])))
