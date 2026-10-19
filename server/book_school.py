@@ -120,6 +120,17 @@ def finish_grade(grade, model, log=print):
         f"(оставлено {len(keep)} для повторения и все экзамены)")
 
 
+def _tens(x):
+    """Задание с переходом через десяток или с 10 в ответе/числах."""
+    import re
+    nums = [int(n) for n in re.findall(r"\d+", x["q"])]
+    try:
+        ans = int(str(x.get("answer", "")).replace("−", "-"))
+    except ValueError:
+        ans = None
+    return 10 in nums or ans == 10 or (len(nums) == 2 and "+" in x["q"] and nums[0] < 10 and nums[1] < 10 and sum(nums) >= 10)
+
+
 def step(log=print):
     from server import kaggle_train
     st = stages()
@@ -132,6 +143,12 @@ def step(log=print):
         cur = {"grade": g, "quarter": qs[-1]["quarter"], "train": [x for p in qs for x in p["train"]],
                "test": [x for p in qs for x in p["test"]]}
         past = [p for p in st if p["grade"] < g]
+    # 19.10 (вечер): продолжаем с ЛУЧШЕЙ попытки этой четверти (не с последней) — иначе откат 82% → 74–76%
+    same = [h for h in s["history"] if h["grade"] == s["grade"] and h["quarter"] == s["quarter"]
+            and h.get("acc_past", 0) >= KEEP and Path(h["model"]).exists()]
+    init = max(same, key=lambda h: h["acc_cur"])["model"] if same else s["model"]
+    if init != s["model"]:
+        log(f"Старт с лучшей попытки: {Path(init).name} ({max(h['acc_cur'] for h in same):.0%})")
     rng = random.Random(len(s["history"]))
     # 19.10: ОЧЕНЬ много заданий — но только для ЭТОЙ четверти (по видам и числам из книги), после — удаляем
     from server.book_augment import augment
@@ -140,6 +157,11 @@ def step(log=print):
     review = [x for p in past for x in p["train"] if x["q"] not in all_test_q]
     review = rng.sample(review, min(len(review), max(30, int(0.3 * (len(cur["train"]) + len(extra)) / 0.7))))
     train = [x for x in cur["train"] if x["q"] not in all_test_q] + extra + review
+    # 19.10 (вечер): ошибки — на переходе через 10 (7 + 3, 8 + 2, 10 − 4): такие задания повторяем ×4
+    hard = [x for x in train if x.get("kind") != "gsm8k" and _tens(x)]
+    train += hard * 3
+    if hard:
+        log(f"Переход через 10: {len(hard)} заданий ×4")
     # 19.10: задачи со словами GSM8K (OpenAI, MIT; ru-перевод d0rj, MIT) — с 3 класса, по ступени четверти.
     # Экзамен по ним — ОТДЕЛЬНЫЙ и НЕ блокирует переход: для 6 млн параметров это очень трудно (честный замер роста).
     gsm_train, gsm_test = [], []
@@ -162,14 +184,14 @@ def step(log=print):
     log(f"Учёба: {s['grade']} класс, {s['quarter']} четверть, попытка {s['attempts'] + 1}: "
         f"из книги {len(cur['train'])} + новых по образцу книги {len(extra)} + повторение {len(review)}, "
         f"экзамен {len(cur['test'])} + прошлые {len(past_test)}")
-    kaggle_train.run(math=str(pairs), steps=STEPS, out=str(out), init=s["model"], school=False, log=log,
-                     extra=["--heads", "8", "--layers", str(s.get("layers", 13)), "--math_frac", "0.7", "--lr", "3e-4",
+    kaggle_train.run(math=str(pairs), steps=STEPS, out=str(out), init=init, school=False, log=log,
+                     extra=["--heads", "8", "--layers", str(s.get("layers", 13)), "--math_frac", "0.7", "--lr", str(s.get("lr", 1.5e-4)),
                             "--warmup", "200", "--eval_every", "1000"] + (["--max_q_min", "200"] if gsm_train else []))
     acc_cur, wrong = exam(str(out), cur["test"])
     acc_gsm = round(exam(str(out), gsm_test)[0], 3) if gsm_test else None
     pairs.unlink(missing_ok=True)   # материалы этой четверти больше не нужны — к следующей соберём заново
     acc_past, _ = exam(str(out), past_test) if past_test else (1.0, [])
-    old_past, _ = exam(s["model"], past_test) if past_test else (1.0, [])
+    old_past, _ = exam(init, past_test) if past_test else (1.0, [])
     passed = acc_cur >= PASS and acc_past >= KEEP
     rec = {"ts": time.strftime("%Y-%m-%d %H:%M"), "grade": s["grade"], "quarter": s["quarter"],
            "attempt": s["attempts"] + 1, "acc_cur": round(acc_cur, 3), "acc_past": round(acc_past, 3),
