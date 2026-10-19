@@ -316,6 +316,8 @@ def main():
     ap.add_argument("--lr", type=float, default=2.5e-3)
     ap.add_argument("--warmup", type=int, default=150)
     ap.add_argument("--drop", type=float, default=0.1)
+    ap.add_argument("--max_q_min", type=int, default=0,
+                    help="поднять max_q (длина вопроса в токенах) при --init: задачи со словами длинные (GSM8K ~100 токенов)")
     ap.add_argument("--max_q", type=int, default=40,
                      help="макс. длина вопроса (символов для char, токенов для bpe)")
     ap.add_argument("--seed", type=int, default=0)
@@ -392,7 +394,7 @@ def main():
             corpus = [clean_question(q) for q, *_ in train_aug + math_train] + [a for _, a, *_ in train_aug + math_train]
             tok.extend(corpus, extra=200, verbose=True)
         V = len(tok)
-        args.max_q = meta_old.get("max_q", args.max_q)
+        args.max_q = max(meta_old.get("max_q", args.max_q), args.max_q_min)
         args.d, args.layers = max(args.d, cfg_old["d"]), max(args.layers, cfg_old["n_layer"])
         args.heads = args.heads if args.d % args.heads == 0 else cfg_old["n_head"]
         args.pos = cfg_old.get("pos", "learned")   # позицию при продолжении обучения не меняем

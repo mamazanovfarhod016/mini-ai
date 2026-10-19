@@ -76,6 +76,8 @@ def preflight(train, test, log=print):
     leak = [x["q"] for x in train if x["q"] in test_q]
     bad = []
     for x in train:
+        if x.get("kind") == "gsm8k":      # задачи со словами: каждое равенство решения уже пересчитано при загрузке
+            continue
         t = x["q"].split()
         v = calc(t[0::2], t[1::2])
         final = re.split(r"(?:Ответ|Javob|Answer):\s*", x["a"])[-1].strip()
@@ -102,6 +104,16 @@ def step(log=print):
     review = [x for p in past for x in p["train"] if x["q"] not in all_test_q]
     review = rng.sample(review, min(len(review), max(30, int(0.3 * (len(cur["train"]) + len(extra)) / 0.7))))
     train = [x for x in cur["train"] if x["q"] not in all_test_q] + extra + review
+    # 19.10: задачи со словами GSM8K (OpenAI, MIT; ru-перевод d0rj, MIT) — с 3 класса, по ступени четверти.
+    # Экзамен по ним — ОТДЕЛЬНЫЙ и НЕ блокирует переход: для 6 млн параметров это очень трудно (честный замер роста).
+    gsm_train, gsm_test = [], []
+    gl = BOOKS / "gsm8k/levels.json"
+    if gl.exists() and s["grade"] >= 3:
+        g = json.loads(gl.read_text())
+        pick = lambda xs: [x for x in xs if x["grade"] == min(s["grade"], 7) and x["quarter"] <= s["quarter"]]  # noqa: E731
+        gsm_train = rng.sample(pick(g["train"]), min(1500, len(pick(g["train"]))))
+        gsm_test = rng.sample(pick(g["test"]), min(60, len(pick(g["test"]))))
+        train += [{**x, "kind": "gsm8k"} for x in gsm_train]
     # экзамен по текущей — ещё и на ru/uz-вариантах; прошлые — до 100 спрятанных
     past_test = [x for p in past for x in p["test"]]
     past_test = rng.sample(past_test, min(100, len(past_test)))
@@ -116,15 +128,16 @@ def step(log=print):
         f"экзамен {len(cur['test'])} + прошлые {len(past_test)}")
     kaggle_train.run(math=str(pairs), steps=STEPS, out=str(out), init=s["model"], school=False, log=log,
                      extra=["--heads", "8", "--layers", str(s.get("layers", 13)), "--math_frac", "0.7", "--lr", "3e-4",
-                            "--warmup", "200", "--eval_every", "1000"])
+                            "--warmup", "200", "--eval_every", "1000"] + (["--max_q_min", "200"] if gsm_train else []))
     acc_cur, wrong = exam(str(out), cur["test"])
+    acc_gsm = round(exam(str(out), gsm_test)[0], 3) if gsm_test else None
     pairs.unlink(missing_ok=True)   # материалы этой четверти больше не нужны — к следующей соберём заново
     acc_past, _ = exam(str(out), past_test) if past_test else (1.0, [])
     old_past, _ = exam(s["model"], past_test) if past_test else (1.0, [])
     passed = acc_cur >= PASS and acc_past >= KEEP
     rec = {"ts": time.strftime("%Y-%m-%d %H:%M"), "grade": s["grade"], "quarter": s["quarter"],
            "attempt": s["attempts"] + 1, "acc_cur": round(acc_cur, 3), "acc_past": round(acc_past, 3),
-           "passed": passed, "model": str(out), "wrong": wrong}
+           "passed": passed, "model": str(out), "wrong": wrong, "acc_gsm8k": acc_gsm}
     s["history"].append(rec)
     if acc_past >= old_past - 0.02:          # прошлое не забыла → берём модель как текущую
         s["model"] = str(out)
