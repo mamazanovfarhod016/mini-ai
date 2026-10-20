@@ -46,18 +46,22 @@ def upload_release(files, name):
     have = {a["name"]: a for a in rel["assets"]}
     out = {}
     for f in files:
-        an = f"{name}_{f.name}.gz"
-        tmp = Path(tempfile.gettempdir()) / an
-        gz(f, tmp)
+        already = f.name.endswith(".gz")
+        an = f"{name}_{f.name}" if already else f"{name}_{f.name}.gz"
+        tmp = f if already else Path("/home/hermes/mini-ai-raw") / an      # не /tmp: большие файлы
+        if not already:
+            gz(f, tmp)
         size = tmp.stat().st_size
         if an in have and have[an]["size"] != size:
             api("DELETE", have[an]["url"])
             have.pop(an)
         if an not in have:
             up = rel["upload_url"].split("{")[0] + "?name=" + an
-            a = api("POST", up, tmp.read_bytes(), {"Content-Type": "application/gzip"})
+            with open(tmp, "rb") as fh:                                    # потоком, не читая файл в память
+                a = api("POST", up, fh, {"Content-Type": "application/gzip", "Content-Length": str(size)})
             print("release uploaded", an, a["size"], flush=True)
-        tmp.unlink()
+        if not already:
+            tmp.unlink()
         out[f.name] = (an, size)
     rel = api("GET", f"https://api.github.com/repos/{REPO}/releases/tags/{TAG}")
     have = {a["name"]: a for a in rel["assets"]}
@@ -86,7 +90,10 @@ def upload_kaggle(files, name, title):
     sub = work / name
     sub.mkdir(exist_ok=True)
     for f in files:
-        shutil.copy(f, sub / f.name)
+        try:
+            os.link(f, sub / f.name)                                       # жёсткая ссылка: без лишней копии на диске
+        except OSError:
+            shutil.copy(f, sub / f.name)
     meta = {"title": "mini-ai-text", "id": KSLUG, "licenses": [{"name": "CC-BY-SA-4.0"}],
             "subtitle": "Mini AI: reading texts and word meanings (uz/ru/en)",
             "description": "Stages 'reading' and 'words' for Mini AI (github.com/mamazanovfarhod016/mini-ai). "
@@ -114,12 +121,12 @@ def main():
     ap.add_argument("--dir", required=True)
     ap.add_argument("--name", required=True)
     ap.add_argument("--title", default="")
-    ap.add_argument("--glob", default="*.jsonl")
+    ap.add_argument("--glob", default="*.jsonl", help="можно несколько через запятую: '*.txt,*.txt.gz'")
     ap.add_argument("--notes", default=None, help="куда записать ссылки (markdown) для отчёта")
     ap.add_argument("--delete", action="store_true")
     ap.add_argument("--skip-kaggle", action="store_true")
     a = ap.parse_args()
-    files = sorted(Path(a.dir).glob(a.glob))
+    files = sorted({f for g in a.glob.split(",") for f in Path(a.dir).glob(g.strip())})
     print("files", [(f.name, f.stat().st_size) for f in files], flush=True)
     url, links, rel_ok = upload_release(files, a.name)
     k_ok, listing = (False, "") if a.skip_kaggle else upload_kaggle(files, a.name, a.title)
