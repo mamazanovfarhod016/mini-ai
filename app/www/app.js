@@ -276,7 +276,11 @@
       out.classList.remove("caret");
       logo.classList.remove("spin");
       if (calcCheck != null && thought) {
-        thought.math = { right: calcCheck, ok: String(finalText).trim() === calcCheck };
+        // 20.10: ответ по шагам «2 + 2 = 4, 4 + 2 = 6. Javob: 8» — сравниваем только итог после «Ответ/Javob/Answer:»,
+        // иначе верный ответ помечался «ошиблась, правильно: 8» и предлагалось звать наставника
+        var fin = String(finalText).trim(), m = /(?:Ответ|Javob|Answer)\s*:\s*([^\s.]+(?:[.,]\d+)?)\.?\s*$/i.exec(fin);
+        if (m) fin = m[1];
+        thought.math = { right: calcCheck, ok: fin.replace(",", ".") === String(calcCheck).replace(",", ".") };
       }
       addMeta(el, thought, text);
       current.msgs.push({ role: "ai", text: finalText, thought: thought, q: text });
