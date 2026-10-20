@@ -16,6 +16,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -89,7 +90,8 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
              (Path(intents) if intents else ROOT / "data/intents.json", "data/intents.json")]
     args = ["--tokenizer", "bpe", "--vocab", "1000", "--steps", str(steps), "--warmup", "300", "--drop", "0.05",
             "--intents", "data/intents.json", *extra]
-    if gpu:
+    if gpu or os.environ.get("MINIAI_CPU_TORCH") == "1":
+        # 20.10: на CPU-машине Kaggle (без видеокарты, не тратит недельный лимит GPU) тоже PyTorch — он там есть и быстрее numpy.
         # на видеокарте backprop считает PyTorch (он уже стоит на Kaggle); сеть и Adam — наши,
         # совпадение с numpy-эталоном проверяет tests/test_torch_engine.py
         args += ["--engine", "torch"]

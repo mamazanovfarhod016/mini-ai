@@ -45,6 +45,15 @@ def augment(cur, factor=100, cap=20000, seed=0, banned_q=()):
         ops = rng.choice(kinds)
         L = lim[ops]
         nums = [rng.randint(0, max(1, m)) for m in L["num"]]
+        if "/" in ops:
+            # 20.10: раньше делимое бралось случайно → делилось нацело почти только 0 (0 / 1, 0 / 2…), и сеть
+            # не видела настоящего деления (экзамен 45 / 9 → 6, 2 попытки по 33%). Теперь делимое = делитель × частное
+            # в пределах книги, без нулевых делимых.
+            for k, o in enumerate(ops):
+                if o == "/":
+                    nums[k + 1] = max(1, nums[k + 1])
+                    hi = max(1, L["num"][k] // nums[k + 1])
+                    nums[k] = nums[k + 1] * rng.randint(1, hi)
         if "/" in ops and nums[1] == 0:
             continue
         v = calc([str(n) for n in nums], list(ops))

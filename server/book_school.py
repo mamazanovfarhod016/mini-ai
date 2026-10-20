@@ -18,6 +18,7 @@
 """
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -205,6 +206,7 @@ def step(log=print):
         f"из книги {len(cur['train'])} + новых по образцу книги {len(extra)} + повторение {len(review)}, "
         f"экзамен {len(cur['test'])} + прошлые {len(past_test)}")
     kaggle_train.run(math=str(pairs), steps=STEPS, out=str(out), init=init, school=False, log=log,
+                     gpu=os.environ.get("MINIAI_GPU", "1") != "0",   # 20.10: лимит GPU кончился → MINIAI_GPU=0 (CPU Kaggle)
                      extra=["--heads", "8", "--layers", str(s.get("layers", 13)), "--math_frac", "0.7", "--lr", str(s.get("lr", 1.5e-4)),
                             "--warmup", "200", "--eval_every", "1000"] + (["--max_q_min", "200"] if gsm_train else []))
     acc_cur, wrong = exam(str(out), cur["test"])
