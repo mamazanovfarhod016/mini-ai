@@ -147,7 +147,31 @@ class Handler(BaseHTTPRequestHandler):
             with self.lock:
                 item = store.add_mentor_item(self.data, {**rec, "kind": "question", "web": web})
             return self._send(200, {"ok": True, "id": item["id"]})
+        # ---- ЭКСПЕРИМЕНТАЛЬНАЯ МОДЕЛЬ «память без градиента» (mini_ai/experimental.py, 21.10.2026) ----
+        if u.path == "/api/memory/ask":
+            mind = self._memory_mind()
+            text = (body.get("q") or "").strip()
+            with self.lock:
+                if text.lower().startswith(("/learn ", "выучи ", "запомни ")):
+                    r = mind.learn(text.split(" ", 1)[1])
+                    return self._send(200, {"answer": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "how": "learn", "facts": [], "confidence": 1.0})
+                if text.lower().startswith(("/tell ", "расскажи про ", "tell me about ")):
+                    r = mind.tell(text.split(" ", 2 if text.lower().startswith("расскажи") else 1)[-1])
+                    return self._send(200, {"answer": r["text"] or "Про это у меня нет фактов.", "how": r["how"], "facts": [], "confidence": 1.0 if r["text"] else 0.0})
+                r = mind.ask(text)
+            store.append_jsonl(self.data / "memory_ask.jsonl", {**rec, "answer": r.get("answer"), "how": r.get("how"), "confidence": r.get("confidence")})
+            return self._send(200, {"answer": r.get("answer"), "how": r.get("how"), "facts": r.get("facts", []),
+                                    "confidence": r.get("confidence", 0), "frame": r.get("frame"), "n_facts": len(mind.kb.facts)})
         return self._send(404, {"error": "not found"})
+
+    _mind = None
+    @classmethod
+    def _memory_mind(cls):
+        if cls._mind is None:
+            from mini_ai.experimental import ExperimentalMind
+            cls._mind = ExperimentalMind(school=True, wiki=True, wiki_limit=300000)
+            print(f"[memory] экспериментальная модель загружена: {cls._mind.boot}", flush=True)
+        return cls._mind
 
 
 def main():

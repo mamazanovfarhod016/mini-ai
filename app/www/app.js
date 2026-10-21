@@ -35,9 +35,12 @@
 
   // 18.10.2026: BPE-трансформер (v0.3) точнее классификатора на новых фразах → он по умолчанию;
   // классификатор v0.1 — только если пользователь сам выбрал его в меню.
-  var engine = (localStorage.getItem(ENGINE_KEY) !== "mlp" && txModel) ? "transformer" : "mlp";
+  var saved = localStorage.getItem(ENGINE_KEY);
+  var engine = saved === "memory_core" ? "memory_core" : (saved !== "mlp" && txModel) ? "transformer" : "mlp";
+  var memoryFacts = 0;   // сколько фактов в экспериментальной памяти (с сервера)
 
   function paramsOfCurrentEngine() {
+    if (engine === "memory_core") return memoryFacts || 0;
     return engine === "transformer" && txModel ? window.MINI_AI_TRANSFORMER.n_params : mlpModel.n_params;
   }
   function updateParamsLabel() {
@@ -47,6 +50,7 @@
 
   function setEngine(name) {
     if (name === "transformer" && !txModel) name = "mlp";
+    if (name === "memory_core" && !(window.MiniLearn && window.MiniLearn._call)) name = "mlp";
     engine = name;
     localStorage.setItem(ENGINE_KEY, name);
     updateParamsLabel();
@@ -170,7 +174,9 @@
       mb.title = "Нейросеть считает сама (её этому научили). Калькулятор только проверяет её ответ.";
       meta.appendChild(mb);
     }
-    if (thought && thought.engine === "transformer") {
+    if (thought && thought.engine === "memory_core") {
+      b.textContent = "🧠 память · " + (thought.how || "") + (thought.confidence != null ? " · уверенность " + Math.round(thought.confidence * 100) + "%" : "") + " · нажми, чтобы увидеть факты";
+    } else if (thought && thought.engine === "transformer") {
       b.textContent = "✨ трансформер · нажми, чтобы увидеть внимание";
     } else {
       var label = thought && thought.intent ? (mlpModel.labels[thought.intent] || thought.intent) : "не уверена";
@@ -307,6 +313,25 @@
       return;
     }
 
+    if (engine === "memory_core") {
+      // Экспериментальная модель «память без градиента»: факты + рамка + цепочка (сервер /api/memory/ask).
+      out.textContent = "";
+      out.classList.add("caret");
+      window.MiniLearn._call("/api/memory/ask", { q: text, lang: lang, device: device }).then(function (r) {
+        memoryFacts = r.n_facts || memoryFacts; updateParamsLabel();
+        var a = r.answer ? r.answer : "Не знаю — такого факта у меня нет. Напиши «выучи <предложение>» и спроси снова.";
+        if (r.answer && r.confidence < 0.6) a = a + " (не уверена)";
+        out.textContent = a;
+        var thought = { engine: "memory_core", answer: a, how: r.how, facts: r.facts || [], confidence: r.confidence, frame: r.frame };
+        lastThought = { q: text, t: thought };
+        finish(a, thought, a, true);
+      }).catch(function (e) {
+        out.textContent = "Сервер памяти недоступен: " + (e && e.message || e);
+        finish(out.textContent, { engine: "memory_core", answer: out.textContent }, out.textContent, true);
+      });
+      return;
+    }
+
     if (engine === "transformer" && txModel) {
       var startDelay = fast ? 0 : 280 + Math.random() * 220;
       setTimeout(function () {
@@ -352,6 +377,7 @@
   function openSheet(data) {
     $("#sheetTitle").textContent = "Как я работаю";
     data = data || lastThought;
+    if (data && data.t && data.t.engine === "memory_core") return openSheetMemory(data);
     if (data && data.t && data.t.engine === "transformer") return openSheetTransformer(data);
     return openSheetMLP(data);
   }
@@ -396,7 +422,8 @@
   function engineBadgeHtml() {
     return '<div class="engine-badge">' +
       '<button data-e="transformer"' + (engine === "transformer" ? " class=\"active\"" : "") + (txModel ? "" : " disabled") + '>Трансформер v0.2</button>' +
-      '<button data-e="mlp"' + (engine === "mlp" ? " class=\"active\"" : "") + '>Классификатор v0.1</button></div>';
+      '<button data-e="mlp"' + (engine === "mlp" ? " class=\"active\"" : "") + '>Классификатор v0.1</button>' +
+      '<button data-e="memory_core"' + (engine === "memory_core" ? " class=\"active\"" : "") + '>Память (эксп.)</button></div>';
   }
 
   function wireEngineBadge() {
@@ -408,6 +435,20 @@
 
   // ---------- тепловая карта внимания (для трансформера) ----------
   var heatState = { layer: 0, head: 0, stepIdx: 0 };
+
+  function openSheetMemory(data) {
+    var body = $("#sheetBody"), t = data.t || {}, html = engineBadgeHtml();
+    html += "<h3>Твой вопрос</h3><div class=\"q\">" + esc(data.q || "") + "</div>";
+    html += "<h3>Ответ</h3><div class=\"q\">" + esc(t.answer || "") + "</div>";
+    html += '<div class="verdict"><b>' + esc(t.how || "") + "</b><span>уверенность " + pct(t.confidence || 0) + "</span></div>";
+    if (t.frame) html += "<h3>Как поняла вопрос (рамка)</h3><div class=\"tags\"><code>слот: " + esc(t.frame.slot) + "</code><code>X: " + esc((t.frame.X || []).join(" ")) + "</code><code>связь: " + esc(t.frame.rel || "—") + "</code><code>Y: " + esc((t.frame.Y || []).join(" ")) + "</code></div>";
+    if (t.facts && t.facts.length) { html += "<h3>Факты-источники (цепочка)</h3>"; t.facts.forEach(function (f, i) { html += '<div class="q">' + (i + 1) + ". " + esc(f) + "</div>"; }); }
+    html += "<h3>Архитектура</h3><p>Без градиента и без весов: читает текст → факты (X, связь, Y) → память-список. Вопрос → рамка с пустым слотом → факт с теми же словами (1 шаг) или два факта через общий термин (2 шага). Не знает — говорит честно. Выучивает новое за миллисекунды: «выучи &lt;предложение&gt;».</p>";
+    html += '<p class="small-note">Фактов в памяти: ' + (memoryFacts || 0).toLocaleString("ru-RU") + '. Это экспериментальная модель, работает через сервер. Автор: Фарход.</p>';
+    body.innerHTML = html;
+    app.classList.add("sheet-open");
+    $("#sheet").setAttribute("aria-hidden", "false");
+  }
 
   function openSheetTransformer(data) {
     var body = $("#sheetBody"), m = window.MINI_AI_TRANSFORMER, cfg = m.config;
