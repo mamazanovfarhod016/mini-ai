@@ -302,12 +302,21 @@ class ExperimentalMind:
             # дальше они проходят те же проверки (редкие слова, куски), что и найденные по словам
             for si, sim in self.neural.search(self._cur_q, k=6, min_sim=0.45):
                 cnt[si] = max(cnt.get(si, 0), kidf * sim); self._neural_hit[si] = sim
+        # СЛЕДУЮЩЕЕ ПРЕДЛОЖЕНИЕ: если предложение совпало с вопросом по смыслу/словам, ответ часто в СЛЕДУЮЩЕМ
+        # («Several devices measure radiation. ONE SUCH DEVICE IS THE GEIGER COUNTER.», «Mammals raise their hair… THEY CAUSE GOOSEBUMPS.»)
+        # — добавляем сосед справа как кандидата с покрытием предыдущего × 0.9 (и помечаем, чтобы при выборе куска учесть)
+        follow = {}
+        for si, score in list(cnt.most_common(6)):
+            nx = si + 1
+            if nx < len(self.kb.sents) and self.kb.sents[nx][1] == self.kb.sents[si][1] and score / kidf >= thr:
+                if re.match(r"^(?:this|these|that|those|one such|such a|such an|they|it|the process|the term|the result|this is|these are)\b", self.kb.sents[nx][0], re.I) or len(toks(self.kb.sents[nx][0])) <= 8:
+                    if cnt.get(nx, 0) < score * 0.9: cnt[nx] = score * 0.9; follow[nx] = si
         for si, score in cnt.most_common(12):
             cov = score / kidf
             if cov < thr: continue
             sent, src = self.kb.sents[si]; sw = set(content_words(toks(sent)))
-            if si in self.kb.sent_glued:
-                sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # определение с отсылкой: слова соседа — тоже «в предложении»
+            if si in self.kb.sent_glued or si in follow:
+                sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # определение с отсылкой / следующее предложение: слова соседа — тоже «в предложении»
             sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
             rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and not (forms[w] & sforms)]
             if self._neural_hit.get(si, 0) >= 0.6: rare_missing = rare_missing[:1] if cov >= 0.5 else rare_missing[:2]   # смысл совпал — слова могут отличаться
