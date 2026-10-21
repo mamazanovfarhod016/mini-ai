@@ -465,9 +465,14 @@ class ExperimentalMind:
                     context = " ".join(self.kb.sents[j][0] for j in ctx_ids)
                     ans, sc = read_answer(q, context)
                     aw = set(content_words(toks(ans or "")))
-                    if ans and sc >= 8.0 and aw and not (aw <= known_):
+                    if ans and sc >= 12.0 and aw and not (aw <= known_):
                         src_sent = next((self.kb.sents[j][0] for j in ctx_ids if ans.lower() in self.kb.sents[j][0].lower()), context[:120])
-                        conf = round(min(1.0, 0.5 + (sc - 8.0) / 30.0), 2)
+                        # калибровка по измерению (A/B на 300): score<22 → ~0.3 точности, ≥22 → ~0.6; уверенность = измеренная точность
+                        conf = 0.3 if sc < 18 else (0.45 if sc < 22 else (0.6 if sc < 26 else 0.72))
+                        # предложение-источник должно содержать хоть одно твёрдое слово вопроса — иначе читатель «угадал» из чужого контекста
+                        ssw = set(content_words(toks(src_sent))); sf = set().union(*[self._forms(x) for x in ssw]) if ssw else set()
+                        hardq = [w for w in known_ if not self._soft(w) and w not in self.META and len(w) > 3]
+                        if hardq and not any(self._forms(w) & sf for w in hardq): conf *= 0.6
                         cands.append(dict(how="нейронный читатель", answer=ans, confidence=conf, facts=[f"{ans} —span→ {src_sent[:160]}"],
                                           text=f"From what I've read: {src_sent.rstrip('.')[:160]}. So I'd say: {ans}."))
             except Exception as e_: pass
