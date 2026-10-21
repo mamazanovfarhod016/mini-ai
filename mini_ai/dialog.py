@@ -214,8 +214,13 @@ class Dialog:
             if re.search(r"\bthere\b", q, re.I) and re.match(r"^how many people live there", ql):
                 return f"What is the population of {ent}?", None, "местоимение there"
             if re.match(r"^how many people live in (it|there)", ql): return f"What is the population of {ent}?", None, "местоимение it"
-            nq = re.sub(r"\b(it|he|she|they|this|that|there)\b", ent, q, count=1, flags=re.I)
-            if nq != q: return nq, None, "местоимение"
+            # местоимение — только как самостоятельное подлежащее/дополнение: «What is it?», «Where does he live?».
+            # «socket THAT houses», «so hard» (that=союз), «when IT sends» в длинном школьном вопросе — не местоимение.
+            qw = toks(q)
+            relative = re.search(r"\b(?:[a-z]+)\s+(?:that|which)\s+[a-z]+", q, re.I) and re.search(r"\b(?:that|which)\b", q, re.I)
+            if len(qw) <= 9 and not relative:
+                nq = re.sub(r"\b(it|he|she|they|this|that|there)\b", ent, q, count=1, flags=re.I)
+                if nq != q: return nq, None, "местоимение"
         return q, fr, None
 
     # ---------- 1. переспрос ----------

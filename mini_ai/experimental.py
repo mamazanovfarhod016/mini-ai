@@ -91,6 +91,8 @@ class ExperimentalMind:
         from mini_ai.ops import Ops
         from mini_ai.fewshot import FewShot
         self.thinker = Thinker(self.kb); self.cot = CoT(self); self.ops = Ops(self.kb); self.ops.meaning = self.meaning; self.fewshot = FewShot(self.kb)
+        from mini_ai.growth import Growth
+        self.growth = Growth(self, self.state_dir); self._last_out = None; self._cur_q = ""
         if self.use_dialog:
             from mini_ai.dialog import Dialog
             self.dialog = Dialog(self.kb, seed=self.seed)          # сервер подменяет на сессионный по sid
@@ -139,8 +141,9 @@ class ExperimentalMind:
     JUNK = set("today now then also usually often sometimes generally typically however thus therefore example instance figure below above here there".split())
     def _stem(self, w): return w[:-2] if w.endswith("es") and len(w) > 5 else (w[:-1] if w.endswith("s") and len(w) > 4 else w)
     def _forms(self, w):
-        """множество грубых основ слова: plants/plant, processes/process, invertebrates/invertebrate, bodies/body, moves/move"""
+        """множество грубых основ слова: plants/plant, processes/process, invertebrates/invertebrate, bodies/body, moves/move, held/hold"""
         f = {w}
+        if w in self.IRREG: f.add(self.IRREG[w]); f.add(self.IRREG[w] + "s")
         if len(w) > 4 and w.endswith("ies"): f.add(w[:-3] + "y")
         if len(w) > 5 and w.endswith("es"): f.add(w[:-2]); f.add(w[:-1])
         elif len(w) > 4 and w.endswith("s"): f.add(w[:-1])
@@ -148,7 +151,30 @@ class ExperimentalMind:
         if len(w) > 5 and w.endswith("ing"): f.add(w[:-3]); f.add(w[:-3] + "e")
         if len(w) > 5 and w.endswith("ed"): f.add(w[:-2]); f.add(w[:-1])
         return f
-    def _widf(self, w): return min(self.kb.idf(w), 0.4) if w in self.META else self.kb.idf(w)
+    # ВНИМАНИЕ (attention без градиента): какое слово вопроса ОБЯЗАТЕЛЬНО в факте, а какое — лишь подсказка.
+    # Обязательны термины (существительные-предметы). Глаголы и связки (holds/held, made, associated, cannot, either, humans)
+    # важны слабо: факт может сказать то же другим глаголом. Неправильные формы глаголов — таблица.
+    SOFT = set("holds hold held made make makes making associated associate contains contain containing cannot can could either neither "
+               "humans human people person things thing comes come came goes go went gives give gave takes take took gets get got "
+               "found find finds occurs occur occurring happens happen happened produced produce produces producing allows allow "
+               "helps help helped causes cause caused forms form formed moves move moved consists consist consisting involves involve "
+               "describes describe refers refer appears appear becomes become remains remain begins begin starts start ends end "
+               "approximately about roughly nearly almost mostly mainly usually often sometimes commonly typically generally very much many "
+               "together apart inside outside within between among along across through during before after when while where".split())
+    IRREG = {"held": "hold", "made": "make", "found": "find", "took": "take", "gave": "give", "came": "come", "went": "go", "got": "get",
+             "built": "build", "kept": "keep", "left": "leave", "lost": "lose", "met": "meet", "sent": "send", "spent": "spend", "brought": "bring",
+             "bought": "buy", "caught": "catch", "taught": "teach", "thought": "think", "began": "begin", "begun": "begin", "broke": "break",
+             "broken": "break", "chose": "choose", "chosen": "choose", "drew": "draw", "drawn": "draw", "grew": "grow", "grown": "grow",
+             "knew": "know", "known": "know", "saw": "see", "seen": "see", "ran": "run", "fed": "feed", "led": "lead", "bred": "breed",
+             "wrote": "write", "written": "write", "sang": "sing", "sung": "sing", "rose": "rise", "risen": "rise", "fell": "fall", "fallen": "fall"}
+    def _widf(self, w):
+        if w in self.META: return min(self.kb.idf(w), 0.4)
+        if self._soft(w): return min(self.kb.idf(w), 1.2)
+        return self.kb.idf(w)
+    def _soft(self, w):
+        if w in self.META or w in self.SOFT or w in self.IRREG or (len(w) > 4 and (w.endswith("ing") or w.endswith("ed"))): return True
+        G = getattr(self, "growth", None)
+        return bool(G and G.is_soft_learned(w))                       # выученное внимание: слово было лишним в исправлениях
     def _one_step_soft(self, fr, known):
         """ПОНИМАНИЕ ПО СМЫСЛУ: вопрос перефразирован (plants↔plant, forests↔forest, слова переставлены, одно слово
         заменено синонимом) → факт, покрывающий ≥70 % веса слов вопроса с учётом форм и близости смысла (meaning),
@@ -173,7 +199,7 @@ class ExperimentalMind:
             # пропущенное слово допустимо, только если оно частое (idf < 2.0) или по смыслу близко к какому-то слову факта
             M = getattr(self, "meaning", None); ok = True
             for w in missing:
-                if idf[w] < 2.0: continue
+                if idf[w] < 2.0 or self._soft(w): continue
                 if M is not None and any((M.similar(w, x) or 0) > 0.35 for x in allw if len(x) > 3): continue
                 ok = False; break
             if not ok or score / kidf < 0.7: continue
@@ -211,20 +237,41 @@ class ExperimentalMind:
         предложение памяти покрывает ≥60 % веса слов вопроса → ответ = его свободный кусок: часть предложения
         (между знаками/союзами), где нет слов вопроса. Это не поиск по словам «на удачу»: обязательны редкие слова."""
         known = {w for w in known0 if w not in self.META} | {w for w in content_words(toks((fr.get("rel") or "").replace("_", " "))) if w not in self.META}
+        # ТИП ОТВЕТА в вопросе («what ANIMAL GROUP», «what OBJECTS are», «what ORGAN in», «what is the RESULT», «which BODY SYSTEM»)
+        # — это не слова, которые должны быть в факте; это то, ЧЕМ должен быть ответ. Убираем из обязательных.
+        qt = re.search(r"\b(?:what|which)\s+(?:broad\s+|main\s+|primary\s+|basic\s+|large\s+|small\s+|general\s+)?([a-z]+(?:\s+[a-z]+)?)\s+(?:is|are|was|were|do|does|did|in|of|that|has|have|can|will|would)\b", self._cur_q.lower())
+        atype_w = set(content_words(toks(qt.group(1)))) if qt else set()
+        qt2 = re.search(r"\bwhat (?:is|are|was|were) the ([a-z]+)\s*\??$", self._cur_q.lower())
+        if qt2: atype_w.add(qt2.group(1))
+        atype_w |= {w for w in known if w in ("result", "outcome", "objects", "object", "body", "group", "organ", "material", "substance", "structure", "feature", "property", "process", "system", "element", "term", "type", "kind")}
+        known = known - atype_w
         if not known: return None
-        idf = {w: self.kb.idf(w) for w in known}; kidf = sum(idf.values()); forms = {w: self._forms(w) for w in known}
+        idf = {w: self._widf(w) for w in known}; forms = {w: self._forms(w) for w in known}
+        # покрытие считаем по ТВЁРДЫМ словам (терминам); мягкие (глаголы, связки) — только бонус, не знаменатель
+        hard = {w for w in known if not self._soft(w)} or known
+        kidf = sum(idf[w] for w in hard) + 0.3 * sum(idf[w] for w in known - hard)
         qforms = set().union(*[self._forms(w) for w in (known0 | known)]) | {w for w in known0}   # все слова вопроса (и пустышки) — не ответ
         cnt = collections.Counter()
         for w in known:
+            wgt = idf[w] if w in hard else 0.3 * idf[w]
             for x in ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w}):
-                for si in self.kb.sent_by_word.get(x, []): cnt[si] += idf[w] * (1.0 if x == w else 0.9)
+                for si in self.kb.sent_by_word.get(x, []): cnt[si] += wgt * (1.0 if x == w else 0.9)
         best = None
+        # СМЕЛОСТЬ ПО ОПЫТУ: если на таком типе вопроса «отрывок» попадал, а «не знаю» промахивался — порог покрытия ниже (0.45),
+        # если отрывок ошибался — выше (0.7). Ядро само решает, где можно догадываться.
+        G = getattr(self, "growth", None); q_ = " ".join(sorted(known0))
+        bold = G.boldness(self._cur_q) if G else 0.5
+        thr = 0.75 - 0.4 * bold                       # смелость 0.5 → порог 0.55; опыт «отрывок попадает, молчать — ошибка» → 0.35
         for si, score in cnt.most_common(12):
             cov = score / kidf
-            if cov < 0.6: continue
+            if cov < thr: continue
             sent, src = self.kb.sents[si]; sw = set(content_words(toks(sent))); sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
-            rare_missing = [w for w in known if idf[w] >= 2.5 and not (forms[w] & sforms)]
-            if rare_missing: continue
+            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and not (forms[w] & sforms)]
+            # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
+            # (вопрос часто содержит лишнее уточнение: «in physics», «located below the soil», «during evolution»)
+            if rare_missing:
+                if len(rare_missing) > 1 or cov < thr + 0.1: continue
+                if idf[rare_missing[0]] >= max(idf[w] for w in hard) and len(hard) <= 3: continue
             # куски предложения; кандидат = кусок без слов вопроса, с ≥1 содержательным словом
             body = re.sub(r"\s*\(([^)]*)\)", r", \1, ", sent)                       # «(about 2 km)» — тоже кусок
             pieces = [p.strip(" ,;:.") for p in re.split(r",|;|:| — | - |\b(?:and|or|but|because|which|that|while|whereas|so that|such as|called|known as|is|are|was|were|by|through|into|from|than)\b", body)]
@@ -260,6 +307,65 @@ class ExperimentalMind:
             if not best or sc > best[0]: best = (sc, ans, (sent[:120], "span", "", src))
         return best
 
+    def _arbiter(self, q, fr):
+        """все способы → кандидаты (how, answer, confidence, facts); счёт = confidence × trust(how, форма вопроса).
+        Подсказки-связки (growth.hints) добавляют +0.15 кандидату, чей ответ уже встречался на похожих вопросах."""
+        G = getattr(self, "growth", None); cands = []
+        r = self._one_step(fr)
+        if r: s, ans, fact = r; cands.append(dict(how="1 шаг", answer=ans, confidence=round(min(1.0, s / 1.8), 2), facts=[f"{fact[0]} —{fact[1]}→ {fact[2]}"], raw=r))
+        r2 = self._two_step(fr)
+        if r2:
+            s, ans, t, F1, F2 = r2
+            cands.append(dict(how=f"2 шага через «{t}»", answer=ans, confidence=round(min(1.0, s / 2.0), 2), facts=[f"{F1[3]} —{F1[1]}→ {F1[4]}", f"{F2[3]} —{F2[1]}→ {F2[4]}"]))
+        sp = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]))
+        if sp:
+            s, ans, (sent, _, _, src) = sp
+            cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(1.0, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+        if not cands: return None
+        hints = set(G.hints(q)) if G else set(); prefs = G.slot_prefs(q) if G else {}
+        ptotal = sum(prefs.values()) if prefs else 0
+        for c in cands:
+            tr = G.trust(c["how"], q) if G else 1.0
+            bonus = 0.15 if hints & set(content_words(toks(str(c["answer"])))) else 0.0
+            if ptotal >= 2 and c["facts"]:
+                # выученное «где в факте лежит ответ» для этого типа вопроса: совпало → +, противоречит → −
+                m = re.match(r"^(.*?) —(.*?)→ (.*)$", c["facts"][-1])
+                if m:
+                    X, rel, Y = m.groups(); aw = set(content_words(toks(str(c["answer"]))))
+                    slot = "X" if aw and aw <= set(content_words(toks(X))) else ("Y" if aw and aw <= set(content_words(toks(Y))) else None)
+                    if slot:
+                        agree = sum(n for (sl, r_, _), n in prefs.items() if sl == slot and r_ == rel) / ptotal
+                        bonus += 0.25 * agree - 0.1 * (1 - agree)
+            c["score"] = round(c["confidence"] * tr + bonus, 3); c["trust"] = tr
+        for c in cands:
+            # САМОПРОВЕРКА: ответ подставляем обратно в вопрос и смотрим по памяти — (а) тип ответа совпадает с
+            # «what kind of CELL» / «which ORGAN» (ответ должен быть определён как такой тип или по смыслу близок);
+            # (б) ответ не повторяет слова вопроса; (в) ответ не «мусор» (одно служебное слово). Несовпадение — штраф, не запрет.
+            chk = self._self_check(fr, c["answer"]); c["check"] = chk["note"]; c["score"] = round(c["score"] * chk["mult"], 3)
+        cands.sort(key=lambda c: -c["score"])
+        best = cands[0]; best["board"] = [(c["how"], str(c["answer"])[:40], c["confidence"], c["trust"], c["score"], c.get("check")) for c in cands]
+        return best
+
+    def _self_check(self, fr, answer):
+        a = str(answer); aw = set(content_words(toks(a))); mult = 1.0; notes = []
+        if not aw: return dict(mult=0.3, note="empty")
+        known = set(fr.get("X") or []) | set(fr.get("Y") or [])
+        if aw <= known: mult *= 0.5; notes.append("repeats question")
+        atype = fr.get("atype")
+        if atype and atype not in self.META and len(atype) > 2:
+            # ответ определён как atype? «X is a/an <atype>» в памяти, или в самом ответе есть atype, или смысл близок
+            M = getattr(self, "meaning", None); ok = atype in aw or self._stem(atype) in {self._stem(w) for w in aw}
+            if not ok:
+                for k in self.kb.by_x.get(" ".join(toks(a)), [])[:20]:
+                    f = self.kb.facts[k]
+                    if f[1] == "be" and (atype in f[2] or self._stem(atype) in {self._stem(w) for w in f[2]}): ok = True; break
+            if not ok and M is not None:
+                sims = [M.similar(w, atype) or 0 for w in aw if len(w) > 2]
+                if sims and max(sims) > 0.3: ok = True
+            if ok: mult *= 1.15; notes.append(f"type {atype} ✓")
+            else: mult *= 0.75; notes.append(f"type {atype} ?")
+        return dict(mult=mult, note=", ".join(notes) or "ok")
+
     def _two_step(self, fr, max_f1=60, max_t=8):
         known = set(fr["Y"] if fr["slot"] == "X" else fr["X"])
         known = known - self.META
@@ -290,9 +396,13 @@ class ExperimentalMind:
     def ask(self, q, internet=True):
         if not self.use_dialog:
             out = self._ask_core(self._resolve(q), internet); out["kind"] = "answer" if out.get("answer") else "unknown"; return out
-        return self._ask_dialog(q, internet)
+        out = self._ask_dialog(q, internet)
+        if out.get("kind") in ("answer", "clarify", "unknown") and not (out.get("how") or "").startswith("growth"):
+            self._last_out = dict(out, question=out.get("question") or q)
+        return out
 
     def _ask_core(self, q, internet=True, fr=None):
+        self._cur_q = q
         fr = fr or parse_question(q)
         out = dict(question=q, frame=fr, read=[])
         if internet and fr.get("atype") == "place" and fr["X"]:
@@ -343,19 +453,18 @@ class ExperimentalMind:
             out.update(answer=None, how="нет цепочки", facts=[], confidence=0.0, kind="unknown",
                        text=f"I know {a.title()}, but I can't trace it to a {self.thinker.goal(q)} from what I've read. Tell me the link and I'll remember.")
             return out
-        r = self._one_step(fr)
-        if not r:
-            r2 = self._two_step(fr)
-            sp = None if r2 else self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]))
-            if r2:
-                s, ans, t, F1, F2 = r2
-                out.update(answer=ans, how=f"2 шага через «{t}»", facts=[f"{F1[3]} —{F1[1]}→ {F1[4]}", f"{F2[3]} —{F2[1]}→ {F2[4]}"], confidence=round(min(1.0, s / 2.0), 2))
-                r = None
-            elif sp:
-                s, ans, (sent, _, _, src) = sp
-                out.update(answer=ans, how="отрывок предложения", facts=[f"{ans} —span→ {sent}"], confidence=round(min(1.0, s / 0.6), 2), text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}.")
-                self.history.append(dict(q=q, a=ans, entity=ans)); return out
-            elif internet:
+        # АРБИТР (growth.py): все способы думают ВСЕГДА, каждый даёт ответ с уверенностью; уверенность × доверие
+        # по опыту (этот способ на этой форме вопроса попадал/промахивался) → побеждает лучший, не первый сработавший
+        pick = self._arbiter(q, fr)
+        r = None
+        if pick and pick["how"] == "1 шаг": r = pick["raw"]
+        elif pick and pick["how"].startswith("2 шага"):
+            out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], arbiter=pick["board"])
+        elif pick and pick["how"] == "отрывок предложения":
+            out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], arbiter=pick["board"])
+            self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
+        if not r and not pick:
+            if internet:
                 # НЕ ЗНАЮ → ИДУ В ИНТЕРНЕТ: ищу статьи Википедии по словам вопроса, читаю, пробую снова
                 for title in self._wiki_titles(fr):
                     n = self._read_wiki(title)
@@ -383,6 +492,28 @@ class ExperimentalMind:
         from mini_ai.speak import small_talk
         d = self.dialog; conv = d.conv; q0 = q.strip(); notes = []
         pend = conv.pending()
+        # -1. РОСТ МЫШЛЕНИЯ (growth.py): исправление «no, it's X» / «wrong, X» / «the answer is X» после ответа →
+        #     способ теряет доверие на этой форме вопроса, путь вопрос→X становится схемой, связка слов запоминается
+        last = self._last_out
+        if re.match(r"^(?:how (?:did|have) you (?:grown|grow|learned|improved)|what have you learned|growth report|show growth|как ты выросла)\s*\??$", q0, re.I):
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: report", facts=[], confidence=1.0, text=self.growth.report(), note=None)
+        mc = re.match(r"^(?:no|nope|wrong|incorrect|not that|нет|неверно)[,.!\s]*(?:it'?s|it is|the answer is|answer is|actually|это)?\s*[:\-—]?\s*(?P<a>[A-Za-z0-9][^?!.]{0,60})$", q0, re.I) \
+             or re.match(r"^(?:the answer is|answer:|correct answer is|правильно)\s*[:\-—]?\s*(?P<a>[A-Za-z0-9][^?!.]{0,60})$", q0, re.I)
+        if mc and last and last.get("question") and not (pend and pend.get("options")):
+            right = mc.group("a").strip(" .")
+            if last.get("answer") and set(content_words(toks(right))) and set(content_words(toks(right))) <= set(content_words(toks(str(last["answer"])))) | set(content_words(toks(last.get("text") or ""))):
+                # «no, it's oxygen» — а она и сказала oxygen → это подтверждение, не исправление
+                self.growth.learn_from_confirmation(last["question"], last); self._last_out = None
+                conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+                return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text=f"That's what I said — {right}. Good, I'll trust that way more.", note=None)
+            grew = self.growth.learn_from_correction(last["question"], last, right)
+            conv.push(q=q0, frame=None, entity=right, answer=right, kind="learned", pending=None, key=None); self._last_out = None
+            txt = f"Got it — {right}. " + ("I grew: " + "; ".join(grew) + "." if grew else "I'll remember that.")
+            return dict(question=q0, frame=None, read=[], answer=right, kind="learned", how="growth: correction", facts=[], confidence=1.0, text=txt, note=None)
+        if last and last.get("answer") and (YES.match(q0) or re.match(r"^(?:right|correct|exactly|yes that'?s right|верно|правильно)[\s.!]*$", q0, re.I)) and not (pend and pend.get("options")):
+            self.growth.learn_from_confirmation(last["question"], last); self._last_out = None
+            conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text="Good — I'll trust that way of thinking more for questions like this.", note=None)
         # 0. реплика-собеседник (hi / thanks / how are you / who are you) — без поиска фактов
         st = small_talk(q0, conv.rng, len(self.kb.facts))
         is_ru = bool(re.search(r"[а-яё]", q0.lower()))
@@ -424,7 +555,9 @@ class ExperimentalMind:
                 return dict(question=q0, frame=None, read=[], answer=None, kind="clarify", how="имя без вопроса → переспрос", facts=[], confidence=0.0, text=c["text"], note=None)
         # 3. нить: эллипсис и местоимения — кандидаты по очереди, берётся первый с ответом
         fr = parse_question(q0); out = None
-        for q1, fr1, note in d.resolve(q0, fr):
+        cands_ = list(d.resolve(q0, fr))
+        if cands_ and cands_[-1][0] != q0 and cands_[-1][2]: cands_.append((q0, fr, None))      # подстановка не помогла → исходный вопрос как есть
+        for q1, fr1, note in cands_:
             if fr1 is None and q1 != q0: fr1 = parse_question(q1)
             if fr1 is None: fr1 = fr
             out = self._ask_core(q1, internet, fr=fr1)
