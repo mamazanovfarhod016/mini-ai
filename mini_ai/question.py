@@ -46,7 +46,8 @@ def parse_question(q):
     # «what is the X of Y» / «who is the X of Y» → слот X, обязательные слова = X of Y (ищем факт, чей Y содержит их)
     m_of = re.match(r"^(?:what|who|which)\s+(?:is|are|was|were)\s+(?:the\s+)?([\w\s'\-]+?\s+(?:of|in|for|from)\s+[\w\s'\-]+)$", ql)
     if m_of and not re.search(r"\b(?:called|known)\b", ql):
-        return dict(slot="X", X=[], rel="be", Y=content_words(toks(m_of.group(1))), atype=atype)
+        # exp40: «the P of E» — свойство; факт может быть и «E have a P of …», и «X be the P of E», и (E, P, X)
+        return dict(slot="X", X=[], rel="be_prop", Y=content_words(toks(m_of.group(1))), atype=atype)
     # «what is the largest planet» / «who was the first president» — определение без «of»: слот X, Y = остаток
     m_def = re.match(r"^(?:what|who|which)\s+(?:is|are|was|were)\s+(?:the\s+|a\s+|an\s+)?([\w\s'\-]{3,60})$", ql)
     if m_def and not re.search(r"\b(?:called|known)\b", ql) and not vm:
@@ -69,11 +70,12 @@ def parse_question(q):
     return dict(slot="Y", X=content_words(toks(left)), rel=rel, Y=content_words(toks(right)), atype=atype)
 
 
-REL_SYN = {"be_called": {"be", "be_called", "called", "be_known_as"}, "be": {"be", "be_called"}, "contain": {"contain", "have", "include", "be_made_of", "be_composed_of"},
+REL_SYN = {"be_called": {"be", "be_called", "called", "be_known_as"}, "be": {"be", "be_called"}, "be_prop": {"be", "be_called", "have", "be_prop"}, "contain": {"contain", "have", "include", "be_made_of", "be_composed_of"},
            "have": {"have", "contain"}, "make": {"make", "produce", "form"}, "produce": {"produce", "make", "form"}}
 def rel_ok(q_rel, f_rel):
     if not q_rel: return True
     base = q_rel.split("_")[0] if q_rel not in REL_SYN else q_rel
+    if q_rel == "be_prop" and "_" in f_rel and not f_rel.startswith("be_"): return True      # (Uzbekistan, capital_and_largest_city, Tashkent)
     return f_rel in REL_SYN.get(q_rel, {q_rel, base}) or f_rel.startswith(base + "_")   # be→be_located, но не be→become
 
 
@@ -91,6 +93,7 @@ def answer_by_frame(frame, facts_idx, idf):
         cov = sum(idf.get(w, 1.0) for w in known & allw) / kidf
         if cov < 0.99: continue                                   # ВСЕ обязательные слова — иначе это другой факт
         s = 1.0 + (0.5 if rel_ok(frame["rel"], rel) else 0.0) + (0.3 if known <= part else 0.0)
+        if frame["slot"] == "Y" and set(content_words(toks(X))) == known: s += 0.2    # exp40: ровно та сущность («Earth», не «Early Earth»)
         ans = X if frame["slot"] == "X" else Y
         if frame["atype"] == "place":
             # «Where is X» — субъект факта ровно X, а ответ — место: категория («a country…»), located/situated,

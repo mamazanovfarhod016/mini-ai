@@ -20,7 +20,8 @@ CITY_DEF = {"city", "town", "capital", "village", "municipality"}
 COUNTRY_DEF = {"country", "republic", "kingdom", "nation", "state", "empire"}
 THING_DEF = {"planet", "element", "compound", "antibiotic", "drug", "river", "mountain", "lake", "animal", "plant",
              "species", "language", "game", "film", "book", "song", "company", "metal", "star", "moon", "group", "substance"}
-BAD_Y_END = {"the", "a", "an", "of", "in", "to", "by", "and", "or", "for", "with", "as", "at", "on", "from", "that", "which", "who"}
+BAD_Y_END = {"the", "a", "an", "of", "in", "to", "by", "and", "or", "for", "with", "as", "at", "on", "from", "that", "which", "who",
+             "small", "large", "big", "different", "same", "many", "more", "most", "other", "new", "old", "several", "very", "two", "three", "few"}
 BAD_Y = re.compile(r"^(?:one of|also|not|very|still|now|then|so|too|there|here|that|this|it|its|which|what|who|when|where|because|used|known|called)$")
 
 

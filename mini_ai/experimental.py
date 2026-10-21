@@ -5,6 +5,8 @@
   act(request)  — действие инструментами (agent.py): приёмы, генофонд, проверка.
   code(task, fname, tests) — написать функцию из образцов (coder.py), проверить запуском.
   remember/history — память разговора (последние реплики → контекст для «it/он/это»).
+  exp40 (диалог, mini_ai/dialog.py): переспрос вместо «не знаю», нить разговора (эллипсис/местоимения/yes-no),
+  разные формы ответа, инициатива. ask() → text (реплика целиком), answer (коротко), kind (answer|clarify|unknown).
 Память: факты (список), словарь IDF, образцы кода, приёмы — всё на диске, не забывается.
 Источники знаний при старте: школьный учебник (SciQ train, 50k предл.) + Simple Wikipedia (опционально, 1.16M фактов).
 """
@@ -60,8 +62,8 @@ class KnowledgeBase:
 
 
 class ExperimentalMind:
-    def __init__(self, school=True, wiki=False, wiki_limit=300000, state_dir=None):
-        self.kb = KnowledgeBase(); self.history = []; self.state_dir = state_dir or os.path.join(RUNS, "experimental_state")
+    def __init__(self, school=True, wiki=False, wiki_limit=300000, state_dir=None, dialog=True, seed=None):
+        self.kb = KnowledgeBase(); self.history = []; self.use_dialog = dialog; self.seed = seed; self.state_dir = state_dir or os.path.join(RUNS, "experimental_state")
         os.makedirs(self.state_dir, exist_ok=True)
         t0 = time.time()
         if school:
@@ -75,7 +77,12 @@ class ExperimentalMind:
         learned = os.path.join(self.state_dir, "learned.txt")
         if os.path.exists(learned): self._load_learned(open(learned).read())
         self.boot = dict(facts=len(self.kb.facts), seconds=round(time.time() - t0, 1), sources=dict(self.kb.sources.most_common(5)))
-        self._agent = None; self._coder = None
+        self._agent = None; self._coder = None; self.dialog = None; self.new_session()
+
+    def new_session(self):
+        """новая нить разговора (сервер держит по одной на sid)"""
+        from mini_ai.dialog import Dialog
+        self.history = []; self.dialog = Dialog(self.kb, seed=self.seed); return self.dialog
 
     def _load_learned(self, text):
         """learned.txt: блоки «# wiki: Title» читаются с темой статьи (иначе заголовок склеивался с первым
@@ -129,7 +136,12 @@ class ExperimentalMind:
         return best
 
     def ask(self, q, internet=True):
-        q = self._resolve(q); fr = parse_question(q)
+        if not self.use_dialog:
+            out = self._ask_core(self._resolve(q), internet); out["kind"] = "answer" if out.get("answer") else "unknown"; return out
+        return self._ask_dialog(q, internet)
+
+    def _ask_core(self, q, internet=True, fr=None):
+        fr = fr or parse_question(q)
         out = dict(question=q, frame=fr, read=[])
         if internet and fr.get("atype") == "place" and fr["X"]:
             # «Where is X» — лучший ответ в первом предложении статьи о самом X; читаем её один раз
@@ -163,8 +175,81 @@ class ExperimentalMind:
         if "answer" not in out: out.update(answer=None, how="не знаю" + (" (в интернете тоже не нашла)" if out["read"] else ""), facts=[], confidence=0.0)
         out["text"] = self._phrase(out, fr)
         ent = out["answer"] if out.get("answer") else (" ".join(fr["X"][:2]) if fr["X"] else None)
-        self.history.append(dict(q=q, a=out["answer"], entity=ent))
+        if not self.use_dialog: self.history.append(dict(q=q, a=out["answer"], entity=ent))
         return out
+
+    # ---------- exp40: слой диалога ----------
+    def _ask_dialog(self, q, internet=True):
+        from mini_ai.dialog import _is_question, entity_phrase
+        d = self.dialog; conv = d.conv; q0 = q.strip(); notes = []
+        pend = conv.pending()
+        # 1. реплика после переспроса: yes/no/выбор варианта/утверждение-обучение
+        if pend:
+            fact, note = d.answer_pending(q0, pend)
+            if fact:
+                X, rel, Y, src = fact
+                return self._reply_fact(q0, X, rel, Y, src, 1.0, how="из переспроса: " + note, facts=[f"{X} —{rel}→ {Y}"], frame=None)
+            if note in ("отказ от вариантов", "класс сущности", "подтверждение, но вариантов нет"):
+                name = pend.get("name") or "it"
+                text = (f"Then tell me one sentence about {name} and I'll remember it." if note != "класс сущности"
+                        else f"Okay. Tell me one sentence about {name} and I'll remember it.")
+                conv.push(q=q0, frame=None, entity=pend.get("entity"), answer=None, kind="clarify", pending=dict(pend, options=[]), key=None)
+                return dict(question=q0, frame=None, read=[], answer=None, kind="clarify", how=note, facts=[], confidence=0.0, text=text, note=None)
+        # 2. утверждение (не вопрос) → выучить и сразу ответить тем, что поняла
+        if not _is_question(q0) and len(q0.split()) >= 3:
+            facts = [f for f in self.kb.reader.read(q0, "выучено")[0] if "@" not in f[1]]
+            if facts:
+                self.learn(q0)
+                X, rel, Y = facts[0]
+                r = self._reply_fact(q0, X, rel, Y, "выучено", 1.0, how=f"выучила {len(facts)} факт(а)", facts=[f"{X} —{rel}→ {Y}"], frame=None, learned=True)
+                r["learned"] = len(facts); return r
+        # 3. нить: эллипсис и местоимения
+        fr = parse_question(q0)
+        q1, fr1, note = d.resolve(q0, fr)
+        if note: notes.append(note)
+        if fr1 is None and q1 != q0: fr1 = parse_question(q1)
+        if fr1 is None: fr1 = fr
+        out = self._ask_core(q1, internet, fr=fr1)
+        if out.get("answer"):
+            X, rel, Y, src = self._fact_of(out)
+            r = self._reply_fact(q1, X, rel, Y, src, out["confidence"], how=out["how"], facts=out["facts"], frame=fr1, read=out["read"], two_step=out if len(out["facts"]) > 1 else None)
+            r["question"] = q1; r["note"] = ", ".join(notes) or None; return r
+        # 4. не знаю → переспрос из того, что понято
+        c = d.clarify(q1, fr1)
+        ents = d.entities_in(q1)
+        conv.push(q=q1, frame=fr1, entity=(c["pending"] or {}).get("name"), answer=None, kind=c["kind"], pending=c["pending"], key=None)
+        return dict(question=q1, frame=fr1, read=out["read"], answer=None, kind=c["kind"], how="не знаю → " + ("переспрос" if c["kind"] == "clarify" else "уточнение"),
+                    facts=[], confidence=0.0, text=c["text"], note=", ".join(notes) or None)
+
+    def _fact_of(self, out):
+        m = re.match(r"^(.*?) —(.*?)→ (.*)$", out["facts"][-1] if len(out["facts"]) > 1 else out["facts"][0])
+        X, rel, Y = m.groups() if m else (out["answer"], "be", "")
+        src = None
+        for k in self.kb.by_x.get(" ".join(toks(X)), []):
+            f = self.kb.facts[k]
+            if f[1] == rel and f[4] == Y: src = f[5]; break
+        return X, rel, Y, src
+
+    def _reply_fact(self, q, X, rel, Y, src, confidence, how, facts, frame, read=None, two_step=None, learned=False):
+        """факт → реплика: форма по контексту (повтор → другая + «As I said»), инициатива — ещё факт/встречный вопрос"""
+        d = self.dialog; conv = d.conv
+        key = f"{X.lower()}|{rel}|{Y.lower()}"
+        tense = "past" if (rel not in ("be", "have") and rel in __import__("mini_ai.reader", fromlist=["PAST_FORM"]).PAST_FORM) else "present"
+        if two_step: text, style = two_step["text"], "two-step"
+        else:
+            if learned: text, style = "Got it. " + __import__("mini_ai.speak", fromlist=["phrase"]).phrase(X, rel, Y, "direct", tense), "learned"
+            else: text, style = d.say(X, rel, Y, src, key, confidence, tense)
+        answer = Y if (frame and frame.get("slot") == "Y") or (frame is None and conv.last and conv.last.get("pending") and conv.last["pending"].get("want")) else X
+        if frame and frame.get("slot") == "X": answer = X
+        elif frame and frame.get("slot") == "Y": answer = Y
+        elif learned: answer = X
+        ini = None if learned else d.initiative(X, rel, Y, set(toks(answer)))
+        if ini: text = text + " " + ini
+        ent = X if X.lower() not in ("it", "this", "they") else conv.last_entity()
+        conv.push(q=q, frame=frame, entity=ent, answer=answer, kind="answer", style=style, pending=None, key=key)
+        self.history.append(dict(q=q, a=answer, entity=ent))
+        return dict(question=q, frame=frame, read=read or [], answer=answer, kind="answer", how=how, facts=facts, confidence=confidence,
+                    text=text, style=style, initiative=ini, note=None)
 
     def _phrase(self, out, fr):
         """ответ СВОИМИ СЛОВАМИ: из факта (X, rel, Y) собирается предложение по грамматике связи (speak.py),
