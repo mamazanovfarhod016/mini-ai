@@ -38,6 +38,7 @@
   var saved = localStorage.getItem(ENGINE_KEY);
   var engine = saved === "memory_core" ? "memory_core" : (saved !== "mlp" && txModel) ? "transformer" : "mlp";
   var memoryFacts = 0;   // сколько фактов в экспериментальной памяти (с сервера)
+  var memorySid = "";    // id нити разговора с экспериментальной памятью (exp40): одна на открытие приложения
 
   function paramsOfCurrentEngine() {
     if (engine === "memory_core") return memoryFacts || 0;
@@ -317,12 +318,17 @@
       // Экспериментальная модель «память без градиента»: факты + рамка + цепочка (сервер /api/memory/ask).
       out.textContent = "";
       out.classList.add("caret");
-      window.MiniLearn._call("/api/memory/ask", { q: text, lang: lang, device: window.MiniLearn.device }).then(function (r) {
+      // sid — нить разговора: сервер помнит последние реплики (эллипсис «And its population?», «yes» на переспрос).
+      var dev = window.MiniLearn.device || "d";
+      if (!memorySid) memorySid = dev + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+      window.MiniLearn._call("/api/memory/ask", { q: text, lang: lang, device: dev, sid: memorySid }).then(function (r) {
         memoryFacts = r.n_facts || memoryFacts; updateParamsLabel();
-        var a = r.answer ? r.answer : "Не знаю — такого факта у меня нет. Напиши «выучи <предложение>» и спроси снова.";
-        if (r.answer && r.confidence < 0.6) a = a + " (не уверена)";
+        if (r.sid) memorySid = r.sid;
+        // text — реплика целиком (ответ своими словами / переспрос / уточнение); answer — для старых серверов
+        var a = r.text || r.answer || "Не знаю — такого факта у меня нет. Напиши «выучи <предложение>» и спроси снова.";
+        if (r.kind === "answer" && r.confidence < 0.6 && !/not sure|не уверена/i.test(a)) a = a + " (не уверена)";
         out.textContent = a;
-        var thought = { engine: "memory_core", answer: a, how: r.how, facts: r.facts || [], read: r.read || [], confidence: r.confidence, frame: r.frame };
+        var thought = { engine: "memory_core", answer: a, short: r.short, kind: r.kind, how: r.how, facts: r.facts || [], read: r.read || [], thoughts: r.thoughts || [], confidence: r.confidence, frame: r.frame, note: r.note };
         lastThought = { q: text, t: thought };
         finish(a, thought, a, true);
       }).catch(function (e) {
@@ -442,6 +448,7 @@
     html += "<h3>Ответ</h3><div class=\"q\">" + esc(t.answer || "") + "</div>";
     html += '<div class="verdict"><b>' + esc(t.how || "") + "</b><span>уверенность " + pct(t.confidence || 0) + "</span></div>";
     if (t.frame) html += "<h3>Как поняла вопрос (рамка)</h3><div class=\"tags\"><code>слот: " + esc(t.frame.slot) + "</code><code>X: " + esc((t.frame.X || []).join(" ")) + "</code><code>связь: " + esc(t.frame.rel || "—") + "</code><code>Y: " + esc((t.frame.Y || []).join(" ")) + "</code></div>";
+    if (t.thoughts && t.thoughts.length) { html += "<h3>💭 Ход мысли</h3>"; t.thoughts.forEach(function (f, i) { html += '<div class="q">' + (i + 1) + ". " + esc(f) + "</div>"; }); }
     if (t.read && t.read.length) { html += "<h3>🌐 Прочитала в интернете</h3>"; t.read.forEach(function (f) { html += '<div class="q">' + esc(f) + "</div>"; }); }
     if (t.facts && t.facts.length) { html += "<h3>Факты-источники (цепочка)</h3>"; t.facts.forEach(function (f, i) { html += '<div class="q">' + (i + 1) + ". " + esc(f) + "</div>"; }); }
     html += "<h3>Архитектура</h3><p>Без градиента и без весов: читает текст → факты (X, связь, Y) → память-список. Вопрос → рамка с пустым слотом → факт с теми же словами (1 шаг) или два факта через общий термин (2 шага). Не знает — говорит честно. Выучивает новое за миллисекунды: «выучи &lt;предложение&gt;».</p>";

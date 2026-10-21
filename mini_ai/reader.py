@@ -22,7 +22,7 @@ TOPIC_WORDS = {"it", "the city", "the country", "the town", "the river", "the is
 PREAMBLE = re.compile(r"^(?:In|By|During|After|Before|Since|According to|Following|At|On|Under|As of|Although|Despite|Today|Historically|Later|Currently|For example|However|Also)\b[^,]{0,60},\s*")
 YEAR = re.compile(r"\b(1\d{3}|20\d{2})\b")
 _V = "|".join(VERBS)
-RX = re.compile(r"^(?P<X>(?:[A-Z][\w'\-]*|the|It|it)(?:\s+(?:[A-Za-z][\w'\-]*)){0,3}?)\s+(?P<V>" + _V + r")\b\s*(?P<Y>(?:[^,.;:()]|,(?=\d)|\.(?=\d)){2,90})")
+RX = re.compile(r"^(?P<X>(?:[A-Z][\w'\-]*|the|It|it)(?:\s+(?:[A-Za-z][\w'\-]*)){0,3}?)\s+(?P<V>" + _V + r")\b\s*(?P<Y>(?:[^,.;:()]|,(?=\d)|\.(?=\d)|,(?=\s+(?!and\b|but\b|or\b|which\b|while\b|whereas\b|so\b|yet\b|as\b|because\b|when\b|where\b|who\b|that\b|the\b|a\b|an\b|it\b|he\b|she\b|they\b)[a-z]+\s+[a-z]+)){2,90})")
 # Y: запятая допустима только перед цифрой (1,500), точка — внутри числа (3.14)
 POSS = re.compile(r"^(?:Its|Their|His|Her)\s+(?P<P>[a-z][\w\s\-]{1,30}?)\s+(?P<V>is|was|are|were)\s+(?P<Y>[^,.;:()]{1,80})")
 PLURAL = re.compile(r"^(?P<L>[A-Z][\w'\-]*(?:,\s*[A-Z][\w'\-]*)*(?:,?\s+and\s+[A-Z][\w'\-]*))\s+(?P<V>are|were|have|had)\b\s*(?P<Y>[^,.;:()]{2,80})")
@@ -84,6 +84,9 @@ class Reader:
         """→ список фактов [(X, rel, Y)], шаблон (или None). Факты с rel@year — время."""
         if src != self.src: self.src, self.last = src, (src if src and src[:1].isupper() else None)
         s = re.sub(r"\s*\([^()]*\)", "", s).strip()           # «Paris (nicknamed …) is» → «Paris is»
+        # «Russia, or the Russian Federation, is» / «Uzbekistan, officially the Republic of Uzbekistan, formerly known as Uzbekia, is» → «Russia is»
+        for _ in range(3): s = re.sub(r",\s*(?:or|also known as|also called|formerly|formely|officially|known as|sometimes called)\b[^,]{2,60}(?=,)", "", s)
+        s = re.sub(r"^([A-Z][\w\s\-']{0,40}?),\s+(is|are|was|were)\b", r"\1 \2", s)
         pre = PREAMBLE.match(s); body = s[pre.end():] if pre else s
         year = YEAR.search(pre.group(0)) if pre else None
         # тема: заголовок статьи, если это имя (Википедия); для учебника/пользователя — последняя названная сущность
@@ -118,6 +121,11 @@ class Reader:
         if not m:
             return self._read_general(body, topic)
         X, V, Y = m.group("X").strip(), m.group("V"), m.group("Y").strip().rstrip(".")
+        # «The capital is Astana» / «Its capital is Astana» в статье о стране → (Astana, be, the capital of <тема>) + (тема, capital, Astana)
+        mp = re.match(r"^(?:the|its)\s+(capital|currency|largest city|official language|president|population)$", X.lower())
+        if mp and topic and V.lower() in ("is", "was") and Y[:1].isupper():
+            Yc = re.split(r",\s+(?:and|while|but)\s+|\s+and\s+", Y)[0].strip()
+            return [(Yc, "be", f"the {mp.group(1)} of {topic}"), (topic, mp.group(1).replace(" ", "_"), Yc)], None
         if X.lower() in GENERIC:
             X, how = (topic if X.lower() in TOPIC_WORDS and self.src else self.last), "ctx"
         else:

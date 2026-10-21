@@ -1,0 +1,817 @@
+{
+ "_about": "exp40: набор мини-диалогов для слоя ДИАЛОГА. Написан 21.10.2026 ДО кода dialog.py и не меняется. Проверка каждой реплики: kind (answer|clarify|unknown; список = любой из), contains (все подстроки, без учёта регистра), contains_any (хотя бы одна). Диалог засчитан, только если ВСЕ реплики верны. Контроль: experimental.py как есть (kind = answer если есть answer, иначе unknown). ДОПОЛНЕНИЕ (12:40, по просьбе родителя, до кода п.0): блок smalltalk — НЕ-вопросы (приветствия, thanks, how are you, who are you, what can you do) должны получать kind='chat' без поиска фактов; считается отдельно (smalltalk_ok/N), в 30 диалогов не входит.",
+ "seed_source": "заметки",
+ "seed": [
+  "Tashkent is the capital of Uzbekistan.",
+  "Tashkent has a population of 3 million.",
+  "Tashkent is the largest city in Central Asia.",
+  "Astana is the capital of Kazakhstan.",
+  "Almaty is the largest city of Kazakhstan.",
+  "Almaty has a population of 2 million.",
+  "Samarkand is a city in Uzbekistan.",
+  "Samarkand is famous for the Registan square.",
+  "Bishkek is the capital of Kyrgyzstan.",
+  "Dushanbe is the capital of Tajikistan.",
+  "Isaac Newton was a physicist.",
+  "Isaac Newton discovered the law of gravity.",
+  "Marie Curie was a scientist.",
+  "Marie Curie discovered radium.",
+  "Mount Everest is the highest mountain on Earth.",
+  "Mount Everest has a height of 8849 meters.",
+  "The Nile is the longest river in Africa.",
+  "The Amazon is the longest river in South America.",
+  "The Volga is the longest river in Europe.",
+  "Paris is the capital of France.",
+  "Paris has a population of 2 million.",
+  "Berlin is the capital of Germany.",
+  "Berlin has a population of 4 million.",
+  "Tokyo is the capital of Japan.",
+  "Tokyo has a population of 14 million."
+ ],
+ "dialogs": [
+  {
+   "id": 1,
+   "type": "ellipsis_topic",
+   "turns": [
+    {
+     "q": "What is the capital of Uzbekistan?",
+     "kind": "answer",
+     "contains": [
+      "Tashkent"
+     ]
+    },
+    {
+     "q": "What about Kazakhstan?",
+     "kind": "answer",
+     "contains": [
+      "Astana"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "ellipsis_topic",
+   "turns": [
+    {
+     "q": "What is the capital of France?",
+     "kind": "answer",
+     "contains": [
+      "Paris"
+     ]
+    },
+    {
+     "q": "And Germany?",
+     "kind": "answer",
+     "contains": [
+      "Berlin"
+     ]
+    },
+    {
+     "q": "And Japan?",
+     "kind": "answer",
+     "contains": [
+      "Tokyo"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "ellipsis_topic",
+   "turns": [
+    {
+     "q": "What is the longest river in Africa?",
+     "kind": "answer",
+     "contains": [
+      "Nile"
+     ]
+    },
+    {
+     "q": "What about South America?",
+     "kind": "answer",
+     "contains": [
+      "Amazon"
+     ]
+    },
+    {
+     "q": "And Europe?",
+     "kind": "answer",
+     "contains": [
+      "Volga"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "type": "ellipsis_topic",
+   "turns": [
+    {
+     "q": "What is the population of Tashkent?",
+     "kind": "answer",
+     "contains": [
+      "3 million"
+     ]
+    },
+    {
+     "q": "What about Almaty?",
+     "kind": "answer",
+     "contains": [
+      "2 million"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "type": "ellipsis_topic",
+   "turns": [
+    {
+     "q": "What is the capital of Tajikistan?",
+     "kind": "answer",
+     "contains": [
+      "Dushanbe"
+     ]
+    },
+    {
+     "q": "And Kyrgyzstan?",
+     "kind": "answer",
+     "contains": [
+      "Bishkek"
+     ]
+    },
+    {
+     "q": "And Uzbekistan?",
+     "kind": "answer",
+     "contains": [
+      "Tashkent"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "type": "ellipsis_topic",
+   "turns": [
+    {
+     "q": "What is the largest city of Kazakhstan?",
+     "kind": "answer",
+     "contains": [
+      "Almaty"
+     ]
+    },
+    {
+     "q": "And its capital?",
+     "kind": "answer",
+     "contains": [
+      "Astana"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "type": "ellipsis_property",
+   "turns": [
+    {
+     "q": "What is the capital of Uzbekistan?",
+     "kind": "answer",
+     "contains": [
+      "Tashkent"
+     ]
+    },
+    {
+     "q": "And its population?",
+     "kind": "answer",
+     "contains": [
+      "3 million"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "type": "ellipsis_property",
+   "turns": [
+    {
+     "q": "What is the capital of Japan?",
+     "kind": "answer",
+     "contains": [
+      "Tokyo"
+     ]
+    },
+    {
+     "q": "And the population?",
+     "kind": "answer",
+     "contains": [
+      "14 million"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 9,
+   "type": "ellipsis_property",
+   "turns": [
+    {
+     "q": "What is the highest mountain on Earth?",
+     "kind": "answer",
+     "contains": [
+      "Everest"
+     ]
+    },
+    {
+     "q": "And its height?",
+     "kind": "answer",
+     "contains": [
+      "8849"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "type": "ellipsis_property",
+   "turns": [
+    {
+     "q": "What is the capital of Germany?",
+     "kind": "answer",
+     "contains": [
+      "Berlin"
+     ]
+    },
+    {
+     "q": "How many people live there?",
+     "kind": "answer",
+     "contains": [
+      "4 million"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "type": "ellipsis_property",
+   "turns": [
+    {
+     "q": "What is the capital of France?",
+     "kind": "answer",
+     "contains": [
+      "Paris"
+     ]
+    },
+    {
+     "q": "Its population?",
+     "kind": "answer",
+     "contains": [
+      "2 million"
+     ]
+    },
+    {
+     "q": "And Berlin?",
+     "kind": "answer",
+     "contains": [
+      "4 million"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 12,
+   "type": "ellipsis_property",
+   "turns": [
+    {
+     "q": "What is the largest city in Central Asia?",
+     "kind": "answer",
+     "contains": [
+      "Tashkent"
+     ]
+    },
+    {
+     "q": "What is its population?",
+     "kind": "answer",
+     "contains": [
+      "3 million"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "type": "pronoun",
+   "turns": [
+    {
+     "q": "What is the highest mountain on Earth?",
+     "kind": "answer",
+     "contains": [
+      "Everest"
+     ]
+    },
+    {
+     "q": "What is its height?",
+     "kind": "answer",
+     "contains": [
+      "8849"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "type": "pronoun",
+   "turns": [
+    {
+     "q": "What is the largest city of Kazakhstan?",
+     "kind": "answer",
+     "contains": [
+      "Almaty"
+     ]
+    },
+    {
+     "q": "How many people live in it?",
+     "kind": "answer",
+     "contains": [
+      "2 million"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 15,
+   "type": "pronoun",
+   "turns": [
+    {
+     "q": "Who was Isaac Newton?",
+     "kind": "answer",
+     "contains": [
+      "physicist"
+     ]
+    },
+    {
+     "q": "What did he discover?",
+     "kind": "answer",
+     "contains": [
+      "gravity"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 16,
+   "type": "pronoun_clarify",
+   "turns": [
+    {
+     "q": "What is the longest river in Africa?",
+     "kind": "answer",
+     "contains": [
+      "Nile"
+     ]
+    },
+    {
+     "q": "Where is it?",
+     "kind": "clarify",
+     "contains": [
+      "Nile"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 17,
+   "type": "clarify_yes",
+   "turns": [
+    {
+     "q": "What is the largest city of Uzbekistan?",
+     "kind": "clarify",
+     "contains": [
+      "Uzbekistan"
+     ]
+    },
+    {
+     "q": "yes",
+     "kind": "answer",
+     "contains": [
+      "Tashkent"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 18,
+   "type": "clarify_pick",
+   "turns": [
+    {
+     "q": "Tashkent?",
+     "kind": "clarify",
+     "contains": [
+      "Tashkent"
+     ]
+    },
+    {
+     "q": "its population",
+     "kind": "answer",
+     "contains": [
+      "3 million"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 19,
+   "type": "clarify_yes",
+   "turns": [
+    {
+     "q": "What is the main city of Kazakhstan?",
+     "kind": "clarify",
+     "contains": [
+      "Kazakhstan"
+     ]
+    },
+    {
+     "q": "yes",
+     "kind": "answer",
+     "contains_any": [
+      "Astana",
+      "Almaty"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 20,
+   "type": "unknown_teach",
+   "turns": [
+    {
+     "q": "What is the capital of Mongolia?",
+     "kind": "unknown",
+     "contains": [
+      "Mongolia"
+     ]
+    },
+    {
+     "q": "Ulaanbaatar is the capital of Mongolia.",
+     "kind": "answer",
+     "contains": [
+      "Ulaanbaatar"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 21,
+   "type": "unknown_teach",
+   "turns": [
+    {
+     "q": "Who is Alisher Navoi?",
+     "kind": "unknown",
+     "contains": [
+      "Alisher Navoi"
+     ]
+    },
+    {
+     "q": "Alisher Navoi was a poet.",
+     "kind": "answer",
+     "contains": [
+      "poet"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 22,
+   "type": "clarify_yes",
+   "turns": [
+    {
+     "q": "Samarkand?",
+     "kind": "clarify",
+     "contains": [
+      "Samarkand"
+     ]
+    },
+    {
+     "q": "yes",
+     "kind": "answer",
+     "contains_any": [
+      "Uzbekistan",
+      "Registan"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 23,
+   "type": "clarify_no_teach",
+   "turns": [
+    {
+     "q": "What is the area of Uzbekistan?",
+     "kind": "clarify",
+     "contains": [
+      "Uzbekistan"
+     ]
+    },
+    {
+     "q": "no",
+     "kind": [
+      "clarify",
+      "unknown"
+     ],
+     "contains": []
+    },
+    {
+     "q": "Uzbekistan has an area of 448978 square kilometers.",
+     "kind": "answer",
+     "contains": [
+      "448978"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 24,
+   "type": "clarify_pronoun",
+   "turns": [
+    {
+     "q": "What is the population of Samarkand?",
+     "kind": "clarify",
+     "contains": [
+      "Samarkand"
+     ]
+    },
+    {
+     "q": "What is it famous for?",
+     "kind": "answer",
+     "contains": [
+      "Registan"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 25,
+   "type": "repeat",
+   "turns": [
+    {
+     "q": "What is the capital of Uzbekistan?",
+     "kind": "answer",
+     "contains": [
+      "Tashkent"
+     ]
+    },
+    {
+     "q": "What is the capital of Uzbekistan?",
+     "kind": "answer",
+     "contains": [
+      "Tashkent",
+      "as I said"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 26,
+   "type": "repeat",
+   "turns": [
+    {
+     "q": "What is the longest river in Europe?",
+     "kind": "answer",
+     "contains": [
+      "Volga"
+     ]
+    },
+    {
+     "q": "What is the capital of France?",
+     "kind": "answer",
+     "contains": [
+      "Paris"
+     ]
+    },
+    {
+     "q": "What is the longest river in Europe?",
+     "kind": "answer",
+     "contains": [
+      "Volga",
+      "as I said"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 27,
+   "type": "repeat",
+   "turns": [
+    {
+     "q": "What is the largest planet in the solar system?",
+     "kind": "answer",
+     "contains": [
+      "Jupiter"
+     ]
+    },
+    {
+     "q": "What is the largest planet in the solar system?",
+     "kind": "answer",
+     "contains": [
+      "Jupiter",
+      "as I said"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 28,
+   "type": "repeat",
+   "turns": [
+    {
+     "q": "What is the population of Tokyo?",
+     "kind": "answer",
+     "contains": [
+      "14 million"
+     ]
+    },
+    {
+     "q": "What is the population of Tokyo?",
+     "kind": "answer",
+     "contains": [
+      "14 million",
+      "as I said"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 29,
+   "type": "textbook_thread",
+   "turns": [
+    {
+     "q": "What is the third planet from the Sun?",
+     "kind": "answer",
+     "contains": [
+      "Earth"
+     ]
+    },
+    {
+     "q": "What does it have?",
+     "kind": "answer",
+     "contains_any": [
+      "magnetic field",
+      "moon",
+      "water",
+      "plate tectonics",
+      "energy"
+     ]
+    },
+    {
+     "q": "And Mars?",
+     "kind": "answer",
+     "contains_any": [
+      "moons",
+      "atmosphere",
+      "mountain",
+      "canyon",
+      "small"
+     ]
+    }
+   ]
+  },
+  {
+   "id": 30,
+   "type": "long_thread",
+   "turns": [
+    {
+     "q": "What is the basis of all life on Earth?",
+     "kind": "answer",
+     "contains": [
+      "Carbon"
+     ]
+    },
+    {
+     "q": "What is the capital of Kyrgyzstan?",
+     "kind": "answer",
+     "contains": [
+      "Bishkek"
+     ]
+    },
+    {
+     "q": "And Tajikistan?",
+     "kind": "answer",
+     "contains": [
+      "Dushanbe"
+     ]
+    }
+   ]
+  }
+ ],
+ "unknown_probe": [
+  "What is the largest city of Uzbekistan?",
+  "What is the area of Kazakhstan?",
+  "Where is Tashkent?",
+  "What is the population of Samarkand?",
+  "What is the capital of Mongolia?",
+  "Who is Alisher Navoi?",
+  "What is the height of the Nile?",
+  "What language is spoken in Uzbekistan?",
+  "What is the currency of Japan?",
+  "When was Tashkent founded?",
+  "What is the population of Bishkek?",
+  "Who discovered radium?",
+  "What is the capital of Brazil?",
+  "What does the nucleus contain?",
+  "What is the capital of Peru?",
+  "What is the climate of Almaty?",
+  "Who was the first president of Kazakhstan?",
+  "What is the deepest lake on Earth?",
+  "What is Dushanbe famous for?",
+  "How old is Marie Curie?"
+ ],
+ "variety_question": "What is the capital of Uzbekistan?",
+ "variety_repeats": 20,
+ "smalltalk": [
+  {
+   "q": "Hi",
+   "kind": "chat",
+   "not_contains": [
+    "Hié",
+    "is a",
+    "was a"
+   ]
+  },
+  {
+   "q": "hello",
+   "kind": "chat"
+  },
+  {
+   "q": "Привет",
+   "kind": "chat"
+  },
+  {
+   "q": "Hello!",
+   "kind": "chat"
+  },
+  {
+   "q": "thanks",
+   "kind": "chat"
+  },
+  {
+   "q": "Thank you!",
+   "kind": "chat"
+  },
+  {
+   "q": "спасибо",
+   "kind": "chat"
+  },
+  {
+   "q": "How are you?",
+   "kind": "chat"
+  },
+  {
+   "q": "how are you",
+   "kind": "chat"
+  },
+  {
+   "q": "Who are you?",
+   "kind": "chat",
+   "contains": [
+    "Mini AI"
+   ]
+  },
+  {
+   "q": "What can you do?",
+   "kind": "chat",
+   "contains_any": [
+    "ask",
+    "fact",
+    "learn",
+    "remember"
+   ]
+  },
+  {
+   "q": "What is your name?",
+   "kind": "chat",
+   "contains": [
+    "Mini AI"
+   ]
+  },
+  {
+   "q": "bye",
+   "kind": "chat"
+  },
+  {
+   "q": "Good morning",
+   "kind": "chat"
+  },
+  {
+   "q": "What is the capital of Uzbekistan?",
+   "kind": "answer",
+   "contains": [
+    "Tashkent"
+   ]
+  },
+  {
+   "q": "Hi, what is the capital of Uzbekistan?",
+   "kind": "answer",
+   "contains": [
+    "Tashkent"
+   ]
+  }
+ ]
+}
