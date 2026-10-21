@@ -14,7 +14,7 @@ import os, re, json, time, collections
 import numpy as np
 from mini_ai.memory_v2 import toks, content_words
 from mini_ai.reader import Reader
-from mini_ai.question import parse_question, answer_by_frame
+from mini_ai.question import parse_question, answer_by_frame, rel_ok
 from mini_ai.speak import compose
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -121,9 +121,41 @@ class ExperimentalMind:
         known = set(fr["Y"] if fr["slot"] == "X" else fr["X"])
         if not known: return None
         cand = set.intersection(*[set(self.kb.by_word.get(w, [])) for w in known])
-        if not cand: return None
-        res = answer_by_frame(fr, [self.kb.facts[k] for k in cand], {w: self.kb.idf(w) for w in known})
-        return res[0] if res else None
+        if cand:
+            res = answer_by_frame(fr, [self.kb.facts[k] for k in cand], {w: self.kb.idf(w) for w in known})
+            if res: return res[0]
+        return self._one_step_soft(fr, known)
+
+    def _stem(self, w): return w[:-2] if w.endswith("es") and len(w) > 5 else (w[:-1] if w.endswith("s") and len(w) > 4 else w)
+    def _one_step_soft(self, fr, known):
+        """ПОНИМАНИЕ ПО СМЫСЛУ: вопрос перефразирован (plants↔plant, forests↔forest, слова переставлены, одно слово
+        заменено синонимом) → факт, покрывающий ≥70 % веса слов вопроса с учётом форм и близости смысла (meaning),
+        при этом редкие слова (idf высок) обязательны. Ответ — свободная часть факта."""
+        idf = {w: self.kb.idf(w) for w in known}; kidf = sum(idf.values())
+        stems = {self._stem(w): w for w in known}
+        cnt = collections.Counter()
+        for w in known:
+            ws = {w} | {x for x in self.kb.by_word if len(x) > 3 and self._stem(x) == self._stem(w)} if len(w) > 3 else {w}
+            for x in list(ws)[:6]:
+                for k in self.kb.by_word.get(x, []): cnt[k] += idf[w] * (1.0 if x == w else 0.9)
+        best = None
+        for k, score in cnt.most_common(40):
+            Xw, rel, Yw, X, Y, src = self.kb.facts[k]; allw = Xw | Yw
+            stemmed = {self._stem(x) for x in allw}
+            missing = [w for w in known if w not in allw and self._stem(w) not in stemmed]
+            # пропущенное слово допустимо, только если оно частое (idf < 2.0) или по смыслу близко к какому-то слову факта
+            M = getattr(self, "meaning", None); ok = True
+            for w in missing:
+                if idf[w] < 2.0: continue
+                if M is not None and any((M.similar(w, x) or 0) > 0.35 for x in allw if len(x) > 3): continue
+                ok = False; break
+            if not ok or score / kidf < 0.7: continue
+            part = Yw if fr["slot"] == "X" else Xw
+            ans = X if fr["slot"] == "X" else Y
+            if not ans or set(content_words(toks(ans))) <= known: continue       # ответ не должен быть повтором вопроса
+            s = score / kidf * (1.2 if rel_ok(fr["rel"], rel) else 1.0) * (1.1 if known & part else 1.0)
+            if not best or s > best[0]: best = (round(s * 0.8, 2), ans, (X, rel, Y, src))
+        return best
 
     def _two_step(self, fr, max_f1=60, max_t=8):
         known = set(fr["Y"] if fr["slot"] == "X" else fr["X"])

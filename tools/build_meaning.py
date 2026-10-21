@@ -8,6 +8,6 @@ with open(SRC) as f:
     for line in f:
         d = json.loads(line); M.read(d[0] if isinstance(d, list) else str(d)); n += 1
         if n >= LIMIT: break
-keep = [w for w in M.sem if M.n[w] >= 3]; M.sem = {w: M.sem[w] for w in keep}
+keep = [w for w in M.sem if M.n[w] >= 5]; M.sem = {w: M.sem[w] for w in keep}
 M.path = BASE_NPZ; M._dirty = 1; M.save(force=True)
 print(f"{n} sentences, {len(keep)} words, {time.time()-t:.0f}s -> {BASE_NPZ}, {os.path.getsize(BASE_NPZ)/1e6:.0f} MB")
