@@ -81,7 +81,54 @@ class Reader:
     def __init__(self): self.last = None; self.src = None
 
     def read(self, s, src=""):
-        """→ список фактов [(X, rel, Y)], шаблон (или None). Факты с rel@year — время."""
+        """→ список фактов [(X, rel, Y)], шаблон (или None). Факты с rel@year — время.
+        Длинное предложение сначала ДРОБИТСЯ на короткие (relative/appositive/participle) — каждое читается отдельно,
+        чтобы вопрос про любой кусок находил свой факт (SciQ: «chemical signals that control…» → 2 факта)."""
+        parts = self.split_atoms(s)
+        if len(parts) == 1 and parts[0] != s: s = parts[0]            # хвост «such as…/because…» отрезан — читаем чистое
+        if len(parts) > 1:
+            facts, tpl = [], None
+            for p_ in parts:
+                f, t = self._read_one(p_, src); facts += f; tpl = tpl or t
+            seen = set(); out = []
+            for f in facts:
+                k = (f[0].lower(), f[1], f[2].lower())
+                if k not in seen: seen.add(k); out.append(f)
+            return out, tpl
+        return self._read_one(s, src)
+
+    def split_atoms(self, s):
+        """одно предложение → несколько простых. Правила (закрытый класс служебных слов):
+        «X, the R of Z, V Y» → «X is the R of Z.» + «X V Y.»;  «X that/which V2 Y2» в Y → «Y V2 Y2.»;
+        «X V Y, V2-ing Z» → «X V Y.» + «X V2 Z.»;  «X V Y because/so that …» → отбросить хвост;  «A, B, and C V Y» — оставить."""
+        s = s.strip(); out = []
+        # 0a) мусор учебника в начале: «Figure 29.7 », «Table 3.2 », «Chapter 5 », «(credit: …)», номера страниц
+        s = re.sub(r"^(?:Figure|Fig\.|Table|Chapter|Section|Lesson|Example|Exercise)\s+[\d.]+\s*[:.]?\s*", "", s)
+        s = re.sub(r"\s*\((?:credit|source|photo|image|courtesy)[^)]*\)", "", s)
+        # 1) аппозитив после субъекта: «Gametogenesis, the production of sperm and eggs, involves meiosis.»
+        m = re.match(r"^(?P<X>[A-Z][\w\-]*(?:\s+[\w\-]+){0,3}?),\s+(?P<A>(?:the|a|an)\s+[^,]{3,80}?),\s+(?P<rest>.+)$", s)
+        if m and not re.match(r"^(?:and|or|but|which|who)\b", m.group("rest")):
+            out.append(f"{m.group('X')} is {m.group('A')}."); s = f"{m.group('X')} {m.group('rest')}"
+        # 0) relative clause внутри СУБЪЕКТА: «Compounds that are capable of X, such as A, are called Y» → «Compounds are called Y.» + «Compounds are capable of X.»
+        m = re.match(r"^(?P<X>[A-Z][\w\-]*(?:\s+[a-z][\w\-]*){0,2})\s+(?:that|which|who)\s+(?P<R>(?:is|are|was|were|has|have|can)\s+[^,]{3,60}?)(?:,\s+such as[^,]{2,60},)?\s+(?P<main>(?:is|are|was|were)\s+.{3,120})$", s)
+        if m:
+            main = re.sub(r"\s*\((?:or|also)[^)]*\)", "", m.group("main")); main = re.sub(r",?\s+(?:because|so that|although)\b.*$", "", main)
+            out.append(f"{m.group('X')} {main.rstrip('.')}."); out.append(f"{m.group('X')} {m.group('R').rstrip('.')}."); s = ""
+        # 2) relative clause внутри Y: «… are chemical signals that control different processes in plants»
+        m = re.match(r"^(?P<head>.+?\b(?:is|are|was|were)\s+(?:a|an|the)?\s*(?P<Y>[^,]{3,60}?))\s+(?:that|which|who)\s+(?P<V2>.{5,120})$", s) if s else None
+        if m and not re.search(r"\b(?:called|known as)\b", m.group("head")):
+            out.append(m.group("head").rstrip(".") + "."); Y = m.group("Y")
+            out.append(f"{Y[0].upper() + Y[1:]} {m.group('V2').rstrip('.')}."); s = ""
+        # 3) причастный оборот: «Liquids … tend to have higher viscosities, making them …» → отбрасываем ", V-ing …"
+        if s:
+            s2 = re.sub(r",\s+(?:\w+ing\b[^,.]{3,80})(?=\.|$)", "", s)
+            # 4) «such as …» и «because …» — хвосты, не факты
+            s2 = re.sub(r"\s*\((?:or|also)[^)]*\)", "", s2)                                  # «oxidants (or oxidizing agents)»
+            s2 = re.sub(r",?\s+(?:such as|because|so that|although|whereas)\b.*?(?=\.|$)", "", s2)
+            out.append(s2 if s2.endswith(".") else s2 + ".")
+        return out if out else [s]
+
+    def _read_one(self, s, src=""):
         if src != self.src: self.src, self.last = src, (src if src and src[:1].isupper() else None)
         s = re.sub(r"\s*\([^()]*\)", "", s).strip()           # «Paris (nicknamed …) is» → «Paris is»
         # «Russia, or the Russian Federation, is» / «Uzbekistan, officially the Republic of Uzbekistan, formerly known as Uzbekia, is» → «Russia is»

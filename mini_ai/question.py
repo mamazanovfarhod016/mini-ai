@@ -57,8 +57,14 @@ def parse_question(q):
         X = re.sub(r"\b(?:is|are) (?:called|known as)$|\bcalled$", "", body).strip()
         return dict(slot="Y", X=[w for w in content_words(toks(X)) if w != "called"], rel="be_called", Y=[], atype=atype)
     if not vm:
+        # «What chemical signals in plants control different processes?» — глагол не из списка: X=?, известное = все слова
+        if starts_with_q and len(content_words(toks(body))) >= 3:
+            return dict(slot="X", X=[], rel="", Y=content_words(toks(body)), atype=atype)
         return dict(slot="Y" if not starts_with_q else "X", X=content_words(toks(body)), rel="", Y=[], atype=atype)
     rel = re.sub(r"\s+", "_", vm.group(1).lower()); left, right = body[:vm.start()].strip(), body[vm.end():].strip()
+    rel = {"is": "be", "are": "be", "was": "be", "were": "be", "has": "have", "means": "mean", "contains": "contain", "includes": "include",
+           "produces": "produce", "causes": "cause", "forms": "form", "makes": "make", "uses": "use", "used": "use", "called": "be_called",
+           "is_called": "be_called", "are_called": "be_called", "is_known_as": "be_called", "does": "do", "do": "do", "did": "do"}.get(rel, rel)
     if starts_with_q and not left:                     # «What contains A?» → X=?, Y=A
         return dict(slot="X", X=[], rel=rel, Y=content_words(toks(right)), atype=atype)
     if starts_with_q and left and not right:           # «What type of organism is used in cheese» → X=?, Y=left

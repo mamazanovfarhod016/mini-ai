@@ -138,9 +138,12 @@ class ExperimentalMind:
             ws = {w} | {x for x in self.kb.by_word if len(x) > 3 and self._stem(x) == self._stem(w)} if len(w) > 3 else {w}
             for x in list(ws)[:6]:
                 for k in self.kb.by_word.get(x, []): cnt[k] += idf[w] * (1.0 if x == w else 0.9)
+        for k in list(cnt):                                                          # + глагол факта, если он в вопросе
+            rw = set(toks(self.kb.facts[k][1].replace("_", " "))) & known
+            for w in rw: cnt[k] += idf[w]
         best = None
         for k, score in cnt.most_common(40):
-            Xw, rel, Yw, X, Y, src = self.kb.facts[k]; allw = Xw | Yw
+            Xw, rel, Yw, X, Y, src = self.kb.facts[k]; allw = Xw | Yw | set(toks(rel.replace("_", " ")))
             stemmed = {self._stem(x) for x in allw}
             missing = [w for w in known if w not in allw and self._stem(w) not in stemmed]
             # пропущенное слово допустимо, только если оно частое (idf < 2.0) или по смыслу близко к какому-то слову факта
@@ -155,7 +158,24 @@ class ExperimentalMind:
             if not ans or set(content_words(toks(ans))) <= known: continue       # ответ не должен быть повтором вопроса
             s = score / kidf * (1.2 if rel_ok(fr["rel"], rel) else 1.0) * (1.1 if known & part else 1.0)
             if not best or s > best[0]: best = (round(s * 0.8, 2), ans, (X, rel, Y, src))
-        return best
+        if best: return best
+        # СКЛЕЙКА: вопрос покрывает ДВА атомарных факта с общей сущностью («plant hormones be chemical signals» +
+        # «chemical signals control processes») → ответ = свободный конец цепочки (X первого факта)
+        for k, score in cnt.most_common(25):
+            Xw, rel, Yw, X, Y, src = self.kb.facts[k]
+            for k2 in set(self.kb.by_x.get(" ".join(toks(X)), [])) | {j for w in Xw for j in self.kb.by_word.get(w, [])[:200]}:
+                if k2 == k: continue
+                X2w, rel2, Y2w, X2, Y2, src2 = self.kb.facts[k2]
+                if not (Xw and Xw <= (X2w | Y2w)) : continue                       # общая сущность = субъект k внутри k2
+                allw = Xw | Yw | X2w | Y2w | set(toks(rel.replace("_", " "))) | set(toks(rel2.replace("_", " "))); stemmed = {self._stem(x) for x in allw}
+                if any(w not in allw and self._stem(w) not in stemmed and idf[w] >= 2.0 for w in known): continue
+                cover = sum(idf[w] for w in known if w in allw or self._stem(w) in stemmed) / kidf
+                if cover < 0.85: continue
+                free = X2 if Xw <= Y2w else Y2                                      # конец цепочки, которого нет в вопросе
+                if not free or set(content_words(toks(free))) <= known: continue
+                sc = round(cover * 0.75, 2)
+                if not best or sc > best[0]: best = (sc, free, (X2, rel2, Y2, src2), (X, rel, Y, src))
+        return best[:3] if best else None
 
     def _two_step(self, fr, max_f1=60, max_t=8):
         known = set(fr["Y"] if fr["slot"] == "X" else fr["X"])
