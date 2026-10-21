@@ -71,6 +71,7 @@ class Growth:
         self.attn = collections.defaultdict(lambda: [0, 0])       # слово вопроса → [нужное, лишнее] (выученное внимание)
         self._soft_list = None; self._soft_stamp = -1; self._soft_cache = {}
         self.pos = collections.defaultdict(collections.Counter)   # класс вопроса → Counter(позиция ответа в предложении)
+        self.board_stats = collections.defaultdict(lambda: collections.Counter())   # «способ|класс» → place/answer/miss (учёба у проигравших)
         self.diag = collections.Counter()                         # ДИАГНОЗ ошибок: почему промахнулась (silent/wrong-piece/wrong-fact/no-sentence)
         self.insights = []                                        # ОБОБЩЕНИЯ: правила, подтверждённые на многих типах → принцип
         self.load()
@@ -86,6 +87,7 @@ class Growth:
         for k, v in d.get("attn", {}).items(): self.attn[k] = v
         self.diag = collections.Counter(d.get("diag", {})); self.insights = d.get("insights", [])
         for k, v in d.get("pos", {}).items(): self.pos[k] = collections.Counter(v)
+        for k, v in d.get("board_stats", {}).items(): self.board_stats[k] = collections.Counter(v)
         for k, v in d.get("slot_rules", {}).items(): self.slot_rules[k] = collections.Counter({tuple(kk.split("|")): n for kk, n in v.items()})
         fs = getattr(self.mind, "fewshot", None)
         if fs:
@@ -98,7 +100,7 @@ class Growth:
         rules = {k: [list(s) for s in v] for k, v in fs.rules.items()} if fs else self.rules_saved
         examples = {k: [list(e) for e in v] for k, v in fs.examples.items()} if fs else {}
         json.dump(dict(reliab=dict(self.reliab), coans={k: dict(v) for k, v in self.coans.items()}, rules=rules, examples=examples,
-                       slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn), diag=dict(self.diag), insights=self.insights, pos={k: dict(v) for k, v in self.pos.items()},
+                       slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn), diag=dict(self.diag), insights=self.insights, pos={k: dict(v) for k, v in self.pos.items()}, board_stats={k: dict(v) for k, v in self.board_stats.items()},
                        log=self.log[-50:], when=time.strftime("%Y-%m-%d %H:%M")), open(self.path, "w"), ensure_ascii=False, indent=1)
 
     # ---------- 2. надёжность способов ----------
@@ -263,6 +265,7 @@ class Growth:
         if extra: grew.append("extra words: " + ", ".join(extra[:4]))
         pp = self.learn_position(q, right)
         if pp: grew.append(f"answer position: {pp}")
+        grew += self.learn_from_board(q, out, right)
         # ДИАГНОЗ: почему ошиблась? молчала (ответ был в памяти) / взяла не тот кусок предложения / не тот факт / ответа нет в памяти
         rl = right.lower(); in_mem = any(rl in s_.lower() for s_, _ in self.mind.kb.sents[-3000:])
         how = self._howkey(out.get("how") if out else "")
@@ -324,6 +327,45 @@ class Growth:
                 k2 = f"distrust|{hk}|{form}"
                 if k2 not in {i["key"] for i in self.insights}: self.insights.append(dict(key=k2, text=f"«{hk}» fails {m}/{h+m} on {form} questions — stop trusting it there")); new.append(k2)
         return new
+
+    # ---------- УЧИТЬСЯ У ПРОИГРАВШИХ: что у каждого способа было верно, даже если ответ неверный ----------
+    def learn_from_board(self, q, out, right):
+        """исправление + доска арбитра (все кандидаты). Для каждого способа смотрим, что он сделал ВЕРНО:
+          • «нашёл место»: его факт/предложение содержит правильный ответ (взял не тот кусок / не ту сторону);
+          • «нашёл ответ»: его ответ и был верным, но арбитр выбрал другого (доверие/самопроверка подвели).
+        Накапливаем по классу вопроса: (способ → место-верно / ответ-верно / мимо). Из этого — правило-комбинация:
+        «на классе C способ A находит место (≥60 %), а не ответ → брать его предложение и доставать ответ как отрывок»."""
+        board = (out or {}).get("arbiter") or []
+        if not board: return []
+        rl = right.lower(); cls = qclass(q); grew = []
+        for row in board:
+            how, ans, conf, trust, score, check, fact = (list(row) + [""] * 7)[:7]
+            hk = self._howkey(how); key = f"{hk}|{cls}"
+            if rl in str(ans).lower(): self.board_stats[key]["answer"] += 1; grew.append(f"{hk} had the right answer but lost the vote")
+            elif rl in str(fact).lower(): self.board_stats[key]["place"] += 1; grew.append(f"{hk} found the right sentence but took the wrong piece")
+            else: self.board_stats[key]["miss"] += 1
+        # правило-комбинация, если накопилось: способ на классе находит место чаще, чем ответ
+        for key, st in self.board_stats.items():
+            hk, c = key.split("|", 1); tot = sum(st.values())
+            if c == cls and tot >= 8 and st["place"] >= 0.5 * tot and st["place"] > st["answer"]:
+                k2 = f"combine|{hk}|{c}"
+                if k2 not in {i["key"] for i in self.insights}:
+                    self.insights.append(dict(key=k2, text=f"on {c} questions «{hk}» finds the right sentence {st['place']}/{tot} but not the answer — reuse its sentence, extract the answer as a piece"))
+                    grew.append("new rule: " + self.insights[-1]["text"])
+            if c == cls and tot >= 8 and st["answer"] >= 0.4 * tot:
+                k2 = f"undervoted|{hk}|{c}"
+                if k2 not in {i["key"] for i in self.insights}:
+                    self.insights.append(dict(key=k2, text=f"on {c} questions «{hk}» is right {st['answer']}/{tot} times when it loses the vote — trust it more there"))
+                    self.reliab[f"{hk}|{c}"][0] += 5; grew.append("new rule: " + self.insights[-1]["text"])
+        return grew
+
+    def place_finders(self, q):
+        """способы, которые на этом классе вопроса находят ПРАВИЛЬНОЕ ПРЕДЛОЖЕНИЕ (но не ответ): их факты — источник для отрывка"""
+        cls = qclass(q); out = []
+        for key, st in self.board_stats.items():
+            hk, c = key.split("|", 1); tot = sum(st.values())
+            if c == cls and tot >= 8 and st["place"] >= 0.5 * tot: out.append(hk)
+        return out
 
     # ---------- отчёт ----------
     def report(self):

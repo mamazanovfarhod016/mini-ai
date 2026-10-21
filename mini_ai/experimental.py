@@ -28,6 +28,7 @@ class KnowledgeBase:
         self.df = collections.Counter(); self.n_docs = 0; self.reader = Reader(); self.sources = collections.Counter()
         self.sents = []; self.sent_by_word = collections.defaultdict(list)        # сырые предложения (для ответа-отрывком, когда читатель не разобрал)
         self.sent_ctx_by_word = collections.defaultdict(list)                     # слово предыдущего предложения → это предложение (контекст абзаца)
+        self.sent_glued = set()                                                   # предложения-определения, склеенные с предыдущим
 
     def idf(self, w): return float(np.log((1 + self.n_docs) / (1 + self.df.get(w, 0))) + 1.0)
 
@@ -55,8 +56,11 @@ class KnowledgeBase:
                     prev_ws = set(content_words(toks(self.sents[si - 1][0]))) - ws
                     # предложение-определение с отсылкой («This is called X», «These … are called X», «One such device is X»,
                     # «The process is called X») — сосед ПОЛНОСТЬЮ входит в его слова (это одно высказывание, разбитое на два)
-                    if re.match(r"^(?:this|these|that|those|one such|such a|such an|the process|the term|the name|it|they|the result|the answer)\b", s, re.I) or re.search(r"^(?:\w+\s+){0,3}(?:is|are) (?:called|known as|termed|named)\b", s, re.I):
-                        for w in prev_ws: self.sent_by_word[w].append(si)
+                    # склеиваем ТОЛЬКО предложения-определения с отсылкой: «This/These/The process/One such … is called X» —
+                    # у них ответ в этом предложении, а описание — в предыдущем. «They are found in…» — не определение, не склеиваем.
+                    if re.match(r"^(?:this|these|that|those|one such|such a|such an|the process|the term|the name|it|they)\b.{0,40}?\b(?:is|are) (?:called|known as|termed|named|referred to as)\b", s, re.I) \
+                       or re.match(r"^(?:one such|such a|such an)\b", s, re.I):
+                        for w in prev_ws: self.sent_by_word[w].append(si); self.sent_glued.add(si)
                     else:
                         for w in prev_ws: self.sent_ctx_by_word[w].append(si)
             for X, rel, Y in self.reader.read(s, src)[0]:
@@ -246,7 +250,7 @@ class ExperimentalMind:
                 if not best or sc > best[0]: best = (sc, free, (X2, rel2, Y2, src2), (X, rel, Y, src))
         return best[:3] if best else None
 
-    def _span(self, fr, known0):
+    def _span(self, fr, known0, only_sents=None):
         """ОТРЫВОК: читатель не разобрал предложение на факты (длинное, список, «X, Y and Z indicate…»), но
         предложение памяти покрывает ≥60 % веса слов вопроса → ответ = его свободный кусок: часть предложения
         (между знаками/союзами), где нет слов вопроса. Это не поиск по словам «на удачу»: обязательны редкие слова."""
@@ -271,10 +275,8 @@ class ExperimentalMind:
             for x in ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w}):
                 for si in self.kb.sent_by_word.get(x, []): cnt[si] += wgt * (1.0 if x == w else 0.9)
                 for si in self.kb.sent_ctx_by_word.get(x, []):
-                    # контекст абзаца: для предложения-определения («This is called X», «These are called X») сосед — это и есть
-                    # описание, вес полный; для прочих — половина
-                    is_def = bool(re.match(r"^(?:this|these|that|those|one such|such a|the process|the term|the name|it|they)\b", self.kb.sents[si][0], re.I))
-                    cnt[si] += wgt * (0.9 if is_def else 0.5) * (1.0 if x == w else 0.9); ctx_hit[si] += 1
+                    # контекст абзаца для обычных предложений — слабый (0.3): только чтобы не потерять, не чтобы победить
+                    cnt[si] += wgt * 0.3 * (1.0 if x == w else 0.9); ctx_hit[si] += 1
         best = None
         # СМЕЛОСТЬ ПО ОПЫТУ: если на таком типе вопроса «отрывок» попадал, а «не знаю» промахивался — порог покрытия ниже (0.45),
         # если отрывок ошибался — выше (0.7). Ядро само решает, где можно догадываться.
@@ -287,13 +289,15 @@ class ExperimentalMind:
         for si, score in list(cnt.most_common(12)):
             # предложение-определение («… is called X», «These are called X», «One such device is X») — именно в нём ответ;
             # покрытие ему добавляет сосед (контекст), а сам факт определения — бонус
-            if DEF_RX.search(self.kb.sents[si][0]): cnt[si] = score * 1.3
+            if si in self.kb.sent_glued or re.search(r"\b(?:is|are) (?:called|known as|termed|named|referred to as)\b", self.kb.sents[si][0], re.I): cnt[si] = score * 1.3
+        if only_sents is not None:                                   # комбинация: предложения, найденные другим способом — покрытие не проверяем строго
+            cnt = collections.Counter({si: max(cnt.get(si, 0), kidf * max(thr, 0.6)) for si in only_sents})
         for si, score in cnt.most_common(12):
             cov = score / kidf
             if cov < thr: continue
             sent, src = self.kb.sents[si]; sw = set(content_words(toks(sent)))
-            if si > 0 and (ctx_hit.get(si) or re.match(r"^(?:this|these|that|those|one such|such a|the process|the term|the name|it|they)\b", sent, re.I)):
-                sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # слова соседа — тоже «в предложении»
+            if si in self.kb.sent_glued:
+                sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # определение с отсылкой: слова соседа — тоже «в предложении»
             sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
             rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and not (forms[w] & sforms)]
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
@@ -376,6 +380,25 @@ class ExperimentalMind:
         if sp:
             s, ans, (sent, _, _, src) = sp
             cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(1.0, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+        # УЧЁБА У ПРОИГРАВШИХ (growth.learn_from_board): если на этом классе способ A обычно находит нужное предложение,
+        # но не ответ — берём его предложение и достаём ответ как отрывок. Правило выведено ею из исправлений.
+        pf = G.place_finders(q) if G else []
+        if pf:
+            sis = []
+            for c in cands:
+                if G._howkey(c["how"]) in pf and c.get("facts"):
+                    m_ = re.match(r"^(.*?) —(.*?)→ (.*)$", c["facts"][-1])
+                    if not m_: continue
+                    fx = set(content_words(toks(m_.group(1) + " " + m_.group(3))))
+                    for w in list(fx)[:6]:
+                        for si in self.kb.sent_by_word.get(w, [])[:50]:
+                            if fx <= set(content_words(toks(self.kb.sents[si][0]))) | {w for w in fx if len(w) < 4}: sis.append(si)
+            if sis:
+                sp2 = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]), only_sents=list(dict.fromkeys(sis))[:5])
+                if sp2 and not any(str(c["answer"]).lower() == str(sp2[1]).lower() for c in cands):
+                    s_, ans, (sent, _, _, src) = sp2
+                    cands.append(dict(how="комбинация (место от " + "/".join(pf) + " + отрывок)", answer=ans, confidence=round(min(1.0, s_ / 0.6), 2), facts=[f"{ans} —span→ {sent}"],
+                                      text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
         # ГЛУБОКОЕ РАССУЖДЕНИЕ (deep.py): до 7 шагов по графу фактов с откатом — когда прямые способы слабы или молчат
         if not cands or max(c["confidence"] for c in cands) < 0.7:
             try: dp = self.deep.reason(q)
@@ -409,7 +432,7 @@ class ExperimentalMind:
             # (б) ответ не повторяет слова вопроса; (в) ответ не «мусор» (одно служебное слово). Несовпадение — штраф, не запрет.
             chk = self._self_check(fr, c["answer"]); c["check"] = chk["note"]; c["score"] = round(c["score"] * chk["mult"], 3)
         cands.sort(key=lambda c: -c["score"])
-        best = cands[0]; best["board"] = [(c["how"], str(c["answer"])[:40], c["confidence"], c["trust"], c["score"], c.get("check")) for c in cands]
+        best = cands[0]; best["board"] = [(c["how"], str(c["answer"])[:40], c["confidence"], c["trust"], c["score"], c.get("check"), (c.get("facts") or [""])[-1][:160]) for c in cands]
         return best
 
     def _self_check(self, fr, answer):
@@ -523,10 +546,10 @@ class ExperimentalMind:
         # по опыту (этот способ на этой форме вопроса попадал/промахивался) → побеждает лучший, не первый сработавший
         pick = self._arbiter(q, fr)
         r = None
-        if pick and pick["how"] == "1 шаг": r = pick["raw"]
+        if pick and pick["how"] == "1 шаг": r = pick["raw"]; out["arbiter"] = pick["board"]
         elif pick and pick["how"].startswith("2 шага"):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], arbiter=pick["board"])
-        elif pick and pick["how"] == "отрывок предложения":
+        elif pick and (pick["how"] == "отрывок предложения" or pick["how"].startswith("комбинация")):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], arbiter=pick["board"])
             self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
         elif pick and "(deep)" in pick["how"]:
@@ -641,7 +664,7 @@ class ExperimentalMind:
         if out.get("thoughts") is not None and (out.get("how", "").startswith("op:") or out.get("how", "").startswith("few-shot")) and out.get("text"):
             conv.push(q=q1, frame=fr1, entity=None, answer=out.get("answer"), kind=out["kind"], pending=None, key=None)
             out["question"] = q1; out["note"] = ", ".join(notes) or None; return out
-        if out.get("answer") and out.get("how") == "отрывок предложения":
+        if out.get("answer") and (out.get("how") == "отрывок предложения" or (out.get("how") or "").startswith("комбинация")):
             conv.push(q=q1, frame=fr1, entity=out["answer"], answer=out["answer"], kind="answer", pending=None, key=None)
             out["question"] = q1; out["kind"] = "answer"; out["note"] = ", ".join(notes) or None; return out
         if out.get("answer") and out.get("thoughts"):
