@@ -441,6 +441,34 @@ class ExperimentalMind:
                     s_, ans, (sent, _, _, src) = sp2
                     cands.append(dict(how="комбинация (место от " + "/".join(pf) + " + отрывок)", answer=ans, confidence=round(min(1.0, s_ / 0.6), 2), facts=[f"{ans} —span→ {sent}"],
                                       text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+        # НЕЙРОННЫЙ ЧИТАТЕЛЬ (neural.read_answer): ядро выбирает 2–4 предложения-места (по словам, по смыслу, по соседству),
+        # читатель достаёт из них кусок. Это гибрид: где искать — символьная память и рост; что именно взять — обученная модель.
+        if getattr(self, "neural", None) is not None and self.kb.sents:
+            try:
+                sis = []
+                known_ = set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"])
+                for w in sorted(known_, key=lambda w: -self.kb.idf(w))[:4]:
+                    for x in ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & self._forms(w))} if len(w) > 3 else {w}):
+                        sis += self.kb.sent_by_word.get(x, [])[:30]
+                cnt_ = collections.Counter(sis)
+                top = [si for si, _ in cnt_.most_common(3)]
+                top += [si for si, _ in self.neural.search(q, k=3, min_sim=0.4) if si not in top]
+                ctx_ids = []
+                for si in top[:4]:
+                    for j in (si - 1, si, si + 1):                                    # предложение с соседями
+                        if 0 <= j < len(self.kb.sents) and j not in ctx_ids: ctx_ids.append(j)
+                ctx_ids = sorted(ctx_ids)[:10]
+                if ctx_ids:
+                    from mini_ai.neural import read_answer
+                    context = " ".join(self.kb.sents[j][0] for j in ctx_ids)
+                    ans, sc = read_answer(q, context)
+                    aw = set(content_words(toks(ans or "")))
+                    if ans and sc >= 8.0 and aw and not (aw <= known_):
+                        src_sent = next((self.kb.sents[j][0] for j in ctx_ids if ans.lower() in self.kb.sents[j][0].lower()), context[:120])
+                        conf = round(min(1.0, 0.5 + (sc - 8.0) / 30.0), 2)
+                        cands.append(dict(how="нейронный читатель", answer=ans, confidence=conf, facts=[f"{ans} —span→ {src_sent[:160]}"],
+                                          text=f"From what I've read: {src_sent.rstrip('.')[:160]}. So I'd say: {ans}."))
+            except Exception as e_: pass
         # ГЛУБОКОЕ РАССУЖДЕНИЕ (deep.py): до 7 шагов по графу фактов с откатом — когда прямые способы слабы или молчат
         if not cands or max(c["confidence"] for c in cands) < 0.7:
             try: dp = self.deep.reason(q)
@@ -591,7 +619,7 @@ class ExperimentalMind:
         if pick and pick["how"] == "1 шаг": r = pick["raw"]; out["arbiter"] = pick["board"]
         elif pick and pick["how"].startswith("2 шага"):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], arbiter=pick["board"])
-        elif pick and (pick["how"] == "отрывок предложения" or pick["how"].startswith("комбинация")):
+        elif pick and (pick["how"] in ("отрывок предложения", "нейронный читатель") or pick["how"].startswith("комбинация")):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], arbiter=pick["board"])
             self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
         elif pick and "(deep)" in pick["how"]:
@@ -706,7 +734,7 @@ class ExperimentalMind:
         if out.get("thoughts") is not None and (out.get("how", "").startswith("op:") or out.get("how", "").startswith("few-shot")) and out.get("text"):
             conv.push(q=q1, frame=fr1, entity=None, answer=out.get("answer"), kind=out["kind"], pending=None, key=None)
             out["question"] = q1; out["note"] = ", ".join(notes) or None; return out
-        if out.get("answer") and (out.get("how") == "отрывок предложения" or (out.get("how") or "").startswith("комбинация")):
+        if out.get("answer") and (out.get("how") in ("отрывок предложения", "нейронный читатель") or (out.get("how") or "").startswith("комбинация")):
             conv.push(q=q1, frame=fr1, entity=out["answer"], answer=out["answer"], kind="answer", pending=None, key=None)
             out["question"] = q1; out["kind"] = "answer"; out["note"] = ", ".join(notes) or None; return out
         if out.get("answer") and out.get("thoughts"):

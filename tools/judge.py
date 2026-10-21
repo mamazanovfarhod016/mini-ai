@@ -5,7 +5,7 @@
   C. bAbI 20 × 50 — рассуждение о состоянии мира.                           вес 1
   D. рост: 100 вопросов с учителем → 100 без; разница с холодным прогоном на тех же 100.  вес 1 (как +0.10 → 1.0)
 Запуск: python3 tools/judge.py [tag] [quick]   → печатает таблицу, пишет judge_<tag>.json. quick = без D."""
-import os, sys, json, time, shutil, re, glob
+import os, sys, json, time, shutil, re, glob, gc
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 from mini_ai.experimental import ExperimentalMind
@@ -21,7 +21,7 @@ te = pd.read_parquet(f"{DATA}/school/sciq/data/test-00000-of-00001.parquet").dro
 shutil.rmtree("/tmp/judgeA", ignore_errors=True); m = ExperimentalMind(school=True, wiki=False, state_dir="/tmp/judgeA")
 for _, r in te.iterrows(): m.kb.read_text(str(r["support"]), "учебник")
 res["A_sciq"] = round(sum(hit(m.ask(r["question"], internet=False), r["correct_answer"]) for _, r in te.iterrows()) / len(te), 3)
-print(f"A SciQ 300        {res['A_sciq']:.3f}", flush=True)
+print(f"A SciQ 300        {res['A_sciq']:.3f}", flush=True); del m; gc.collect()
 
 # B: multi-hop-ish — answer sentence shares <=1 content word with the question (needs linking through the paragraph)
 tr = pd.read_parquet(f"{DATA}/school/sciq/data/train-00000-of-00001.parquet").dropna(subset=["support"])
@@ -36,7 +36,7 @@ for _, r in tr.iloc[5000:].iterrows():
 shutil.rmtree("/tmp/judgeB", ignore_errors=True); m = ExperimentalMind(school=True, wiki=False, state_dir="/tmp/judgeB")
 for r in B: m.kb.read_text(str(r["support"]), "учебник")
 res["B_multihop"] = round(sum(hit(m.ask(r["question"], internet=False), r["correct_answer"]) for r in B) / max(1, len(B)), 3)
-print(f"B multi-hop {len(B):3d}   {res['B_multihop']:.3f}", flush=True)
+print(f"B multi-hop {len(B):3d}   {res['B_multihop']:.3f}", flush=True); del m; gc.collect()
 
 # C
 tasks = sorted([re.search(r"task_(.+)_test", p).group(1) for p in glob.glob(f"{DATA}/babi/task_*_test.parquet")], key=lambda t: int(t.split("-")[0]))
@@ -54,14 +54,14 @@ if not quick:
     rows = list(tr.iloc[2000:2200].iterrows()); h1, h2 = rows[:100], rows[100:]
     shutil.rmtree("/tmp/judgeD0", ignore_errors=True); m0 = ExperimentalMind(school=True, wiki=False, state_dir="/tmp/judgeD0")
     for _, r in rows: m0.kb.read_text(str(r["support"]), "учебник")
-    cold = sum(hit(m0.ask(r["question"], internet=False), r["correct_answer"]) for _, r in h2) / 100
+    cold = sum(hit(m0.ask(r["question"], internet=False), r["correct_answer"]) for _, r in h2) / 100; del m0; gc.collect()
     shutil.rmtree("/tmp/judgeD1", ignore_errors=True); m1 = ExperimentalMind(school=True, wiki=False, state_dir="/tmp/judgeD1")
     for _, r in rows: m1.kb.read_text(str(r["support"]), "учебник")
     for _, r in h1:
         o = m1.ask(r["question"], internet=False)
         if hit(o, r["correct_answer"]): m1.ask("yes", internet=False)
         elif o.get("kind") in ("answer", "clarify", "unknown"): m1.ask(f"no, it's {r['correct_answer']}", internet=False)
-    grown = sum(hit(m1.ask(r["question"], internet=False), r["correct_answer"]) for _, r in h2) / 100
+    grown = sum(hit(m1.ask(r["question"], internet=False), r["correct_answer"]) for _, r in h2) / 100; del m1; gc.collect()
     res["D_growth"] = round(grown - cold, 3); res["D_cold"] = cold; res["D_grown"] = grown
     print(f"D growth          {res['D_growth']:+.3f}  (cold {cold:.2f} → grown {grown:.2f})", flush=True)
 score = res["A_sciq"] + res["B_multihop"] + res["C_babi"] + (min(1.0, max(0.0, res.get("D_growth", 0) / 0.10)) if not quick else 0)

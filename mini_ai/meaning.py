@@ -47,7 +47,8 @@ class Meaning:
             if md:
                 x, cls = md.group(1).split()[-1], md.group(2)
                 if x not in STOP and cls not in STOP and cls != x and cls in self.sem and self.n[cls] >= 20:
-                    self.sem[x] = self.sem.get(x, np.zeros(D, np.float32)) + 8.0 * self.sem[cls] / (np.linalg.norm(self.sem[cls]) + 1e-9) * np.sqrt(D) / 4
+                    cv = self.sem[cls].astype(np.float32)
+                    self.sem[x] = self.sem.get(x, np.zeros(D, np.float32)).astype(np.float32) + 8.0 * cv / (np.linalg.norm(cv) + 1e-9) * np.sqrt(D) / 4
                     self.n[x] += 1; self._delta.add(x); self.defs[x] = cls
             B = [self.b(w) for w in ws]
             for j, w in enumerate(ws):
@@ -57,7 +58,9 @@ class Meaning:
                 v = self.sem.get(w); self.sem[w] = (ctx if v is None else v.astype(np.float32) + ctx); self.n[w] += 1; n += 1; self._delta.add(w)
         self._dirty += n; return n
     def vec(self, w):
-        v = self.sem.get(w.lower()); return None if v is None else v / (np.linalg.norm(v) + 1e-9)
+        v = self.sem.get(w.lower())
+        if v is None: return None
+        v = v.astype(np.float32); return v / (np.linalg.norm(v) + 1e-9)
     def sent_vec(self, words):
         """код фразы = сумма смыслов её слов (idf-веса не нужны: редкие слова и так далеки от всех)"""
         vs = [self.vec(w) for w in words]; vs = [v for v in vs if v is not None]
@@ -114,4 +117,5 @@ class Meaning:
     def load(self, path=None):
         z = np.load(path or self.path, allow_pickle=False)
         for w, v, n in zip(z["words"], z["sem"], z["n"]):
-            w = str(w); self.sem[w] = self.sem.get(w, 0) + v.astype(np.float32); self.n[w] += int(n)
+            w = str(w); prev = self.sem.get(w)
+            self.sem[w] = v.astype(np.float16) if prev is None else (prev.astype(np.float32) + v.astype(np.float32)).astype(np.float16); self.n[w] += int(n)   # float16 в памяти: 68k слов = 0.55 ГБ вместо 1.1
