@@ -44,6 +44,22 @@ def qcoarse(q):
     return " ".join(head)
 
 
+def qclass(q):
+    """самый грубый класс вопроса — для ПЕРЕНОСА опыта между типами: «definition» (what is/term/called/known as),
+    «which-of» (which type/kind/what group), «how-many», «where», «who», «why», «process» (what happens/what do _ use),
+    «fill» (вопрос-утверждение с пропуском: «_ are called?», «X is made of what?»)"""
+    ql = q.strip().rstrip("?").lower()
+    if re.search(r"\bhow (?:many|much)\b", ql): return "how-many"
+    if re.match(r"^(?:where|in which (?:country|city|continent|place|organ|part))\b", ql): return "where"
+    if re.match(r"^(?:who|whose)\b", ql): return "who"
+    if re.match(r"^why\b", ql): return "why"
+    if re.search(r"\b(?:called|known as|term(?:ed)?|name(?:d)? (?:for|of)|refers? to|is the (?:name|term))\b", ql): return "definition"
+    if re.match(r"^(?:what|which) (?:type|kind|sort|class|group|category|form)s? of\b", ql): return "which-of"
+    if re.match(r"^what (?:happens|occurs|is produced|is formed|do(?:es)? .+ (?:use|produce|make|form|cause|release))\b", ql): return "process"
+    if not re.match(r"^(?:what|which|who|where|when|how|why|in|on|at|by|during|of)\b", ql): return "fill"
+    return "what"
+
+
 class Growth:
     def __init__(self, mind, state_dir=None):
         self.mind = mind; self.path = os.path.join(state_dir, "growth.json") if state_dir else None
@@ -53,6 +69,9 @@ class Growth:
         self.rules_saved = {}                                     # форма → [схемы] (копия fewshot.rules для сохранения)
         self.slot_rules = collections.defaultdict(collections.Counter)  # грубая форма → Counter((slot, rel, qwhere)) — для вопросов без имён
         self.attn = collections.defaultdict(lambda: [0, 0])       # слово вопроса → [нужное, лишнее] (выученное внимание)
+        self._soft_list = None; self._soft_stamp = -1; self._soft_cache = {}
+        self.diag = collections.Counter()                         # ДИАГНОЗ ошибок: почему промахнулась (silent/wrong-piece/wrong-fact/no-sentence)
+        self.insights = []                                        # ОБОБЩЕНИЯ: правила, подтверждённые на многих типах → принцип
         self.load()
 
     # ---------- хранение ----------
@@ -64,6 +83,7 @@ class Growth:
         for k, v in d.get("coans", {}).items(): self.coans[k] = collections.Counter(v)
         self.rules_saved = d.get("rules", {}); self.log = d.get("log", [])[-50:]
         for k, v in d.get("attn", {}).items(): self.attn[k] = v
+        self.diag = collections.Counter(d.get("diag", {})); self.insights = d.get("insights", [])
         for k, v in d.get("slot_rules", {}).items(): self.slot_rules[k] = collections.Counter({tuple(kk.split("|")): n for kk, n in v.items()})
         fs = getattr(self.mind, "fewshot", None)
         if fs:
@@ -76,7 +96,7 @@ class Growth:
         rules = {k: [list(s) for s in v] for k, v in fs.rules.items()} if fs else self.rules_saved
         examples = {k: [list(e) for e in v] for k, v in fs.examples.items()} if fs else {}
         json.dump(dict(reliab=dict(self.reliab), coans={k: dict(v) for k, v in self.coans.items()}, rules=rules, examples=examples,
-                       slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn),
+                       slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn), diag=dict(self.diag), insights=self.insights,
                        log=self.log[-50:], when=time.strftime("%Y-%m-%d %H:%M")), open(self.path, "w"), ensure_ascii=False, indent=1)
 
     # ---------- 2. надёжность способов ----------
@@ -85,28 +105,29 @@ class Growth:
         return re.sub(r"[«»].*", "", (how or "").split(":")[0]).strip() or "?"
 
     def trust(self, how, q):
-        """множитель уверенности по опыту: точная форма → грубая форма → вообще. нет опыта → 1.0; 3 промаха из 3 → 0.4"""
-        hk = self._howkey(how)
-        for key in (f"{hk}|{qform(q)}", f"{hk}|{qcoarse(q)}", f"{hk}|*"):
-            h, m = self.reliab.get(key, [0, 0])
-            if h + m >= (1 if key.endswith(qform(q)) else 2): return round(0.4 + 0.9 * (h + 1) / (h + m + 2), 2)
-        return 1.0
+        """множитель уверенности по опыту, С ПЕРЕНОСОМ: точная форма → тип → класс → вообще. Уровни смешиваются:
+        точный опыт весит больше, но если его мало — тянет опыт класса («все вопросы-определения»). нет опыта → 1.0"""
+        hk = self._howkey(how); h = m = 0.0
+        for key, w in ((f"{hk}|{qform(q)}", 1.0), (f"{hk}|{qcoarse(q)}", 0.5), (f"{hk}|{qclass(q)}", 0.25), (f"{hk}|*", 0.1)):
+            hh, mm = self.reliab.get(key, [0, 0]); h += w * hh; m += w * mm
+        if h + m < 1.0: return 1.0
+        return round(0.4 + 0.9 * (h + 1) / (h + m + 2), 2)
 
     def boldness(self, q):
         """0..1 — насколько стоит ДОГАДЫВАТЬСЯ (отрывком) вместо «не знаю» на таком типе вопроса.
         Растёт, когда отрывок попадал, и когда «не знаю» оказывалось ошибкой (ответ был, а она молчала)."""
         def rate(hk, default):
-            for key in (f"{hk}|{qcoarse(q)}", f"{hk}|*"):
-                h, m = self.reliab.get(key, [0, 0])
-                if h + m >= 3: return (h + 1) / (h + m + 2)
-            return default
+            h = m = 0.0
+            for key, w in ((f"{hk}|{qcoarse(q)}", 1.0), (f"{hk}|{qclass(q)}", 0.5), (f"{hk}|*", 0.2)):
+                hh, mm = self.reliab.get(key, [0, 0]); h += w * hh; m += w * mm
+            return (h + 1) / (h + m + 2) if h + m >= 2 else default
         span_ok = rate("отрывок предложения", 0.5)
         silent_wrong = 1 - rate("не знаю → уточнение", 0.5) if any(k.startswith("не знаю") for k in self.reliab) else 0.5
         return round(max(0.0, min(1.0, 0.6 * span_ok + 0.4 * silent_wrong)), 2)
 
     def _mark(self, how, q, hit):
         hk = self._howkey(how)
-        for key in (f"{hk}|{qform(q)}", f"{hk}|{qcoarse(q)}", f"{hk}|*"):
+        for key in (f"{hk}|{qform(q)}", f"{hk}|{qcoarse(q)}", f"{hk}|{qclass(q)}", f"{hk}|*"):
             self.reliab[key][0 if hit else 1] += 1
 
     # ---------- 1в. ВЫУЧЕННОЕ ВНИМАНИЕ: какие слова вопроса оказались лишними ----------
@@ -134,7 +155,23 @@ class Growth:
 
     def is_soft_learned(self, w):
         n, x = self.attn.get(w, (0, 0))
-        return x >= 2 and x >= n
+        if x >= 3 and x >= 2 * n and self.mind.kb.idf(w) < 3.5: return True       # лишнее стабильно, и это не редкий термин
+        # ПЕРЕНОС ПО СМЫСЛУ: слово без опыта, но по смыслу близко к выученному лишнему («objects»→«things», «organ»→«organs/tissue»)
+        if n + x == 0 and len(w) > 3:
+            M = getattr(self.mind, "meaning", None)
+            if M is not None and self._soft_words:
+                cache = self._soft_cache
+                if w in cache: return cache[w]
+                r = any((M.similar(w, sw) or 0) > 0.45 for sw in self._soft_words)
+                if len(cache) < 20000: cache[w] = r
+                return r
+        return False
+
+    @property
+    def _soft_words(self):
+        if self._soft_stamp != len(self.attn) or self._soft_list is None:
+            self._soft_list = [w for w, (n, x) in self.attn.items() if x >= 3 and x >= 2 * n and self.mind.kb.idf(w) < 3.5][:300]; self._soft_stamp = len(self.attn); self._soft_cache = {}
+        return self._soft_list
 
     # ---------- 1б. схемы для вопросов без имён: ГДЕ в факте лежит ответ ----------
     def _slot_pattern(self, q, right):
@@ -154,8 +191,11 @@ class Growth:
         return dict(slot=best[1], rel=best[2], qwhere=best[3])
 
     def slot_prefs(self, q):
-        """выученные предпочтения для формы вопроса: Counter((slot, rel, qwhere))"""
-        return self.slot_rules.get(qcoarse(q)) or collections.Counter()
+        """выученные предпочтения «где ответ» С ПЕРЕНОСОМ: тип вопроса (вес 1) + класс (вес 0.4)"""
+        c = collections.Counter()
+        for k, n in (self.slot_rules.get(qcoarse(q)) or {}).items(): c[k] += n
+        for k, n in (self.slot_rules.get("class:" + qclass(q)) or {}).items(): c[k] += 0.4 * n
+        return c
 
     # ---------- 3. связки слов ----------
     def _link(self, q, answer):
@@ -183,10 +223,19 @@ class Growth:
             if r: grew.append(f"rule for «{qform(q)}»: {'→'.join(r[0]).replace('inv:', 'reverse ')}")
         sp = self._slot_pattern(q, right)
         if sp:
-            self.slot_rules[qcoarse(q)][(sp["slot"], sp["rel"], sp["qwhere"])] += 1
+            self.slot_rules[qcoarse(q)][(sp["slot"], sp["rel"], sp["qwhere"])] += 1; self.slot_rules["class:" + qclass(q)][(sp["slot"], sp["rel"], sp["qwhere"])] += 1
             grew.append(f"for «{qcoarse(q)}» the answer sits in {sp['slot']} of a «{sp['rel']}» fact")
         extra = self._learn_attention(q, right)
         if extra: grew.append("extra words: " + ", ".join(extra[:4]))
+        # ДИАГНОЗ: почему ошиблась? молчала (ответ был в памяти) / взяла не тот кусок предложения / не тот факт / ответа нет в памяти
+        rl = right.lower(); in_mem = any(rl in s_.lower() for s_, _ in self.mind.kb.sents[-3000:])
+        how = self._howkey(out.get("how") if out else "")
+        if not in_mem: d = "no-sentence"
+        elif how.startswith("не знаю"): d = "silent"
+        elif how.startswith("отрывок"): d = "wrong-piece"
+        else: d = "wrong-fact"
+        self.diag[d] += 1; self.diag[f"{d}|{qclass(q)}"] += 1; grew.append(f"diagnosis: {d}")
+        self._maybe_insight()
         if self._link(q, right): grew.append("word link " + ", ".join(f"{w}→{right.split()[0]}" for w in content_words(toks(q))[:2]))
         self.log.append(dict(t=time.strftime("%m-%d %H:%M"), kind="correction", q=q, right=right, grew=grew)); self.save()
         return grew
@@ -197,12 +246,48 @@ class Growth:
         self._mark(out.get("how"), q, True); self._link(q, str(out["answer"]))
         self._learn_attention(q, str(out["answer"]))
         sp = self._slot_pattern(q, str(out["answer"]))
-        if sp: self.slot_rules[qcoarse(q)][(sp["slot"], sp["rel"], sp["qwhere"])] += 1
+        if sp: self.slot_rules[qcoarse(q)][(sp["slot"], sp["rel"], sp["qwhere"])] += 1; self.slot_rules["class:" + qclass(q)][(sp["slot"], sp["rel"], sp["qwhere"])] += 1
         fs = getattr(self.mind, "fewshot", None)
         if fs and out.get("how", "").startswith(("2 шага", "few-shot")) is False and qform(q) not in fs.rules:
             fs.show(q, str(out["answer"]))                           # удачный ответ тоже становится схемой
         self.log.append(dict(t=time.strftime("%m-%d %H:%M"), kind="confirm", q=q, a=str(out["answer"]), how=out.get("how"))); self.save()
         return ["trust +1 for " + self._howkey(out.get("how"))]
+
+    def diag_rates(self, q):
+        """доли причин ошибок на классе вопроса: silent / wrong-piece / wrong-fact / no-sentence (с переносом на общий)"""
+        cls = qclass(q); out = {}
+        for d in ("silent", "wrong-piece", "wrong-fact", "no-sentence"):
+            a = self.diag.get(f"{d}|{cls}", 0); b = self.diag.get(d, 0)
+            out[d] = a + 0.3 * b
+        tot = sum(out.values()) or 1.0
+        return {k: v / tot for k, v in out.items()} if sum(self.diag.values()) >= 10 else {}
+
+    # ---------- ОБОБЩЕНИЕ: из многих частных правил — принцип ----------
+    def _maybe_insight(self):
+        """раз в 50 исправлений: если одно и то же «где ответ» держится в ≥4 типах вопросов одного класса — это принцип класса,
+        дальше применяется ко ВСЕМ вопросам класса, даже к типам без опыта. Если способ промахивается в ≥70 % по классу —
+        принцип «не верить способу на классе». Записываем человеческим языком."""
+        n = sum(self.diag.values())
+        if n % 50: return
+        new = []
+        by_class = collections.defaultdict(lambda: collections.defaultdict(set))
+        for form, cnt in self.slot_rules.items():
+            if form.startswith("class:") or not cnt: continue
+            top, cn = cnt.most_common(1)[0]
+            if cn >= 2: by_class[qclass(form.replace("_", "x") + "?")][top].add(form)
+        for cls, d in by_class.items():
+            for top, forms in d.items():
+                if len(forms) >= 4:
+                    key = f"principle|{cls}|{'|'.join(top)}"
+                    if key not in {i["key"] for i in self.insights}:
+                        self.insights.append(dict(key=key, text=f"for {cls} questions the answer is usually {top[0]} of a «{top[1]}» fact ({len(forms)} question types agree)"))
+                        self.slot_rules["class:" + cls][top] += 3; new.append(key)
+        for key, (h, m) in list(self.reliab.items()):
+            hk, form = key.split("|", 1)
+            if form in ("definition", "which-of", "how-many", "where", "who", "why", "process", "fill", "what") and h + m >= 20 and m / (h + m) >= 0.7:
+                k2 = f"distrust|{hk}|{form}"
+                if k2 not in {i["key"] for i in self.insights}: self.insights.append(dict(key=k2, text=f"«{hk}» fails {m}/{h+m} on {form} questions — stop trusting it there")); new.append(k2)
+        return new
 
     # ---------- отчёт ----------
     def report(self):
@@ -214,6 +299,10 @@ class Growth:
                  f"attention learned: {len(soft)} words found unimportant in questions: {', '.join(sorted(soft, key=lambda w: -self.attn[w][1])[:12])}",
                  f"question forms with experience: {len(forms)}",
                  f"word links: {sum(len(v) for v in self.coans.values())}"]
+        if self.diag:
+            tot = sum(v for k, v in self.diag.items() if "|" not in k) or 1
+            lines.append("why I was wrong: " + ", ".join(f"{k} {v} ({100*v//tot}%)" for k, v in self.diag.most_common() if "|" not in k))
+        for i in self.insights[-5:]: lines.append("  principle: " + i["text"])
         for k, (h, m) in forms: lines.append(f"  {k}: {h}✓ {m}✗ → trust {round(0.4 + 0.9 * (h + 1) / (h + m + 2), 2)}")
         for e in self.log[-5:]: lines.append(f"  [{e['t']}] {e['kind']}: {e.get('q', '')[:50]} → {e.get('right') or e.get('a', '')}")
         return "\n".join(lines)

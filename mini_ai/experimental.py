@@ -262,6 +262,8 @@ class ExperimentalMind:
         G = getattr(self, "growth", None); q_ = " ".join(sorted(known0))
         bold = G.boldness(self._cur_q) if G else 0.5
         thr = 0.75 - 0.4 * bold                       # смелость 0.5 → порог 0.55; опыт «отрывок попадает, молчать — ошибка» → 0.35
+        dr = G.diag_rates(self._cur_q) if G else {}
+        if dr: thr -= 0.15 * dr.get("silent", 0) - 0.1 * dr.get("wrong-piece", 0)   # молчала зря → смелее; брала не тот кусок → строже
         for si, score in cnt.most_common(12):
             cov = score / kidf
             if cov < thr: continue
@@ -283,17 +285,35 @@ class ExperimentalMind:
                 overlap = sum(1 for x in pw if (self._forms(x) & qforms) or x in self.META)        # слов куска, которые есть в вопросе
                 if overlap and len(pw) > overlap:
                     # кусок со словами вопроса: ответ — самый длинный пробел между ними («most living things use OXYGEN to make ATP»)
-                    run, runs = [], []
-                    for x in toks(p):
-                        if x in STOPW or x in self.JUNK: 
-                            if run: runs.append(run); run = []
+                    # ПОРЯДОК СЛОВ: пробел в вопросе (где стоит «what») окружён словами; в предложении ответ — тот пробел,
+                    # у которого те же соседи. «what do X use ___ to make ATP» → сосед слева «use», справа «make».
+                    qt_ = toks(self._cur_q); gap_l = gap_r = None
+                    for i_, x in enumerate(qt_):
+                        if x in ("what", "which") and 0 < i_ < len(qt_) - 1 and i_ > 2:
+                            gap_l = next((y for y in reversed(qt_[:i_]) if y not in STOPW), None); gap_r = next((y for y in qt_[i_+1:] if y not in STOPW and y not in self.META), None); break
+                    if gap_l is None and qt_ and qt_[-1] in ("what", "which"): gap_l = next((y for y in reversed(qt_[:-1]) if y not in STOPW), None)
+                    if gap_l is None and len(qt_) > 3 and qt_[0] == "what" and qt_[1] in ("do", "does", "did"):
+                        # «What do X USE ___ to make Y» — дополнение вынесено вперёд; пробел — сразу после глагола (первое не-стоп слово после подлежащего, не -ing)
+                        subj_end = next((i_ for i_ in range(2, len(qt_)) if qt_[i_] not in STOPW and not qt_[i_].endswith("ing") and i_ >= 3 and qt_[i_-1] not in STOPW), None)
+                        verb = next((qt_[i_] for i_ in range(2, len(qt_)) if qt_[i_] in ("use", "need", "require", "produce", "make", "form", "release", "eat", "have", "contain", "get", "take", "absorb", "store", "carry", "call")), None)
+                        if verb: gap_l = verb; vi = qt_.index(verb); gap_r = next((y for y in qt_[vi+1:] if y not in STOPW and y not in self.META), None)
+                    run, runs, prev = [], [], None; pt = toks(p)
+                    for i_, x in enumerate(pt):
+                        isq = (self._forms(x) & qforms) or x in self.META
+                        if x in STOPW or x in self.JUNK:
+                            if run: runs.append((run, prev, None)); run = []
                             continue
-                        if (self._forms(x) & qforms) or x in self.META: 
-                            if run: runs.append(run); run = []
+                        if isq:
+                            if run: runs[-1] = (runs[-1][0], runs[-1][1], x) if runs and runs[-1][0] is run else runs.append((run, prev, x)) or runs[-1]; run = []
+                            prev = x
                         else: run.append(x)
-                    if run: runs.append(run)
-                    for r_ in runs:
-                        if 1 <= len(r_) <= 4: cands.append((max(self.kb.idf(x) for x in r_) * 0.9 - 0.05 * len(r_), " ".join(r_)))
+                    if run: runs.append((run, prev, None))
+                    for r_, left, right in runs:
+                        if not (1 <= len(r_) <= 4): continue
+                        sc_ = max(self.kb.idf(x) for x in r_) * 0.9 - 0.05 * len(r_)
+                        if gap_l and left and (self._forms(left) & self._forms(gap_l)): sc_ += 1.0        # тот же сосед слева, что у «what» в вопросе
+                        if gap_r and right and (self._forms(right) & self._forms(gap_r)): sc_ += 0.6
+                        cands.append((sc_, " ".join(r_)))
                     continue
                 if overlap == 0 and len(pw) <= 6:
                     # лучший кусок — с самым редким словом (термин), не «made»/«used»/«found» (глагольные хвосты)
@@ -323,6 +343,10 @@ class ExperimentalMind:
             cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(1.0, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
         if not cands: return None
         hints = set(G.hints(q)) if G else set(); prefs = G.slot_prefs(q) if G else {}
+        dr = G.diag_rates(q) if G else {}
+        for c in cands:                                            # диагноз → кого двигать: «не тот факт» → отрывку +, «не тот кусок» → факту +
+            if dr.get("wrong-fact", 0) > 0.4 and c["how"] == "отрывок предложения": c["confidence"] = min(1.0, c["confidence"] + 0.1)
+            if dr.get("wrong-piece", 0) > 0.4 and c["how"] == "1 шаг": c["confidence"] = min(1.0, c["confidence"] + 0.1)
         ptotal = sum(prefs.values()) if prefs else 0
         for c in cands:
             tr = G.trust(c["how"], q) if G else 1.0
