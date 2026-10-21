@@ -33,6 +33,10 @@ def parse_question(q):
     m_of = re.match(r"^(?:what|who|which)\s+(?:is|are|was|were)\s+(?:the\s+)?([\w\s'\-]+?\s+(?:of|in|for|from)\s+[\w\s'\-]+)$", ql)
     if m_of and not re.search(r"\b(?:called|known)\b", ql):
         return dict(slot="X", X=[], rel="be", Y=content_words(toks(m_of.group(1))), atype=atype)
+    # «what is the largest planet» / «who was the first president» — определение без «of»: слот X, Y = остаток
+    m_def = re.match(r"^(?:what|who|which)\s+(?:is|are|was|were)\s+(?:the\s+|a\s+|an\s+)?([\w\s'\-]{3,60})$", ql)
+    if m_def and not re.search(r"\b(?:called|known)\b", ql) and not vm:
+        return dict(slot="X", X=[], rel="be", Y=content_words(toks(m_def.group(1))), atype=atype)
     if ql.endswith(("called", "known as", "called the", "referred to as")) or re.search(r"\b(?:is|are) called$", ql):
         # «X ... is called ?» / «what is X called» → слот Y
         X = re.sub(r"\b(?:is|are) (?:called|known as)$|\bcalled$", "", body).strip()
