@@ -27,6 +27,7 @@ class KnowledgeBase:
         self.facts = []; self.by_word = collections.defaultdict(list); self.by_x = collections.defaultdict(list)
         self.df = collections.Counter(); self.n_docs = 0; self.reader = Reader(); self.sources = collections.Counter()
         self.sents = []; self.sent_by_word = collections.defaultdict(list)        # сырые предложения (для ответа-отрывком, когда читатель не разобрал)
+        self.sent_ctx_by_word = collections.defaultdict(list)                     # слово предыдущего предложения → это предложение (контекст абзаца)
 
     def idf(self, w): return float(np.log((1 + self.n_docs) / (1 + self.df.get(w, 0))) + 1.0)
 
@@ -48,6 +49,16 @@ class KnowledgeBase:
             if src != "user" and len(self.sents) < 400000:
                 si = len(self.sents); self.sents.append((s, src))
                 for w in ws: self.sent_by_word[w].append(si)
+                # КОНТЕКСТ АБЗАЦА: «These are called X», «This is called X», «One such device is X» — подлежащее указывает на
+                # предыдущее предложение. Слова соседа индексируются как слабый контекст этого предложения (вес 0.5 при поиске).
+                if si > 0 and self.sents[si - 1][1] == src:
+                    prev_ws = set(content_words(toks(self.sents[si - 1][0]))) - ws
+                    # предложение-определение с отсылкой («This is called X», «These … are called X», «One such device is X»,
+                    # «The process is called X») — сосед ПОЛНОСТЬЮ входит в его слова (это одно высказывание, разбитое на два)
+                    if re.match(r"^(?:this|these|that|those|one such|such a|such an|the process|the term|the name|it|they|the result|the answer)\b", s, re.I) or re.search(r"^(?:\w+\s+){0,3}(?:is|are) (?:called|known as|termed|named)\b", s, re.I):
+                        for w in prev_ws: self.sent_by_word[w].append(si)
+                    else:
+                        for w in prev_ws: self.sent_ctx_by_word[w].append(si)
             for X, rel, Y in self.reader.read(s, src)[0]:
                 if "@" not in rel: self.add_fact(X, rel, Y, src); n += 1
         return n
@@ -136,6 +147,8 @@ class ExperimentalMind:
     # слова-пустышки вопроса: «what TERM means…», «what TYPE of cell», «by what METHOD» — они задают форму ответа, а не содержание;
     # в факте их нет и быть не должно → вес ~0 и никогда не обязательны
     META = set("term type kind name word example else another following describes refers called considered known commonly often usually generally "
+               "scientific technical medical common proper official formal mechanism device condition disorder disease phenomenon concept "
+               "correct best proper right typical standard main specific particular "
                "typically sometimes main primary major important specific certain particular general overall such like thing things something "
                "purpose method feature structure form means mean meaning instrument way ways about far best describe refer describe described "
                "category class sort variety number amount piece unit".split())
@@ -252,11 +265,16 @@ class ExperimentalMind:
         hard = {w for w in known if not self._soft(w)} or known
         kidf = sum(idf[w] for w in hard) + 0.3 * sum(idf[w] for w in known - hard)
         qforms = set().union(*[self._forms(w) for w in (known0 | known)]) | {w for w in known0}   # все слова вопроса (и пустышки) — не ответ
-        cnt = collections.Counter()
+        cnt = collections.Counter(); ctx_hit = collections.Counter()
         for w in known:
             wgt = idf[w] if w in hard else 0.3 * idf[w]
             for x in ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w}):
                 for si in self.kb.sent_by_word.get(x, []): cnt[si] += wgt * (1.0 if x == w else 0.9)
+                for si in self.kb.sent_ctx_by_word.get(x, []):
+                    # контекст абзаца: для предложения-определения («This is called X», «These are called X») сосед — это и есть
+                    # описание, вес полный; для прочих — половина
+                    is_def = bool(re.match(r"^(?:this|these|that|those|one such|such a|the process|the term|the name|it|they)\b", self.kb.sents[si][0], re.I))
+                    cnt[si] += wgt * (0.9 if is_def else 0.5) * (1.0 if x == w else 0.9); ctx_hit[si] += 1
         best = None
         # СМЕЛОСТЬ ПО ОПЫТУ: если на таком типе вопроса «отрывок» попадал, а «не знаю» промахивался — порог покрытия ниже (0.45),
         # если отрывок ошибался — выше (0.7). Ядро само решает, где можно догадываться.
@@ -265,16 +283,25 @@ class ExperimentalMind:
         thr = 0.75 - 0.4 * bold                       # смелость 0.5 → порог 0.55; опыт «отрывок попадает, молчать — ошибка» → 0.35
         dr = G.diag_rates(self._cur_q) if G else {}
         if dr: thr -= 0.15 * dr.get("silent", 0) - 0.1 * dr.get("wrong-piece", 0)   # молчала зря → смелее; брала не тот кусок → строже
+        DEF_RX = re.compile(r"\b(?:is|are) (?:called|known as|termed|named|referred to as)\b|^(?:this|these|that|those|one such|such a|the process|the term|the name)\b", re.I)
+        for si, score in list(cnt.most_common(12)):
+            # предложение-определение («… is called X», «These are called X», «One such device is X») — именно в нём ответ;
+            # покрытие ему добавляет сосед (контекст), а сам факт определения — бонус
+            if DEF_RX.search(self.kb.sents[si][0]): cnt[si] = score * 1.3
         for si, score in cnt.most_common(12):
             cov = score / kidf
             if cov < thr: continue
-            sent, src = self.kb.sents[si]; sw = set(content_words(toks(sent))); sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
+            sent, src = self.kb.sents[si]; sw = set(content_words(toks(sent)))
+            if si > 0 and (ctx_hit.get(si) or re.match(r"^(?:this|these|that|those|one such|such a|the process|the term|the name|it|they)\b", sent, re.I)):
+                sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # слова соседа — тоже «в предложении»
+            sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
             rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and not (forms[w] & sforms)]
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
             # (вопрос часто содержит лишнее уточнение: «in physics», «located below the soil», «during evolution»)
             if rare_missing:
-                if len(rare_missing) > 1 or cov < thr + 0.1: continue
-                if idf[rare_missing[0]] >= max(idf[w] for w in hard) and len(hard) <= 3: continue
+                if len(rare_missing) > 2 or cov < thr + 0.1: continue
+                if len(rare_missing) == 2 and cov < 0.75: continue
+                if idf[rare_missing[0]] >= max(idf[w] for w in hard) and len(hard) <= 3 and cov < 0.8: continue
             # куски предложения; кандидат = кусок без слов вопроса, с ≥1 содержательным словом
             body = re.sub(r"\s*\(([^)]*)\)", r", \1, ", sent)                       # «(about 2 km)» — тоже кусок
             pieces = [p.strip(" ,;:.") for p in re.split(r",|;|:| — | - |\b(?:and|or|but|because|which|that|while|whereas|so that|such as|called|known as|is|are|was|were|by|through|into|from|than)\b", body)]
@@ -284,6 +311,9 @@ class ExperimentalMind:
                 if not pw: continue
                 pf = set().union(*[self._forms(x) for x in pw])
                 overlap = sum(1 for x in pw if (self._forms(x) & qforms) or x in self.META)        # слов куска, которые есть в вопросе
+                if len(pw) <= 4 and re.search(r"\b(?:called|known as|termed|named|referred to as)\s+(?:a |an |the )?" + re.escape(p.split()[0]), body, re.I):
+                    # «is called frequency modulation» — после «called» термин берётся целиком, даже если в нём есть слово вопроса
+                    cands.append((max(self.kb.idf(x) for x in pw) + 1.5, p)); continue
                 if overlap and len(pw) > overlap:
                     # кусок со словами вопроса: ответ — самый длинный пробел между ними («most living things use OXYGEN to make ATP»)
                     # ПОРЯДОК СЛОВ: пробел в вопросе (где стоит «what») окружён словами; в предложении ответ — тот пробел,
@@ -319,7 +349,10 @@ class ExperimentalMind:
                 if overlap == 0 and len(pw) <= 6:
                     # лучший кусок — с самым редким словом (термин), не «made»/«used»/«found» (глагольные хвосты)
                     verbish = all(x.endswith(("ed", "ing")) or x in ("made", "used", "found", "done", "seen", "known") for x in pw)
-                    cands.append((max(self.kb.idf(x) for x in pw) * (0.3 if verbish else 1.0) - 0.05 * len(pw), p))
+                    sc_ = max(self.kb.idf(x) for x in pw) * (0.3 if verbish else 1.0) - 0.05 * len(pw)
+                    if re.search(r"\b(?:called|known as|termed|named|referred to as)\s+" + re.escape(p.split()[0]), body, re.I): sc_ += 1.5   # «is called X» — X и есть ответ
+                    cands.append((sc_, p))
+
             if not cands: continue
             if G: cands = [(sc_ * G.pos_prior(self._cur_q, sent, pc), pc) for sc_, pc in cands]     # выученная позиция ответа
             ans = max(cands, key=lambda c: c[0])[1]
