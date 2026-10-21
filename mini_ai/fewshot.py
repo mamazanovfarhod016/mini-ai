@@ -18,7 +18,8 @@ class FewShot:
         F = self.kb.facts
         for i in range(self._built + 1, len(F)):
             Xw, rel, Yw, X, Y, src = F[i]
-            if not X[:1].isupper() or norm(X).split()[0] in ("the", "it", "there", "this", "he", "she", "they"): continue
+            nx = norm(X).split()
+            if not nx or not X[:1].isupper() or nx[0] in ("the", "it", "there", "this", "he", "she", "they"): continue
             m = ROLE_OF.match(Y)
             if rel == "be" and m:                                   # «X is the teacher of Y» → X —teacher→ Y
                 r = m.group("R").strip().replace(" ", "_"); y = m.group("Y")
