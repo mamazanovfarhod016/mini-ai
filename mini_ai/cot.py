@@ -28,13 +28,13 @@ REL_PAT = [(r"\bcurrency of\s+$", "currency_of"), (r"\b(?:largest|biggest|most p
 CONT_PAT = re.compile(r"\bcountry\b[^,.;]{0,40}?\b(?:in|of) (?:the )?((?:[A-Z][\w\-]*(?:,? and |,? )?){1,4})(?: continent)?\b")
 KNOWN_CONT = {"europe", "asia", "africa", "america", "oceania", "antarctica", "australia", "vendar"}
 def continent_of(phrase):
-    """«Western and Central Europe» → Europe; «Central Asia» → Central Asia (регион как есть); «North America» → North America"""
+    """«Western and Central Europe» → Europe; «Central Asia» → Central Asia; «the European Union» / «the Treaty» → None (не континент)"""
     ws = phrase.replace(",", " ").split(); ws = [w for w in ws if w.lower() != "and"]
     if not ws: return None
     if ws[-1].lower() in KNOWN_CONT:
         if len(ws) >= 2 and ws[-2].lower() in ("north", "south", "central", "eastern", "western", "southeast", "southern", "northern") and ws[-1].lower() in ("america", "asia"): return " ".join(ws[-2:])
         return ws[-1]
-    return " ".join(ws[:2])
+    return None
 REL_TYPE = {"born_in_country": "country", "company_in_country": "country", "born_in_continent": "continent", "born_in": "city", "city_in": "country", "capital_of": "country", "company_in": "city", "country_in": "continent", "born_in_country": "country", "company_in_country": "country", "capital_in_continent": "continent", "city_in_continent": "continent"}
 ANSWER_REL = {"country": {"born_in_country", "company_in_country", "city_in", "capital_of", "largest_city_of"}, "continent": {"country_in", "capital_in_continent", "city_in_continent", "born_in_continent", "company_in_continent"}, "city": {"born_in", "company_in"}}
 
@@ -50,6 +50,7 @@ class CoT:
         mc = CONT_PAT.search(Y)
         if mc:
             c = continent_of(mc.group(1))
+            if not c and re.search(r"\bcontinent\b", Y[mc.end():mc.end() + 12].lower()): c = mc.group(1).split()[-1]   # «in the Vendar continent»
             if c: out.append((X, "country_in", c, i))
         for m in NAME.finditer(Y):
             n = m.group(0); ctx = Y[:m.start()].lower()
@@ -135,7 +136,17 @@ class CoT:
         if not ty or not anchors: return None
         want = ANSWER_REL.get(ty, set())
         def answers(pad):
-            return [(s.y, s.conf, s) for s in pad if s.rel in want and norm(s.x) in {norm(a) for a in anchors}]
+            out = []
+            for s in pad:
+                if s.rel in want and norm(s.x) in {norm(a) for a in anchors}:
+                    c = s.conf
+                    M = getattr(self.mind, "meaning", None)
+                    if M is not None and ty in ("continent", "country", "city"):
+                        k, sc = M.kind(s.y.split()[-1])
+                        if k == ty: c *= 1.2
+                        elif k and sc > 0.3 and k in ("organization", "person", "number", "color", "month"): c *= 0.3   # «European Union» — организация, не континент
+                    out.append((s.y, c, s))
+            return out
         pad = []; thoughts = []
         for a in anchors:
             new = self.op_lookup(a, pad)

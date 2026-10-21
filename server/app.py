@@ -18,6 +18,7 @@ Mini AI — сервер самообучения (только стандарт
 """
 import argparse
 import json
+import re
 import threading
 import time
 import urllib.parse
@@ -157,6 +158,9 @@ class Handler(BaseHTTPRequestHandler):
                 if text.lower().startswith(("/learn ", "выучи ", "запомни ")):
                     r = mind.learn(text.split(" ", 1)[1])
                     return self._send(200, {"answer": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "text": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "kind": "learn", "how": "learn", "facts": [], "confidence": 1.0, "sid": sid})
+                mw = re.match(r"^(?:/word\s+|what does\s+|what do you know about the word\s+|что значит\s+|что такое слово\s+)[«\"']?([\w\-]+)[»\"']?(?:\s+mean)?\??$", text.strip(), re.I)
+                if mw:
+                    t = mind.word(mw.group(1)); return self._send(200, {"answer": t, "text": t, "kind": "word", "how": "meaning from contexts", "facts": [], "confidence": 1.0, "sid": sid})
                 if text.lower().startswith(("/tell ", "расскажи про ", "tell me about ")):
                     r = mind.tell(text.split(" ", 2 if text.lower().startswith("расскажи") else 1)[-1])
                     return self._send(200, {"answer": r["text"] or "Про это у меня нет фактов.", "text": r["text"] or "Про это у меня нет фактов.", "kind": "answer" if r["text"] else "unknown", "how": r["how"], "facts": [], "read": r.get("read", []), "confidence": 1.0 if r["text"] else 0.0, "sid": sid})

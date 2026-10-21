@@ -75,7 +75,11 @@ class ExperimentalMind:
         if wiki and os.path.exists(os.path.join(RUNS, "simplewiki_full/facts.jsonl")):
             self.kb.load_facts_jsonl(os.path.join(RUNS, "simplewiki_full/facts.jsonl"), wiki_limit)
         learned = os.path.join(self.state_dir, "learned.txt")
-        if os.path.exists(learned): self._load_learned(open(learned).read())
+        from mini_ai.meaning import Meaning
+        self.meaning = Meaning(self.state_dir)
+        if os.path.exists(learned):
+            txt = open(learned).read(); self._load_learned(txt)
+            if not self.meaning.sem: self.meaning.read(txt); self.meaning.save()
         self.boot = dict(facts=len(self.kb.facts), seconds=round(time.time() - t0, 1), sources=dict(self.kb.sources.most_common(5)))
         self._agent = None; self._coder = None
         from mini_ai.think import Thinker
@@ -160,7 +164,12 @@ class ExperimentalMind:
             out.update(answer=cot["answer"], how=f"{len(cot['support'])} chain(s), {len(cot['thoughts'])} thoughts", facts=cot["support"], confidence=cot["confidence"], thoughts=cot["thoughts"])
             steps = [t for t in cot["thoughts"] if t.startswith("I know") or t.startswith("So ")]
             out["text"] = self._cot_text(steps, cot["answer"]) if len(steps) > 1 else None; out["kind"] = "answer"
-            if not out["text"]: out.pop("thoughts", None)      # прямой факт — пусть диалоговый слой скажет своими словами
+            if not out["text"]:
+                out.pop("thoughts", None)                        # прямой факт — пусть диалоговый слой скажет своими словами
+                if cot["support"] and "—" in cot["support"][0] and not cot["support"][0].startswith("I know"): out["facts"] = cot["support"][:1]
+                else:
+                    sup = next((s_ for s_ in cot["support"] if s_.startswith("I know")), None)
+                    if sup: mm = re.match(r"I know: (.*?) —(.*?)→ (.*?)\.?$", sup); out["facts"] = [f"{mm.group(1)} —be→ a {mm.group(2).replace(' in', '')} in {mm.group(3)}" if mm and mm.group(2).endswith(" in") else (f"{mm.group(1)} —{mm.group(2).replace(' ', '_')}→ {mm.group(3)}" if mm else sup)]
             self.history.append(dict(q=q, a=cot["answer"], entity=cot["answer"])); return out
         th = self.thinker.think(q) if re.search(r"\b(?:which|what) (?:country|city|continent|river|company|language|currency)\b", q.lower()) else None
         typed_q = bool(re.search(r"\b(?:which|what) (?:country|city|continent|river|company|language|currency)\b", q.lower()))
@@ -366,7 +375,7 @@ class ExperimentalMind:
             from tools.exp24_wiki_crawler import fetch_article, clean_extract
             real, text, _ = fetch_article(title)
             if real in self.kb.sources: return 0
-            n = self.kb.read_text(clean_extract(text)[:20000], real)
+            n = self.kb.read_text(clean_extract(text)[:20000], real); self.meaning.read(clean_extract(text)[:20000]); self.meaning.save()
             with open(os.path.join(self.state_dir, "learned.txt"), "a") as f: f.write(f"\n# wiki: {real}\n" + clean_extract(text)[:20000] + "\n")
             return n
         except Exception: return 0
@@ -387,9 +396,13 @@ class ExperimentalMind:
 
     # ---------- обучение ----------
     def learn(self, text, src="выучено"):
-        n = self.kb.read_text(text, src)
+        n = self.kb.read_text(text, src); self.meaning.read(text); self.meaning.save()
         with open(os.path.join(self.state_dir, "learned.txt"), "a") as f: f.write(text.strip() + "\n")
         return dict(new_facts=n, total=len(self.kb.facts))
+
+    def word(self, w):
+        """что она сама думает о слове — из контекстов, без словаря"""
+        return self.meaning.explain(w)
 
     # ---------- действия и код ----------
     def act(self, request, check=None):
