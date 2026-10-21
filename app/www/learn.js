@@ -370,6 +370,6 @@
     mathAnswer: mathAnswer,
     progress: progress,
     start: start, afterAnswer: afterAnswer, recall: recall, remember: remember, storedModel: storedModel,
-    isConfident: isConfident, needsWeb: needsWeb, intentOf: intentOf, _call: call, _setServer: function (u) { serverUrl = u; set(K.server, u); }
+    isConfident: isConfident, needsWeb: needsWeb, intentOf: intentOf, _call: call, device: device, _setServer: function (u) { serverUrl = u; set(K.server, u); }
   };
 })(typeof window !== "undefined" ? window : this);

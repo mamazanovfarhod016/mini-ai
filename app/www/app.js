@@ -317,7 +317,7 @@
       // Экспериментальная модель «память без градиента»: факты + рамка + цепочка (сервер /api/memory/ask).
       out.textContent = "";
       out.classList.add("caret");
-      window.MiniLearn._call("/api/memory/ask", { q: text, lang: lang, device: device }).then(function (r) {
+      window.MiniLearn._call("/api/memory/ask", { q: text, lang: lang, device: window.MiniLearn.device }).then(function (r) {
         memoryFacts = r.n_facts || memoryFacts; updateParamsLabel();
         var a = r.answer ? r.answer : "Не знаю — такого факта у меня нет. Напиши «выучи <предложение>» и спроси снова.";
         if (r.answer && r.confidence < 0.6) a = a + " (не уверена)";
