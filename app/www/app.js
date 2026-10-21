@@ -175,7 +175,7 @@
       meta.appendChild(mb);
     }
     if (thought && thought.engine === "memory_core") {
-      b.textContent = "🧠 память · " + (thought.how || "") + (thought.confidence != null ? " · уверенность " + Math.round(thought.confidence * 100) + "%" : "") + " · нажми, чтобы увидеть факты";
+      b.textContent = (thought.read && thought.read.length ? "🌐 " : "🧠 ") + "память · " + (thought.how || "") + (thought.confidence != null ? " · уверенность " + Math.round(thought.confidence * 100) + "%" : "") + " · нажми, чтобы увидеть факты";
     } else if (thought && thought.engine === "transformer") {
       b.textContent = "✨ трансформер · нажми, чтобы увидеть внимание";
     } else {
@@ -322,7 +322,7 @@
         var a = r.answer ? r.answer : "Не знаю — такого факта у меня нет. Напиши «выучи <предложение>» и спроси снова.";
         if (r.answer && r.confidence < 0.6) a = a + " (не уверена)";
         out.textContent = a;
-        var thought = { engine: "memory_core", answer: a, how: r.how, facts: r.facts || [], confidence: r.confidence, frame: r.frame };
+        var thought = { engine: "memory_core", answer: a, how: r.how, facts: r.facts || [], read: r.read || [], confidence: r.confidence, frame: r.frame };
         lastThought = { q: text, t: thought };
         finish(a, thought, a, true);
       }).catch(function (e) {
@@ -442,6 +442,7 @@
     html += "<h3>Ответ</h3><div class=\"q\">" + esc(t.answer || "") + "</div>";
     html += '<div class="verdict"><b>' + esc(t.how || "") + "</b><span>уверенность " + pct(t.confidence || 0) + "</span></div>";
     if (t.frame) html += "<h3>Как поняла вопрос (рамка)</h3><div class=\"tags\"><code>слот: " + esc(t.frame.slot) + "</code><code>X: " + esc((t.frame.X || []).join(" ")) + "</code><code>связь: " + esc(t.frame.rel || "—") + "</code><code>Y: " + esc((t.frame.Y || []).join(" ")) + "</code></div>";
+    if (t.read && t.read.length) { html += "<h3>🌐 Прочитала в интернете</h3>"; t.read.forEach(function (f) { html += '<div class="q">' + esc(f) + "</div>"; }); }
     if (t.facts && t.facts.length) { html += "<h3>Факты-источники (цепочка)</h3>"; t.facts.forEach(function (f, i) { html += '<div class="q">' + (i + 1) + ". " + esc(f) + "</div>"; }); }
     html += "<h3>Архитектура</h3><p>Без градиента и без весов: читает текст → факты (X, связь, Y) → память-список. Вопрос → рамка с пустым слотом → факт с теми же словами (1 шаг) или два факта через общий термин (2 шага). Не знает — говорит честно. Выучивает новое за миллисекунды: «выучи &lt;предложение&gt;».</p>";
     html += '<p class="small-note">Фактов в памяти: ' + (memoryFacts || 0).toLocaleString("ru-RU") + '. Это экспериментальная модель, работает через сервер. Автор: Фарход.</p>';

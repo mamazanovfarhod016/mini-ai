@@ -38,7 +38,8 @@ class KnowledgeBase:
         n = 0
         for s in re.split(r"(?<=[.!?])\s+(?=[A-ZА-Я0-9\"])", re.sub(r"\s+", " ", text)):
             s = s.strip()
-            if not (15 < len(s) < 400): continue
+            if len(s) < 15: continue
+            if len(s) > 400: s = s[:400]                          # очень длинное — читаем начало (там главное)
             ws = set(content_words(toks(s))); self.n_docs += 1
             for w in ws: self.df[w] += 1
             for X, rel, Y in self.reader.read(s, src)[0]:
@@ -118,21 +119,87 @@ class ExperimentalMind:
                                 if not best or s > best[0]: best = (s, ans, t, F1, F2)
         return best
 
-    def ask(self, q):
+    def ask(self, q, internet=True):
         q = self._resolve(q); fr = parse_question(q)
-        out = dict(question=q, frame=fr)
+        out = dict(question=q, frame=fr, read=[])
         r = self._one_step(fr)
-        if r:
-            s, ans, fact = r; out.update(answer=ans, how="1 шаг", facts=[f"{fact[0]} —{fact[1]}→ {fact[2]}"], confidence=round(min(1.0, s / 1.8), 2))
-        else:
+        if not r:
             r2 = self._two_step(fr)
             if r2:
                 s, ans, t, F1, F2 = r2
                 out.update(answer=ans, how=f"2 шага через «{t}»", facts=[f"{F1[3]} —{F1[1]}→ {F1[4]}", f"{F2[3]} —{F2[1]}→ {F2[4]}"], confidence=round(min(1.0, s / 2.0), 2))
-            else: out.update(answer=None, how="не знаю", facts=[], confidence=0.0)
+                r = None
+            elif internet:
+                # НЕ ЗНАЮ → ИДУ В ИНТЕРНЕТ: ищу статьи Википедии по словам вопроса, читаю, пробую снова
+                for title in self._wiki_titles(fr):
+                    n = self._read_wiki(title)
+                    if n: out["read"].append(f"{title} (+{n} фактов)")
+                    r = self._one_step(fr)
+                    if r: break
+                if not r and out["read"]:
+                    r2 = self._two_step(fr)
+                    if r2:
+                        s, ans, t, F1, F2 = r2
+                        out.update(answer=ans, how=f"прочитала в интернете, 2 шага через «{t}»", facts=[f"{F1[3]} —{F1[1]}→ {F1[4]}", f"{F2[3]} —{F2[1]}→ {F2[4]}"], confidence=round(min(1.0, s / 2.0), 2))
+        if r:
+            s, ans, fact = r
+            how = "1 шаг" if not out["read"] else "прочитала в интернете, 1 шаг"
+            out.update(answer=ans, how=how, facts=[f"{fact[0]} —{fact[1]}→ {fact[2]}"], confidence=round(min(1.0, s / 1.8), 2))
+        if "answer" not in out: out.update(answer=None, how="не знаю" + (" (в интернете тоже не нашла)" if out["read"] else ""), facts=[], confidence=0.0)
+        out["text"] = self._phrase(out, fr)
         ent = out["answer"] if out.get("answer") else (" ".join(fr["X"][:2]) if fr["X"] else None)
         self.history.append(dict(q=q, a=out["answer"], entity=ent))
         return out
+
+    def _phrase(self, out, fr):
+        """ответ СВОИМИ СЛОВАМИ: из факта (X, rel, Y) собирается предложение по грамматике связи (speak.py),
+        а не копируется исходный текст. Для 2 шагов — два предложения: мост и вывод."""
+        from mini_ai.speak import verb, clean_y
+        if not out.get("answer"): return None
+        facts = []
+        for f in out["facts"]:
+            m = re.match(r"^(.*?) —(.*?)→ (.*)$", f)
+            if m: facts.append(m.groups())
+        sents = []
+        for X, rel, Y in facts:
+            y = clean_y(Y) or Y.strip(" ,.")
+            if rel.startswith("be_called"): s = f"{X} is called {y}"
+            elif "_" in rel and not rel.startswith("be_"): s = f"The {rel.replace('_', ' ')} of {X} is {y}"
+            else:
+                v = verb(rel, "present") or rel
+                last = X.split()[-1].lower()
+                plural = (last.endswith("s") and not last.endswith(("ss", "us", "is")) and (len(X.split()) > 1 or X[:1].islower())) or last in ("people", "children", "men", "women")
+                if plural: v = {"is": "are", "has": "have"}.get(v, rel)
+                s = f"{X} {v} {y}"
+            sents.append(s[0].upper() + s[1:].rstrip(".") + ".")
+        ans = out["answer"]
+        if len(sents) == 1: return sents[0]
+        return " ".join(sents[:2]) + f" So the answer is {ans}."
+
+    # ---------- интернет: Википедия по словам вопроса ----------
+    def _wiki_titles(self, fr, k=2):
+        """кандидаты-статьи: имена с заглавной из вопроса → поиск Википедии по содержательным словам"""
+        try:
+            from tools.exp24_wiki_crawler import api
+        except Exception: return []
+        words = (fr["Y"] or []) + (fr["X"] or [])
+        query = " ".join(w for w in words if w not in ("capital", "largest", "biggest", "called", "name", "type", "kind"))[:80]
+        if not query.strip(): return []
+        try:
+            d = api(dict(action="query", list="search", srsearch=query, srlimit=k))
+            return [h["title"] for h in d["query"]["search"]]
+        except Exception: return []
+
+    def _read_wiki(self, title):
+        if title in self.kb.sources: return 0
+        try:
+            from tools.exp24_wiki_crawler import fetch_article, clean_extract
+            real, text, _ = fetch_article(title)
+            if real in self.kb.sources: return 0
+            n = self.kb.read_text(clean_extract(text)[:20000], real)
+            with open(os.path.join(self.state_dir, "learned.txt"), "a") as f: f.write(f"\n# wiki: {real}\n" + clean_extract(text)[:20000] + "\n")
+            return n
+        except Exception: return 0
 
     # ---------- речь своими словами ----------
     def tell(self, X):
@@ -140,9 +207,13 @@ class ExperimentalMind:
         if not ks:                                                    # частичное совпадение по первому слову
             ks = [k for k in self.kb.by_word.get(toks(X)[0], []) if self.kb.facts[k][0] and toks(X)[0] in self.kb.facts[k][0]][:20] if toks(X) else []
         fs = [(self.kb.facts[k][3], self.kb.facts[k][1], self.kb.facts[k][4]) for k in ks]
-        if not fs: return dict(text=None, facts=0, how="не знаю")
+        read = []
+        if len(fs) < 3:                                              # мало знаю → читаю статью в интернете
+            n = self._read_wiki(X)
+            if n: read.append(f"{X} (+{n} фактов)"); ks = self.kb.by_x.get(key, []); fs = [(self.kb.facts[k][3], self.kb.facts[k][1], self.kb.facts[k][4]) for k in ks]
+        if not fs: return dict(text=None, facts=0, how="не знаю", read=read)
         self.history.append(dict(q=f"tell {X}", a=None, entity=X))
-        return dict(text=compose(X, fs), facts=len(fs), how="из фактов")
+        return dict(text=compose(X, fs), facts=len(fs), how="из фактов" + (" (прочитала в интернете)" if read else ""), read=read)
 
     # ---------- обучение ----------
     def learn(self, text, src="выучено"):
