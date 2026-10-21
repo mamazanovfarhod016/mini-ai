@@ -72,6 +72,7 @@ class Growth:
         self._soft_list = None; self._soft_stamp = -1; self._soft_cache = {}
         self.pos = collections.defaultdict(collections.Counter)   # класс вопроса → Counter(позиция ответа в предложении)
         self.board_stats = collections.defaultdict(lambda: collections.Counter())   # «способ|класс» → place/answer/miss (учёба у проигравших)
+        self.para = collections.defaultdict(collections.Counter)                    # слово вопроса → Counter(слово текста) — выученный перефраз
         self.diag = collections.Counter()                         # ДИАГНОЗ ошибок: почему промахнулась (silent/wrong-piece/wrong-fact/no-sentence)
         self.insights = []                                        # ОБОБЩЕНИЯ: правила, подтверждённые на многих типах → принцип
         self.load()
@@ -88,6 +89,7 @@ class Growth:
         self.diag = collections.Counter(d.get("diag", {})); self.insights = d.get("insights", [])
         for k, v in d.get("pos", {}).items(): self.pos[k] = collections.Counter(v)
         for k, v in d.get("board_stats", {}).items(): self.board_stats[k] = collections.Counter(v)
+        for k, v in d.get("para", {}).items(): self.para[k] = collections.Counter(v)
         for k, v in d.get("slot_rules", {}).items(): self.slot_rules[k] = collections.Counter({tuple(kk.split("|")): n for kk, n in v.items()})
         fs = getattr(self.mind, "fewshot", None)
         if fs:
@@ -100,7 +102,7 @@ class Growth:
         rules = {k: [list(s) for s in v] for k, v in fs.rules.items()} if fs else self.rules_saved
         examples = {k: [list(e) for e in v] for k, v in fs.examples.items()} if fs else {}
         json.dump(dict(reliab=dict(self.reliab), coans={k: dict(v) for k, v in self.coans.items()}, rules=rules, examples=examples,
-                       slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn), diag=dict(self.diag), insights=self.insights, pos={k: dict(v) for k, v in self.pos.items()}, board_stats={k: dict(v) for k, v in self.board_stats.items()},
+                       slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn), diag=dict(self.diag), insights=self.insights, pos={k: dict(v) for k, v in self.pos.items()}, board_stats={k: dict(v) for k, v in self.board_stats.items()}, para={k: dict(v) for k, v in self.para.items()},
                        log=self.log[-50:], when=time.strftime("%Y-%m-%d %H:%M")), open(self.path, "w"), ensure_ascii=False, indent=1)
 
     # ---------- 2. надёжность способов ----------
@@ -247,6 +249,34 @@ class Growth:
             for a, n in self.coans.get(w, {}).items(): c[a] += n
         return [a for a, n in c.most_common(5) if n >= 2]
 
+    # ---------- 1д. ПЕРЕФРАЗ: слово вопроса ↔ слово предложения-ответа (выучивается из исправлений) ----------
+    def _learn_paraphrase(self, q, right):
+        """исправление: предложение с ответом найдено; слова вопроса, которых там нет (лишние), и слова предложения,
+        которых нет в вопросе (кроме ответа) — пары-кандидаты «так спрашивают ↔ так написано»:
+        holds ↔ held, make ↔ produce, ability ↔ able, method ↔ by diffusion. Пара, встреченная ≥2 раз, становится
+        словарём перефраза: при поиске слово вопроса расширяется его парами (как формы слова)."""
+        kb = self.mind.kb; rl = right.lower()
+        sent = next((s_ for s_, _ in reversed(kb.sents[-3000:]) if rl in s_.lower()), None)
+        if not sent: return []
+        qw = {w for w in content_words(toks(q)) if w not in self.mind.META and len(w) > 3}
+        sw = {w for w in content_words(toks(sent)) if len(w) > 3} - set(content_words(toks(right)))
+        forms = lambda w: self.mind._forms(w)
+        q_only = [w for w in qw if not any(forms(w) & forms(x) for x in sw)]
+        s_only = [w for w in sw if not any(forms(w) & forms(x) for x in qw)]
+        if not q_only or not s_only or len(q_only) > 3 or len(s_only) > 6: return []
+        M = getattr(self.mind, "meaning", None); pairs = []
+        for a in q_only:
+            best = None
+            for b in s_only:
+                sim = (M.similar(a, b) or 0) if M is not None else 0
+                if sim > 0.25 and (not best or sim > best[0]): best = (sim, b)
+            if best: self.para[a][best[1]] += 1; pairs.append((a, best[1]))
+        return pairs
+
+    def paraphrases(self, w):
+        """выученные замены слова вопроса (≥2 подтверждения)"""
+        return [b for b, n in self.para.get(w, {}).items() if n >= 2]
+
     # ---------- 1. схемы вывода из исправлений ----------
     def learn_from_correction(self, q, out, right):
         """пользователь поправил: «no, it's RIGHT». Запоминаем: (а) способ ошибся, (б) путь вопрос→RIGHT — схема,
@@ -266,6 +296,8 @@ class Growth:
         pp = self.learn_position(q, right)
         if pp: grew.append(f"answer position: {pp}")
         grew += self.learn_from_board(q, out, right)
+        pr = self._learn_paraphrase(q, right)
+        if pr: grew.append("paraphrase: " + ", ".join(f"{a}↔{b}" for a, b in pr))
         # ДИАГНОЗ: почему ошиблась? молчала (ответ был в памяти) / взяла не тот кусок предложения / не тот факт / ответа нет в памяти
         rl = right.lower(); in_mem = any(rl in s_.lower() for s_, _ in self.mind.kb.sents[-3000:])
         how = self._howkey(out.get("how") if out else "")
@@ -373,7 +405,8 @@ class Growth:
         n_rules = len(fs.rules) if fs else len(self.rules_saved)
         forms = sorted(((k, v) for k, v in self.reliab.items() if not k.endswith("|*")), key=lambda kv: -(kv[1][0] + kv[1][1]))[:8]
         soft = [w for w in self.attn if self.is_soft_learned(w)]
-        lines = [f"rules learned: {n_rules} (named) + {sum(len(v) for v in self.slot_rules.values())} (where-in-fact, {len(self.slot_rules)} question types)",
+        npara = sum(1 for w in self.para for b, n in self.para[w].items() if n >= 2)
+        lines = [f"rules learned: {n_rules} (named) + {sum(len(v) for v in self.slot_rules.values())} (where-in-fact, {len(self.slot_rules)} question types) + {npara} paraphrase pairs",
                  f"attention learned: {len(soft)} words found unimportant in questions: {', '.join(sorted(soft, key=lambda w: -self.attn[w][1])[:12])}",
                  f"question forms with experience: {len(forms)}",
                  f"word links: {sum(len(v) for v in self.coans.values())}"]

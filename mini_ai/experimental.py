@@ -280,10 +280,12 @@ class ExperimentalMind:
         hard = {w for w in known if not self._soft(w)} or known
         kidf = sum(idf[w] for w in hard) + 0.3 * sum(idf[w] for w in known - hard)
         qforms = set().union(*[self._forms(w) for w in (known0 | known)]) | {w for w in known0}   # все слова вопроса (и пустышки) — не ответ
-        cnt = collections.Counter(); ctx_hit = collections.Counter(); self._neural_hit = {}
+        cnt = collections.Counter(); ctx_hit = collections.Counter(); self._neural_hit = {}; G = getattr(self, "growth", None)
         for w in known:
             wgt = idf[w] if w in hard else 0.3 * idf[w]
-            for x in ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w}):
+            alts = ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w})
+            if G: alts |= set(G.paraphrases(w))                                       # выученный перефраз: holds → held, make → produce
+            for x in alts:
                 for si in self.kb.sent_by_word.get(x, []): cnt[si] += wgt * (1.0 if x == w else 0.9)
                 for si in self.kb.sent_ctx_by_word.get(x, []):
                     # контекст абзаца для обычных предложений — слабый (0.3): только чтобы не потерять, не чтобы победить
@@ -325,7 +327,7 @@ class ExperimentalMind:
                 sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # определение с отсылкой / следующее предложение: слова соседа — тоже «в предложении»
             sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
             hy = set(re.findall(r"\b([a-z]+)-(?:like|type|shaped|based|free|rich)\b", self._cur_q.lower()))          # «tube-like» — описание, не термин
-            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and not (forms[w] & sforms)]
+            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and not (forms[w] & sforms) and not (G and set(G.paraphrases(w)) & sw)]
             if self._neural_hit.get(si, 0) >= 0.6: rare_missing = rare_missing[:1] if cov >= 0.5 else rare_missing[:2]   # смысл совпал — слова могут отличаться
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
             # (вопрос часто содержит лишнее уточнение: «in physics», «located below the soil», «during evolution»)
@@ -421,7 +423,7 @@ class ExperimentalMind:
         sp = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]))
         if sp:
             s, ans, (sent, _, _, src) = sp
-            cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(1.0, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+            cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(0.9, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
         # УЧЁБА У ПРОИГРАВШИХ (growth.learn_from_board): если на этом классе способ A обычно находит нужное предложение,
         # но не ответ — берём его предложение и достаём ответ как отрывок. Правило выведено ею из исправлений.
         pf = G.place_finders(q) if G else []
@@ -470,9 +472,9 @@ class ExperimentalMind:
                                           text=f"From what I've read: {src_sent.rstrip('.')[:160]}. So I'd say: {ans}."))
             except Exception as e_: pass
         # ГЛУБОКОЕ РАССУЖДЕНИЕ (deep.py): до 7 шагов по графу фактов с откатом — когда прямые способы слабы или молчат
-        if not cands or max(c["confidence"] for c in cands) < 0.7:
-            try: dp = self.deep.reason(q)
-            except Exception: dp = None
+        try: dp = self.deep.reason(q)                                   # deep думает всегда: его сила — тип ответа и цепочки
+        except Exception: dp = None
+        if True:
             if dp and dp["steps"] >= 2:
                 cands.append(dict(how=f"{dp['steps']} шагов (deep)", answer=dp["answer"], confidence=dp["confidence"], facts=dp["facts"], thoughts=dp["thoughts"],
                                   text=" ".join(dp["thoughts"])))
@@ -511,18 +513,21 @@ class ExperimentalMind:
         known = set(fr.get("X") or []) | set(fr.get("Y") or [])
         if aw <= known: mult *= 0.5; notes.append("repeats question")
         atype = fr.get("atype")
+        if not atype:
+            try: atype = self.deep._goal(self._cur_q)
+            except Exception: atype = None
+        if atype in ("place", "person") or (atype and (self._soft(atype) or atype in self.deep.VERBISH_T)): atype = None
         if atype and atype not in self.META and len(atype) > 2:
-            # ответ определён как atype? «X is a/an <atype>» в памяти, или в самом ответе есть atype, или смысл близок
-            M = getattr(self, "meaning", None); ok = atype in aw or self._stem(atype) in {self._stem(w) for w in aw}
-            if not ok:
-                for k in self.kb.by_x.get(" ".join(toks(a)), [])[:20]:
-                    f = self.kb.facts[k]
-                    if f[1] == "be" and (atype in f[2] or self._stem(atype) in {self._stem(w) for w in f[2]}): ok = True; break
-            if not ok and M is not None:
-                sims = [M.similar(w, atype) or 0 for w in aw if len(w) > 2]
-                if sims and max(sims) > 0.3: ok = True
+            # ответ определён как atype? — через граф deep (be-рёбра, определения «a sugar called X») или по смыслу
+            try: self.deep._build(); tsc = self.deep._is_type(self.deep._node(a) or a.lower(), atype)
+            except Exception: tsc = 0.5
+            ok = tsc >= 0.7
             if ok: mult *= 1.15; notes.append(f"type {atype} ✓")
-            else: mult *= 0.75; notes.append(f"type {atype} ?")
+            else:
+                # тип назван («what SUGAR»), а ответ не определён как такой тип и не близок по смыслу → сильный штраф;
+                # кусок с глаголом («contains dna», «pairs») под тип не подходит никогда
+                verbish = any(w.endswith(("s", "ed", "ing")) and len(w) > 4 and w not in self.kb.by_x for w in aw) and len(aw) <= 2
+                mult *= 0.35 if verbish else 0.55; notes.append(f"type {atype} ✗")
         return dict(mult=mult, note=", ".join(notes) or "ok")
 
     def _two_step(self, fr, max_f1=60, max_t=8):
@@ -659,21 +664,35 @@ class ExperimentalMind:
         last = self._last_out
         if re.match(r"^(?:how (?:did|have) you (?:grown|grow|learned|improved)|what have you learned|growth report|show growth|как ты выросла)\s*\??$", q0, re.I):
             return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: report", facts=[], confidence=1.0, text=self.growth.report(), note=None)
+        # ПОЧЕМУ ТЫ ТАК ОТВЕТИЛА — объяснение реального пути: способ, факты, доска арбитра (кто ещё что предлагал)
+        if re.match(r"^(?:why|why (?:did you (?:say|answer|think) that|that|so|not)|how do you know|how did you get that|explain|почему)\s*\??$", q0, re.I) and last:
+            how = last.get("how") or "?"; facts = last.get("facts") or []; board = last.get("arbiter") or []
+            lines = [f"I answered «{last.get('answer')}» by: {how}."]
+            if last.get("thoughts"): lines.append("My steps: " + " ".join(last["thoughts"][:6]))
+            elif facts: lines.append("Because I had read: " + "; ".join(self._nice_fact(f) for f in facts[:3]))
+            if len(board) > 1: lines.append("Other ways proposed: " + "; ".join(f"{b[0]} → «{b[1]}» (score {b[4]})" for b in board[1:4]) + ".")
+            if last.get("confidence") is not None: lines.append(f"My confidence was {last['confidence']}." + (" I wasn't sure — tell me if it's wrong and I'll learn why." if last["confidence"] < 0.6 else ""))
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="explain", facts=facts, confidence=1.0, text=" ".join(lines), note=None)
         mc = re.match(r"^(?:no|nope|wrong|incorrect|not that|нет|неверно)[,.!\s]*(?:it'?s|it is|the answer is|answer is|actually|это)?\s*[:\-—]?\s*(?P<a>[A-Za-z0-9][^?!.]{0,60})$", q0, re.I) \
              or re.match(r"^(?:the answer is|answer:|correct answer is|правильно)\s*[:\-—]?\s*(?P<a>[A-Za-z0-9][^?!.]{0,60})$", q0, re.I)
-        if mc and last and last.get("question") and not (pend and pend.get("options")):
+        if mc and last and last.get("question") and not last.get("_graded") and not (pend and pend.get("options")):
+            last["_graded"] = True
             right = mc.group("a").strip(" .")
-            if last.get("answer") and set(content_words(toks(right))) and set(content_words(toks(right))) <= set(content_words(toks(str(last["answer"])))) | set(content_words(toks(last.get("text") or ""))):
+            if last.get("answer") and set(content_words(toks(right))) and set(content_words(toks(right))) <= set(content_words(toks(str(last["answer"])))):
                 # «no, it's oxygen» — а она и сказала oxygen → это подтверждение, не исправление
-                self.growth.learn_from_confirmation(last["question"], last); self._last_out = None
+                self.growth.learn_from_confirmation(last["question"], last)
                 conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
                 return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text=f"That's what I said — {right}. Good, I'll trust that way more.", note=None)
             grew = self.growth.learn_from_correction(last["question"], last, right)
-            conv.push(q=q0, frame=None, entity=right, answer=right, kind="learned", pending=None, key=None); self._last_out = None
-            txt = f"Got it — {right}. " + ("I grew: " + "; ".join(grew) + "." if grew else "I'll remember that.")
+            conv.push(q=q0, frame=None, entity=right, answer=right, kind="learned", pending=None, key=None)
+            diag = next((g for g in grew if g.startswith("diagnosis")), "")
+            why = {"diagnosis: silent": "I had it in memory but didn't dare to answer", "diagnosis: wrong-piece": "I found the right sentence but took the wrong part",
+                   "diagnosis: wrong-fact": "I picked the wrong fact", "diagnosis: no-sentence": "I had never read that — now I know"}.get(diag, "")
+            txt = f"Got it — {right}. " + (f"Why I was wrong: {why}. " if why else "") + ("What I learned: " + "; ".join(g for g in grew if not g.startswith("diagnosis"))[:400] + "." if grew else "I'll remember that.")
             return dict(question=q0, frame=None, read=[], answer=right, kind="learned", how="growth: correction", facts=[], confidence=1.0, text=txt, note=None)
-        if last and last.get("answer") and (YES.match(q0) or re.match(r"^(?:right|correct|exactly|yes that'?s right|верно|правильно)[\s.!]*$", q0, re.I)) and not (pend and pend.get("options")):
-            self.growth.learn_from_confirmation(last["question"], last); self._last_out = None
+        if last and last.get("answer") and not last.get("_graded") and (YES.match(q0) or re.match(r"^(?:right|correct|exactly|yes that'?s right|верно|правильно)[\s.!]*$", q0, re.I)) and not (pend and pend.get("options")):
+            last["_graded"] = True
+            self.growth.learn_from_confirmation(last["question"], last)
             conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
             return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text="Good — I'll trust that way of thinking more for questions like this.", note=None)
         # 0. реплика-собеседник (hi / thanks / how are you / who are you) — без поиска фактов

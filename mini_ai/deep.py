@@ -17,7 +17,11 @@ NAME = re.compile(r"\b[A-Z][\w\-]+(?: [A-Z][\w\-]+){0,3}\b")
 BAD = {"the", "it", "this", "that", "these", "those", "they", "there", "figure", "table", "chapter", "section", "what", "which", "who", "where", "when", "how", "why", "in", "a", "an"}
 
 
+VERBISH_T = {"holds", "hold", "makes", "make", "causes", "cause", "happens", "happen", "means", "mean", "does", "do", "has", "have", "gives", "give",
+             "uses", "use", "takes", "take", "comes", "come", "goes", "go", "gets", "get", "forms", "form", "produces", "produce", "contains", "contain", "allows", "allow", "helps", "help"}
+
 class Deep:
+    VERBISH_T = VERBISH_T
     def __init__(self, mind):
         self.mind = mind; self.kb = mind.kb; self._built = -1; self.edges = collections.defaultdict(list)   # node → [(rel, other, fact_idx, direction)]
 
@@ -62,7 +66,7 @@ class Deep:
         m = re.search(r"\b(?:what|which)\s+(?:type|kind|sort|group|class)\s+of\s+([a-z]+)", ql) or re.search(r"\b(?:what|which)\s+(?:broad\s+|main\s+|large\s+)?([a-z]+)\s+(?!of\b|to\b)([a-z]+)", ql)
         ty = m.group(1) if m else None
         if m and m.lastindex == 2 and m.group(2) in ("of", "to", "that", "which", "from"): ty = None
-        if ty in ("is", "are", "do", "does", "did", "the", "a", "an", "type", "kind", "term", "name", "one", "two", "other", "else", "happens", "was", "were", "has", "have", "can", "will", "would", "makes", "made", "causes") or (ty and ty in self.mind.META): ty = None
+        if ty in ("is", "are", "do", "does", "did", "the", "a", "an", "type", "kind", "term", "name", "one", "two", "other", "else", "happens", "was", "were", "has", "have", "can", "will", "would", "makes", "made", "causes") or (ty and (ty in self.mind.META or ty in VERBISH_T or self.mind._soft(ty))): ty = None
         if re.match(r"^who\b", ql): ty = "person"
         if re.match(r"^where\b", ql): ty = "place"
         return ty
