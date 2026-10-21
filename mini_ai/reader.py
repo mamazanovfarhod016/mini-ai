@@ -60,6 +60,7 @@ def lemma(v):
 
 # ---- общий читатель: любой субъект (именная группа) + глагол из ОТКРЫТОГО списка + аргумент ----
 GEN_VERBS = (r"is called|are called|is known as|are known as|is|are|was|were|has|have|had|can be|contains?|includes?|consists? of|"
+             r"takes? place|takes? in|takes? up|gives? off|gives? up|breaks? down|turns? into|makes? up|sets? up|picks? up|builds? up|"
              r"produces?|causes?|forms?|makes?|means?|occurs?|results? in|leads? to|comes? from|gets?|uses?|used|refers? to|"
              r"describes?|begins?|ends?|enters?|exhibits?|reproduces?|releases?|absorbs?|reflects?|transmits?|carries|carry|"
              r"requires?|needs?|allows?|helps?|prevents?|affects?|determines?|controls?|regulates?|provides?|stores?|moves?|"
@@ -67,7 +68,8 @@ GEN_VERBS = (r"is called|are called|is known as|are known as|is|are|was|were|has
              r"shows?|indicates?|involves?|surrounds?|connects?|separates?|divides?|protects?|supports?|covers?|lines?|"
              r"attracts?|repels?|binds?|breaks?|splits?|combines?|joins?|converts?|transfers?|transports?|pumps?|"
              r"grows?|develops?|evolves?|lives?|feeds? on|eats?|kills?|infects?|spreads?|occurs? (?:in|at|when|during)|"
-             r"takes? place|is found|are found|is located|are located|is made|are made|is formed|are formed|is caused|are caused|"
+             r"takes?|gives?|brings?|sends?|holds?|keeps?|passes?|pulls?|pushes?|drives?|catches|catch|attaches?|secretes?|excretes?|digests?|"
+             r"is found|are found|is located|are located|is made|are made|is formed|are formed|is caused|are caused|"
              r"is composed|is used|are used|is produced|are produced|is stored|are stored|is released|are released")
 GEN_RX = re.compile(r"^(?P<X>(?:[A-Za-z][\w'\-]*)(?:\s+(?:[A-Za-z][\w'\-]*)){0,7}?)\s+(?P<V>" + GEN_VERBS + r")\b\s+(?P<Y>.{3,120})$", re.I)
 CALLED_RX = re.compile(r"^(?P<X>.{3,90}?)\s+(?:is|are|was|were)\s+(?:called|known as|referred to as|named)\s+(?P<Y>[^,;:]{2,60})", re.I)
@@ -210,6 +212,7 @@ class Reader:
             if neg: continue                                             # отрицания — отдельная рамка, пока пропускаем
             rel = lemma(V.split()[-1]) if " " in V else lemma(V)
             if V.startswith(("is", "are", "was", "were")) and " " in V: rel = "be_" + V.split()[-1]   # «is called» → be_called
+            elif " " in V: rel = lemma(V.split()[0]) + "_" + V.split()[-1]                           # «takes in» → take_in, «breaks down» → break_down
             facts.append((X, rel, Y))
         return facts, None
 
