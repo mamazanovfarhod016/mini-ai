@@ -92,7 +92,8 @@ class ExperimentalMind:
         from mini_ai.fewshot import FewShot
         self.thinker = Thinker(self.kb); self.cot = CoT(self); self.ops = Ops(self.kb); self.ops.meaning = self.meaning; self.fewshot = FewShot(self.kb)
         from mini_ai.growth import Growth
-        self.growth = Growth(self, self.state_dir); self._last_out = None; self._cur_q = ""
+        from mini_ai.deep import Deep
+        self.growth = Growth(self, self.state_dir); self._last_out = None; self._cur_q = ""; self.deep = Deep(self)
         if self.use_dialog:
             from mini_ai.dialog import Dialog
             self.dialog = Dialog(self.kb, seed=self.seed)          # сервер подменяет на сессионный по sid
@@ -342,6 +343,13 @@ class ExperimentalMind:
         if sp:
             s, ans, (sent, _, _, src) = sp
             cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(1.0, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+        # ГЛУБОКОЕ РАССУЖДЕНИЕ (deep.py): до 7 шагов по графу фактов с откатом — когда прямые способы слабы или молчат
+        if not cands or max(c["confidence"] for c in cands) < 0.7:
+            try: dp = self.deep.reason(q)
+            except Exception: dp = None
+            if dp and dp["steps"] >= 2:
+                cands.append(dict(how=f"{dp['steps']} шагов (deep)", answer=dp["answer"], confidence=dp["confidence"], facts=dp["facts"], thoughts=dp["thoughts"],
+                                  text=" ".join(dp["thoughts"])))
         if not cands: return None
         hints = set(G.hints(q)) if G else set(); prefs = G.slot_prefs(q) if G else {}
         dr = G.diag_rates(q) if G else {}
@@ -487,6 +495,9 @@ class ExperimentalMind:
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], arbiter=pick["board"])
         elif pick and pick["how"] == "отрывок предложения":
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], arbiter=pick["board"])
+            self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
+        elif pick and "(deep)" in pick["how"]:
+            out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], thoughts=pick["thoughts"], arbiter=pick["board"], kind="answer")
             self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
         if not r and not pick:
             if internet:
