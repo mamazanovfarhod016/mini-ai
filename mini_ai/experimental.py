@@ -476,14 +476,6 @@ class ExperimentalMind:
                         cands.append(dict(how="нейронный читатель", answer=ans, confidence=conf, facts=[f"{ans} —span→ {src_sent[:160]}"],
                                           text=f"From what I've read: {src_sent.rstrip('.')[:160]}. So I'd say: {ans}."))
             except Exception as e_: pass
-        # СОГЛАСИЕ: если нейронный читатель и символьный отрывок/факт дали один ответ — это два независимых свидетеля → уверенность вверх
-        nr = next((c for c in cands if c["how"] == "нейронный читатель"), None)
-        if nr:
-            na = set(content_words(toks(str(nr["answer"]))))
-            for c in cands:
-                if c is nr or not na: continue
-                ca = set(content_words(toks(str(c["answer"]))))
-                if ca and (ca <= na or na <= ca): c["confidence"] = round(min(1.0, c["confidence"] + 0.2), 2); c["how"] = c["how"] + " +читатель"
         # ГЛУБОКОЕ РАССУЖДЕНИЕ (deep.py): до 7 шагов по графу фактов с откатом — когда прямые способы слабы или молчат
         try: dp = self.deep.reason(q)                                   # deep думает всегда: его сила — тип ответа и цепочки
         except Exception: dp = None
@@ -492,6 +484,20 @@ class ExperimentalMind:
                 cands.append(dict(how=f"{dp['steps']} шагов (deep)", answer=dp["answer"], confidence=dp["confidence"], facts=dp["facts"], thoughts=dp["thoughts"],
                                   text=" ".join(dp["thoughts"])))
         if not cands: return None
+        # СОГЛАСИЕ: два разных способа дали один ответ — независимые свидетели → уверенность вверх; одиночка против согласных — вниз.
+        # (измерено на SciQ: 16 из 130 промахов — верный ответ был на доске у двух способов, но проигрывал одиночному отрывку 0.9)
+        def _aw(c): return {w for w in content_words(toks(str(c["answer"]))) if len(w) > 2}
+        agree = {}
+        for i, a in enumerate(cands):
+            for j, b in enumerate(cands):
+                if j <= i or a["how"][:6] == b["how"][:6]: continue
+                A, B = _aw(a), _aw(b)
+                if A and B and (A <= B or B <= A): agree.setdefault(i, set()).add(j); agree.setdefault(j, set()).add(i)
+        if agree:
+            for i, c in enumerate(cands):
+                n_ = len(agree.get(i, ()))
+                if n_: c["confidence"] = round(min(1.0, c["confidence"] + 0.2 + 0.1 * (n_ - 1)), 2); c["how"] = c["how"] + " +согласие"
+                else: c["confidence"] = round(c["confidence"] * 0.75, 2)
         hints = set(G.hints(q)) if G else set(); prefs = G.slot_prefs(q) if G else {}
         dr = G.diag_rates(q) if G else {}
         for c in cands:                                            # диагноз → кого двигать: «не тот факт» → отрывку +, «не тот кусок» → факту +
