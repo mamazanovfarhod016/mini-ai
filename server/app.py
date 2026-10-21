@@ -158,6 +158,9 @@ class Handler(BaseHTTPRequestHandler):
                 if text.lower().startswith(("/learn ", "выучи ", "запомни ")):
                     r = mind.learn(text.split(" ", 1)[1])
                     return self._send(200, {"answer": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "text": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "kind": "learn", "how": "learn", "facts": [], "confidence": 1.0, "sid": sid})
+                me = re.match(r"^(?:example|пример)\s*[:\-]?\s*(.+?\?)\s*(?:→|->|=>|answer:|ответ:)\s*(.+?)\.?$", text.strip(), re.I)
+                if me:
+                    t = mind.show_example(me.group(1).strip(), me.group(2).strip()); return self._send(200, {"answer": t, "text": t, "kind": "rule", "how": "few-shot rule", "facts": [], "confidence": 1.0, "sid": sid})
                 mw = re.match(r"^(?:/word\s+|what does\s+|what do you know about the word\s+|что значит\s+|что такое слово\s+)[«\"']?([\w\-]+)[»\"']?(?:\s+mean)?\??$", text.strip(), re.I)
                 if mw:
                     t = mind.word(mw.group(1)); return self._send(200, {"answer": t, "text": t, "kind": "word", "how": "meaning from contexts", "facts": [], "confidence": 1.0, "sid": sid})

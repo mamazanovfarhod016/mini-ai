@@ -85,7 +85,8 @@ class ExperimentalMind:
         from mini_ai.think import Thinker
         from mini_ai.cot import CoT
         from mini_ai.ops import Ops
-        self.thinker = Thinker(self.kb); self.cot = CoT(self); self.ops = Ops(self.kb); self.ops.meaning = self.meaning
+        from mini_ai.fewshot import FewShot
+        self.thinker = Thinker(self.kb); self.cot = CoT(self); self.ops = Ops(self.kb); self.ops.meaning = self.meaning; self.fewshot = FewShot(self.kb)
         if self.use_dialog:
             from mini_ai.dialog import Dialog
             self.dialog = Dialog(self.kb, seed=self.seed)          # сервер подменяет на сессионный по sid
@@ -166,6 +167,13 @@ class ExperimentalMind:
                 if n: out["read"].append(f"{title}: {n} фактов")
         # РАССУЖДЕНИЕ ЦЕПОЧКОЙ (think.py): вопрос с типом ответа («in which country», «who», «where») →
         # путь по фактам до узла нужного типа; показываем шаги. Одношаговый ответ допускается только если тип совпал.
+        # FEW-SHOT (fewshot.py): правило вывода из показанного примера — применяется к новым сущностям
+        fsr = self.fewshot.answer(q)
+        if fsr:
+            out.update(answer=fsr["answer"], how=f"few-shot: {fsr['schema']}", facts=fsr["facts"], confidence=fsr["confidence"],
+                       thoughts=[f"You showed me: {fsr['example'][0]} → {fsr['example'][1]}.", f"Rule: follow {fsr['schema'].replace('inv:', 'reverse ')}."] + [f"I know: {f}" for f in fsr["facts"]] + [f"So: {fsr['answer']}."])
+            out["text"] = f"By the rule you showed me ({fsr['schema'].replace('inv:', 'reverse ').replace('→', ' then ')}): " + " ".join(self._nice_fact(f) for f in fsr["facts"][:3]) + f" So the answer is {fsr['answer']}."; out["kind"] = "answer"
+            self.history.append(dict(q=q, a=fsr["answer"], entity=fsr["answer"])); return out
         # ОПЕРАТОРЫ рассуждения (ops.py): сравнение, да/нет, счёт, список, почему, общее — над общей памятью
         op = self.ops.run(q)
         if op:
@@ -287,7 +295,7 @@ class ExperimentalMind:
                 conv.push(q=q1, frame=fr1, entity=g["pending"]["name"], answer=None, kind="clarify", pending=g["pending"], key=None)
                 return dict(question=q1, frame=fr1, read=out["read"], answer=None, kind="clarify", how="слабая цепочка → догадка-переспрос", facts=out["facts"], confidence=out["confidence"], text=g["text"], note=", ".join(notes) or None)
             out["answer"] = None                                            # мост через случайное слово — не ответ
-        if out.get("thoughts") is not None and out.get("how", "").startswith("op:") and out.get("text"):
+        if out.get("thoughts") is not None and (out.get("how", "").startswith("op:") or out.get("how", "").startswith("few-shot")) and out.get("text"):
             conv.push(q=q1, frame=fr1, entity=None, answer=out.get("answer"), kind=out["kind"], pending=None, key=None)
             out["question"] = q1; out["note"] = ", ".join(notes) or None; return out
         if out.get("answer") and out.get("thoughts"):
@@ -304,6 +312,18 @@ class ExperimentalMind:
         conv.push(q=q1, frame=fr1, entity=(c["pending"] or {}).get("name"), answer=None, kind=c["kind"], pending=c["pending"], key=None)
         return dict(question=q1, frame=fr1, read=out["read"], answer=None, kind=c["kind"], how="не знаю → " + ("переспрос" if c["kind"] == "clarify" else "уточнение"),
                     facts=[], confidence=0.0, text=c["text"], note=", ".join(notes) or None)
+
+    def _nice_fact(self, f):
+        m = re.match(r"^(.*?) —(.*?)→ (.*)$", f)
+        if not m: return f
+        X, rel, Y = m.groups(); v = {"be": "is", "have": "has"}.get(rel, rel.replace("_", " "))
+        return f"{X} {v} {Y.rstrip('.')}."
+
+    def show_example(self, q, a):
+        """«Example: Who is the grand-teacher of Carl? → Ann»: выучить правило вывода из одного примера"""
+        r = self.fewshot.show(q, a)
+        if not r: return "I can't find a path from the question to that answer in what I know — tell me the facts first."
+        return f"Got the rule: for «{self.fewshot.qkey(q)}» follow {'→'.join(r[0]).replace('inv:', 'reverse ')}. I'll apply it to new names."
 
     def _cot_text(self, steps, answer):
         """мысли → речь: «X —rel→ Y» → «X is in Y», без служебных стрелок; последняя цепочка + вывод"""
