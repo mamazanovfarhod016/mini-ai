@@ -70,6 +70,7 @@ class Growth:
         self.slot_rules = collections.defaultdict(collections.Counter)  # грубая форма → Counter((slot, rel, qwhere)) — для вопросов без имён
         self.attn = collections.defaultdict(lambda: [0, 0])       # слово вопроса → [нужное, лишнее] (выученное внимание)
         self._soft_list = None; self._soft_stamp = -1; self._soft_cache = {}
+        self.pos = collections.defaultdict(collections.Counter)   # класс вопроса → Counter(позиция ответа в предложении)
         self.diag = collections.Counter()                         # ДИАГНОЗ ошибок: почему промахнулась (silent/wrong-piece/wrong-fact/no-sentence)
         self.insights = []                                        # ОБОБЩЕНИЯ: правила, подтверждённые на многих типах → принцип
         self.load()
@@ -84,6 +85,7 @@ class Growth:
         self.rules_saved = d.get("rules", {}); self.log = d.get("log", [])[-50:]
         for k, v in d.get("attn", {}).items(): self.attn[k] = v
         self.diag = collections.Counter(d.get("diag", {})); self.insights = d.get("insights", [])
+        for k, v in d.get("pos", {}).items(): self.pos[k] = collections.Counter(v)
         for k, v in d.get("slot_rules", {}).items(): self.slot_rules[k] = collections.Counter({tuple(kk.split("|")): n for kk, n in v.items()})
         fs = getattr(self.mind, "fewshot", None)
         if fs:
@@ -96,7 +98,7 @@ class Growth:
         rules = {k: [list(s) for s in v] for k, v in fs.rules.items()} if fs else self.rules_saved
         examples = {k: [list(e) for e in v] for k, v in fs.examples.items()} if fs else {}
         json.dump(dict(reliab=dict(self.reliab), coans={k: dict(v) for k, v in self.coans.items()}, rules=rules, examples=examples,
-                       slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn), diag=dict(self.diag), insights=self.insights,
+                       slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn), diag=dict(self.diag), insights=self.insights, pos={k: dict(v) for k, v in self.pos.items()},
                        log=self.log[-50:], when=time.strftime("%Y-%m-%d %H:%M")), open(self.path, "w"), ensure_ascii=False, indent=1)
 
     # ---------- 2. надёжность способов ----------
@@ -110,8 +112,10 @@ class Growth:
         hk = self._howkey(how); h = m = 0.0
         for key, w in ((f"{hk}|{qform(q)}", 1.0), (f"{hk}|{qcoarse(q)}", 0.5), (f"{hk}|{qclass(q)}", 0.25), (f"{hk}|*", 0.1)):
             hh, mm = self.reliab.get(key, [0, 0]); h += w * hh; m += w * mm
-        if h + m < 1.0: return 1.0
-        return round(0.4 + 0.9 * (h + 1) / (h + m + 2), 2)
+        if h + m < 3.0: return 1.0                                   # 1–2 случая — не опыт, а шум
+        # относительно базовой точности способа вообще: доверие = насколько ЗДЕСЬ он лучше/хуже, чем обычно (±25 %)
+        H, Mm = self.reliab.get(f"{hk}|*", [0, 0]); base = (H + 1) / (H + Mm + 2); here = (h + 2 * base) / (h + m + 2)
+        return round(max(0.75, min(1.25, 1.0 + (here - base) * 1.5)), 2)
 
     def boldness(self, q):
         """0..1 — насколько стоит ДОГАДЫВАТЬСЯ (отрывком) вместо «не знаю» на таком типе вопроса.
@@ -173,6 +177,36 @@ class Growth:
             self._soft_list = [w for w, (n, x) in self.attn.items() if x >= 3 and x >= 2 * n and self.mind.kb.idf(w) < 3.5][:300]; self._soft_stamp = len(self.attn); self._soft_cache = {}
         return self._soft_list
 
+    # ---------- 1г. ПОЗИЦИЯ ОТВЕТА в предложении (выучивается): начало / после «called» / после «is a» / конец / середина ----------
+    @staticmethod
+    def _pos_of(sent, answer):
+        sl = sent.lower(); i = sl.find(answer.lower())
+        if i < 0: return None
+        before = toks(sl[:i]); after = toks(sl[i + len(answer):])
+        if len(before) <= 1: return "start"
+        if before[-1] in ("called", "termed", "named") or (len(before) >= 2 and before[-2:] == ["known", "as"]): return "after-called"
+        if before[-1] in ("a", "an", "the") and len(before) >= 2 and before[-2] in ("is", "are", "was", "were"): return "after-is-a"
+        if not after or (len(after) <= 2 and after[0] in ("which", "that", "figure")): return "end"
+        return "middle"
+
+    def learn_position(self, q, right):
+        kb = self.mind.kb; rl = right.lower()
+        for sent, _ in reversed(kb.sents[-2000:]):
+            if rl in sent.lower():
+                p = self._pos_of(sent, right)
+                if p: self.pos[qclass(q)][p] += 1; self.pos["*"][p] += 1
+                return p
+        return None
+
+    def pos_prior(self, q, sent, piece):
+        """множитель к куску по выученной позиции: где в предложении обычно стоит ответ на такой класс вопроса"""
+        c = self.pos.get(qclass(q)) or self.pos.get("*") or {}
+        tot = sum(c.values())
+        if tot < 10: return 1.0
+        p = self._pos_of(sent, piece) or "middle"
+        share = c.get(p, 0) / tot
+        return 0.7 + 0.9 * share            # позиция, где ответ бывает в 50 % случаев → ×1.15; никогда → ×0.7
+
     # ---------- 1б. схемы для вопросов без имён: ГДЕ в факте лежит ответ ----------
     def _slot_pattern(self, q, right):
         """из исправления: находим факт с ответом; запоминаем (грубая форма → слот факта, связь, где слова вопроса):
@@ -227,6 +261,8 @@ class Growth:
             grew.append(f"for «{qcoarse(q)}» the answer sits in {sp['slot']} of a «{sp['rel']}» fact")
         extra = self._learn_attention(q, right)
         if extra: grew.append("extra words: " + ", ".join(extra[:4]))
+        pp = self.learn_position(q, right)
+        if pp: grew.append(f"answer position: {pp}")
         # ДИАГНОЗ: почему ошиблась? молчала (ответ был в памяти) / взяла не тот кусок предложения / не тот факт / ответа нет в памяти
         rl = right.lower(); in_mem = any(rl in s_.lower() for s_, _ in self.mind.kb.sents[-3000:])
         how = self._howkey(out.get("how") if out else "")
@@ -244,7 +280,7 @@ class Growth:
         """пользователь подтвердил («yes», «right») или не поправил и пошёл дальше → способ надёжнее, связка слов сильнее"""
         if not out or not out.get("answer"): return []
         self._mark(out.get("how"), q, True); self._link(q, str(out["answer"]))
-        self._learn_attention(q, str(out["answer"]))
+        self._learn_attention(q, str(out["answer"])); self.learn_position(q, str(out["answer"]))
         sp = self._slot_pattern(q, str(out["answer"]))
         if sp: self.slot_rules[qcoarse(q)][(sp["slot"], sp["rel"], sp["qwhere"])] += 1; self.slot_rules["class:" + qclass(q)][(sp["slot"], sp["rel"], sp["qwhere"])] += 1
         fs = getattr(self.mind, "fewshot", None)
@@ -299,6 +335,8 @@ class Growth:
                  f"attention learned: {len(soft)} words found unimportant in questions: {', '.join(sorted(soft, key=lambda w: -self.attn[w][1])[:12])}",
                  f"question forms with experience: {len(forms)}",
                  f"word links: {sum(len(v) for v in self.coans.values())}"]
+        if self.pos.get("*"):
+            tot = sum(self.pos["*"].values()); lines.append("where answers sit: " + ", ".join(f"{k} {100*v//tot}%" for k, v in self.pos["*"].most_common()))
         if self.diag:
             tot = sum(v for k, v in self.diag.items() if "|" not in k) or 1
             lines.append("why I was wrong: " + ", ".join(f"{k} {v} ({100*v//tot}%)" for k, v in self.diag.most_common() if "|" not in k))

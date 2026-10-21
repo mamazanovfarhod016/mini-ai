@@ -320,6 +320,7 @@ class ExperimentalMind:
                     verbish = all(x.endswith(("ed", "ing")) or x in ("made", "used", "found", "done", "seen", "known") for x in pw)
                     cands.append((max(self.kb.idf(x) for x in pw) * (0.3 if verbish else 1.0) - 0.05 * len(pw), p))
             if not cands: continue
+            if G: cands = [(sc_ * G.pos_prior(self._cur_q, sent, pc), pc) for sc_, pc in cands]     # выученная позиция ответа
             ans = max(cands, key=lambda c: c[0])[1]
             ans = re.sub(r"^(?:the|a|an|its|their|also|about|only|all|most|many|some|very)\s+", "", ans, flags=re.I).strip()
             if len(ans) < 2: continue
