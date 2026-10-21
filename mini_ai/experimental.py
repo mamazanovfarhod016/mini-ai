@@ -157,6 +157,11 @@ class ExperimentalMind:
             ans = X if fr["slot"] == "X" else Y
             if not ans or set(content_words(toks(ans))) <= known: continue       # ответ не должен быть повтором вопроса
             s = score / kidf * (1.2 if rel_ok(fr["rel"], rel) else 1.0) * (1.1 if known & part else 1.0)
+            # РАНЖИР ПО СМЫСЛУ: код вопроса · код факта (meaning) — среди фактов с одинаковыми словами выбираем тот,
+            # чей смысл ближе ко всему вопросу (а не к одному слову)
+            if M is not None:
+                ps = M.phrase_sim(known, allw)
+                if ps is not None: s *= (0.7 + 0.6 * max(0.0, ps))
             if not best or s > best[0]: best = (round(s * 0.8, 2), ans, (X, rel, Y, src))
         if best: return best
         # СКЛЕЙКА: вопрос покрывает ДВА атомарных факта с общей сущностью («plant hormones be chemical signals» +

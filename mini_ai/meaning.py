@@ -35,7 +35,7 @@ class Meaning:
         if self.path and os.path.exists(self.path): self.load(); self._delta = set()
         self._has_base = bool(state_dir and os.path.exists(BASE_NPZ)); self.defs = {}
     def b(self, w):
-        if w not in self.base: self.base[w] = np.random.default_rng(abs(hash(w)) % (2**32)).choice([-1.0, 1.0], size=D).astype(np.float32)
+        if w not in self.base: self.base[w] = np.random.default_rng(abs(hash(w)) % (2**32)).choice([-1, 1], size=D).astype(np.int8)
         return self.base[w]
     def read(self, text):
         n = 0
@@ -54,10 +54,18 @@ class Meaning:
                 ctx = np.zeros(D, np.float32)
                 for i in range(-K, K + 1):
                     if i and 0 <= j + i < len(ws): ctx += B[j + i][self.perm[i]]
-                self.sem[w] = self.sem.get(w, np.zeros(D, np.float32)) + ctx; self.n[w] += 1; n += 1; self._delta.add(w)
+                v = self.sem.get(w); self.sem[w] = (ctx if v is None else v.astype(np.float32) + ctx); self.n[w] += 1; n += 1; self._delta.add(w)
         self._dirty += n; return n
     def vec(self, w):
         v = self.sem.get(w.lower()); return None if v is None else v / (np.linalg.norm(v) + 1e-9)
+    def sent_vec(self, words):
+        """код фразы = сумма смыслов её слов (idf-веса не нужны: редкие слова и так далеки от всех)"""
+        vs = [self.vec(w) for w in words]; vs = [v for v in vs if v is not None]
+        if not vs: return None
+        v = np.sum(vs, axis=0); return v / (np.linalg.norm(v) + 1e-9)
+    def phrase_sim(self, words_a, words_b):
+        a, b = self.sent_vec(words_a), self.sent_vec(words_b)
+        return None if a is None or b is None else float(a @ b)
     def similar(self, a, b):
         va, vb = self.vec(a), self.vec(b); return None if va is None or vb is None else float(va @ vb)
     def neighbors(self, w, k=5, min_n=20):

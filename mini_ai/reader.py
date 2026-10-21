@@ -115,10 +115,15 @@ class Reader:
             main = re.sub(r"\s*\((?:or|also)[^)]*\)", "", m.group("main")); main = re.sub(r",?\s+(?:because|so that|although)\b.*$", "", main)
             out.append(f"{m.group('X')} {main.rstrip('.')}."); out.append(f"{m.group('X')} {m.group('R').rstrip('.')}."); s = ""
         # 2) relative clause внутри Y: «… are chemical signals that control different processes in plants»
-        m = re.match(r"^(?P<head>.+?\b(?:is|are|was|were)\s+(?:a|an|the)?\s*(?P<Y>[^,]{3,60}?))\s+(?:that|which|who)\s+(?P<V2>.{5,120})$", s) if s else None
-        if m and not re.search(r"\b(?:called|known as)\b", m.group("head")):
-            out.append(m.group("head").rstrip(".") + "."); Y = m.group("Y")
-            out.append(f"{Y[0].upper() + Y[1:]} {m.group('V2').rstrip('.')}."); s = ""
+        m = re.match(r"^(?P<X>.+?)\s+(?P<cop>is|are|was|were)\s+(?P<art>an|a|the)?\s*(?P<Y>[^,]{3,60}?)\s+(?:that|which|who)\s+(?P<V2>.{5,120})$", s) if s else None
+        if m and not re.search(r"\b(?:called|known as)\b", m.group("X")):
+            X, Y, V2 = m.group("X"), m.group("Y"), m.group("V2").rstrip(".")
+            out.append(f"{X} {m.group('cop')} {(m.group('art') + ' ') if m.group('art') else ''}{Y}.")
+            # «Rian is a scientist who was born in Drare» — один конкретный (a/an/the) → оборот про X, не про всех учёных;
+            # «hormones are chemical signals that control…» (без артикля, класс) → оборот про класс Y
+            if m.group("art"): out.append(f"{X} {V2}.")
+            else: out.append(f"{Y[0].upper() + Y[1:]} {V2}.")
+            s = ""
         # 3) причастный оборот: «Liquids … tend to have higher viscosities, making them …» → отбрасываем ", V-ing …"
         if s:
             s2 = re.sub(r",\s+(?:\w+ing\b[^,.]{3,80})(?=\.|$)", "", s)
