@@ -59,7 +59,8 @@ class KnowledgeBase:
                     # склеиваем ТОЛЬКО предложения-определения с отсылкой: «This/These/The process/One such … is called X» —
                     # у них ответ в этом предложении, а описание — в предыдущем. «They are found in…» — не определение, не склеиваем.
                     if re.match(r"^(?:this|these|that|those|one such|such a|such an|the process|the term|the name|it|they)\b.{0,40}?\b(?:is|are) (?:called|known as|termed|named|referred to as)\b", s, re.I) \
-                       or re.match(r"^(?:one such|such a|such an)\b", s, re.I):
+                       or re.match(r"^(?:one such|such a|such an|one example|an example|examples?)\b", s, re.I) \
+                       or (re.match(r"^(?:this|these|it|they|that)\b", s, re.I) and len(toks(s)) <= 7):
                         for w in prev_ws: self.sent_by_word[w].append(si); self.sent_glued.add(si)
                     else:
                         for w in prev_ws: self.sent_ctx_by_word[w].append(si)
@@ -161,7 +162,8 @@ class ExperimentalMind:
                "typically sometimes main primary major important specific certain particular general overall such like thing things something "
                "purpose method feature structure form means mean meaning instrument way ways about far best describe refer describe described "
                "category class sort variety number amount piece unit".split())
-    JUNK = set("today now then also usually often sometimes generally typically however thus therefore example instance figure below above here there".split())
+    JUNK = set("today now then also usually often sometimes generally typically however thus therefore example instance figure below above here there "
+               "several many some few most all each every both another other such one two three first second last next various numerous".split())
     def _stem(self, w): return w[:-2] if w.endswith("es") and len(w) > 5 else (w[:-1] if w.endswith("s") and len(w) > 4 else w)
     def _forms(self, w):
         """множество грубых основ слова: plants/plant, processes/process, invertebrates/invertebrate, bodies/body, moves/move, held/hold"""
@@ -173,6 +175,10 @@ class ExperimentalMind:
         if len(w) > 4 and w.endswith("e"): f.add(w[:-1])
         if len(w) > 5 and w.endswith("ing"): f.add(w[:-3]); f.add(w[:-3] + "e")
         if len(w) > 5 and w.endswith("ed"): f.add(w[:-2]); f.add(w[:-1])
+        if len(w) > 7 and w.endswith("ize"): f.add(w[:-3]); f.add(w[:-3] + "is")          # photosynthesize → photosynthes(is)
+        if len(w) > 7 and w.endswith("sis"): f.add(w[:-2]); f.add(w[:-3])                 # photosynthesis → photosynthe(s)
+        if len(w) > 6 and w.endswith("tion"): f.add(w[:-4]); f.add(w[:-3])                # digestion → diges(t)
+        if len(w) > 5 and w.endswith("ity"): f.add(w[:-3])                                # ability → abil
         return f
     # ВНИМАНИЕ (attention без градиента): какое слово вопроса ОБЯЗАТЕЛЬНО в факте, а какое — лишь подсказка.
     # Обязательны термины (существительные-предметы). Глаголы и связки (holds/held, made, associated, cannot, either, humans)
@@ -259,7 +265,7 @@ class ExperimentalMind:
         """ОТРЫВОК: читатель не разобрал предложение на факты (длинное, список, «X, Y and Z indicate…»), но
         предложение памяти покрывает ≥60 % веса слов вопроса → ответ = его свободный кусок: часть предложения
         (между знаками/союзами), где нет слов вопроса. Это не поиск по словам «на удачу»: обязательны редкие слова."""
-        known = {w for w in known0 if w not in self.META} | {w for w in content_words(toks((fr.get("rel") or "").replace("_", " "))) if w not in self.META}
+        known = {w for w in known0 if w not in self.META} | {w for w in content_words(toks((fr.get("rel") or "").replace("_", " "))) if w not in self.META and w not in ("prop", "called", "be", "do", "have")}
         # ТИП ОТВЕТА в вопросе («what ANIMAL GROUP», «what OBJECTS are», «what ORGAN in», «what is the RESULT», «which BODY SYSTEM»)
         # — это не слова, которые должны быть в факте; это то, ЧЕМ должен быть ответ. Убираем из обязательных.
         qt = re.search(r"\b(?:what|which)\s+(?:broad\s+|main\s+|primary\s+|basic\s+|large\s+|small\s+|general\s+)?([a-z]+(?:\s+[a-z]+)?)\s+(?:is|are|was|were|do|does|did|in|of|that|has|have|can|will|would)\b", self._cur_q.lower())
@@ -318,7 +324,8 @@ class ExperimentalMind:
             if si in self.kb.sent_glued or si in follow:
                 sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # определение с отсылкой / следующее предложение: слова соседа — тоже «в предложении»
             sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
-            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and not (forms[w] & sforms)]
+            hy = set(re.findall(r"\b([a-z]+)-(?:like|type|shaped|based|free|rich)\b", self._cur_q.lower()))          # «tube-like» — описание, не термин
+            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and not (forms[w] & sforms)]
             if self._neural_hit.get(si, 0) >= 0.6: rare_missing = rare_missing[:1] if cov >= 0.5 else rare_missing[:2]   # смысл совпал — слова могут отличаться
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
             # (вопрос часто содержит лишнее уточнение: «in physics», «located below the soil», «during evolution»)
@@ -333,6 +340,7 @@ class ExperimentalMind:
             for p in pieces:
                 pw = set(content_words(toks(p))) - self.JUNK
                 if not pw: continue
+                if all(x.isdigit() for x in pw) and not re.search(r"\bhow (?:many|much|long|old|far)\b|\bwhat (?:year|number|percent|age)\b", self._cur_q, re.I): continue
                 pf = set().union(*[self._forms(x) for x in pw])
                 overlap = sum(1 for x in pw if (self._forms(x) & qforms) or x in self.META)        # слов куска, которые есть в вопросе
                 if len(pw) <= 4 and re.search(r"\b(?:called|known as|termed|named|referred to as)\s+(?:a |an |the )?" + re.escape(p.split()[0]), body, re.I):
@@ -377,6 +385,8 @@ class ExperimentalMind:
                     if re.search(r"\b(?:called|known as|termed|named|referred to as)\s+" + re.escape(p.split()[0]), body, re.I): sc_ += 1.5   # «is called X» — X и есть ответ
                     cands.append((sc_, p))
 
+            numq = bool(re.search(r"\bhow (?:many|much|long|old|far)\b|\bwhat (?:year|number|percent|age)\b", self._cur_q, re.I))
+            cands = [(sc_, pc) for sc_, pc in cands if not (all(x.isdigit() for x in toks(pc)) and not numq)]      # «1», «2050» — не ответ на «what»
             if not cands: continue
             if G: cands = [(sc_ * G.pos_prior(self._cur_q, sent, pc), pc) for sc_, pc in cands]     # выученная позиция ответа
             if getattr(self, "neural", None) is not None and len(cands) > 1:
