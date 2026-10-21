@@ -13,7 +13,7 @@
 import re
 from mini_ai.memory_v2 import toks, content_words
 
-QWORD = re.compile(r"^(?:what|which|who|where|when|how many|how)\b\s*(?:type of|kind of|is the|is a|is an|are the|are|is|was|were|do|does|did)?\s*", re.I)
+QWORD = re.compile(r"^(?:what|which|who|where|when|how many|how)\b\s*(?:type of|kind of|is the|is a|is an|are the|are|is|was|were|does|do|did)?\s*", re.I)   # does раньше do: иначе «does» → «do»+«es»
 VERBS = r"(?:is called|are called|is known as|is|are|was|were|contains?|includes?|consists? of|produces?|causes?|forms?|makes?|means?|has|have|occurs? (?:in|at|when)|results? in|leads? to|comes? from|get|gets|use|uses|used|called|found in|made (?:up )?of|composed of|located in|refers? to|describes?|begins? with|ends? with|enters?|exhibits?|reproduce(?:s)? through|end their lives)"
 V_RE = re.compile(rf"\b({VERBS})\b", re.I)
 
@@ -27,6 +27,20 @@ def parse_question(q):
     if m: atype = m.group(1)
     elif m2 and m2.group(1) not in ("is", "are", "was", "were", "do", "does", "did", "can", "has", "have", "type", "kind"): atype = m2.group(1)
     body = QWORD.sub("", ql, count=1).strip()
+    # exp40: «what did Newton discover» / «what does Mars have» → X = Newton, rel = discover, слот Y (глагол — последнее слово)
+    m_do = re.match(r"^(?:what|which|who)\s+(?:do|does|did)\s+(.+?)\s+([a-z]+)$", ql)
+    if m_do and m_do.group(2) not in ("in", "of", "for", "from", "to", "on", "at", "with", "by", "do"):
+        from mini_ai.reader import lemma
+        return dict(slot="Y", X=content_words(toks(m_do.group(1))), rel=lemma(m_do.group(2)), Y=[], atype=atype)
+    # exp40: «who discovered radium» — вопросное слово + глагол в прошедшем + остаток → слот X
+    m_vq = re.match(r"^(?:who|what)\s+([a-z]{4,}ed)\s+(.+)$", ql)
+    if m_vq and not V_RE.match(m_vq.group(1)):
+        from mini_ai.reader import lemma
+        return dict(slot="X", X=[], rel=lemma(m_vq.group(1)), Y=content_words(toks(m_vq.group(2))), atype=atype)
+    # «Where is X» / «Where is X located» → слот Y, X известен, ответ должен быть местом
+    m_where = re.match(r"^where\s+(?:is|are|was|were)\s+(?:the\s+)?([\w\s'\-]{2,60}?)(?:\s+(?:located|situated|found))?$", ql)
+    if m_where:
+        return dict(slot="Y", X=content_words(toks(m_where.group(1))), rel="be", Y=[], atype="place")
     vm = V_RE.search(body)
     starts_with_q = bool(re.match(r"^(?:what|which|who|where|when|how)\b", ql))
     # «what is the X of Y» / «who is the X of Y» → слот X, обязательные слова = X of Y (ищем факт, чей Y содержит их)
@@ -60,7 +74,10 @@ REL_SYN = {"be_called": {"be", "be_called", "called", "be_known_as"}, "be": {"be
 def rel_ok(q_rel, f_rel):
     if not q_rel: return True
     base = q_rel.split("_")[0] if q_rel not in REL_SYN else q_rel
-    return f_rel in REL_SYN.get(q_rel, {q_rel, base}) or f_rel.startswith(base)
+    return f_rel in REL_SYN.get(q_rel, {q_rel, base}) or f_rel.startswith(base + "_")   # be→be_located, но не be→become
+
+
+PLACE_RE = re.compile(r"\b(?:in|on|near|between|north|south|east|west|central|located|situated|part of|coast|border)\b", re.I)
 
 
 def answer_by_frame(frame, facts_idx, idf):
@@ -75,6 +92,17 @@ def answer_by_frame(frame, facts_idx, idf):
         if cov < 0.99: continue                                   # ВСЕ обязательные слова — иначе это другой факт
         s = 1.0 + (0.5 if rel_ok(frame["rel"], rel) else 0.0) + (0.3 if known <= part else 0.0)
         ans = X if frame["slot"] == "X" else Y
-        if frame["atype"] and frame["atype"] not in toks(ans) and frame["atype"] not in toks(X + " " + Y): s -= 0.2
+        if frame["atype"] == "place":
+            # «Where is X» — субъект факта ровно X, а ответ — место: категория («a country…»), located/situated,
+            # или «in/of <Имя>». Голое «in a state of crisis» местом не считается.
+            if not (known <= part): continue
+            cat = re.match(r"^(?:an?|the)\s+[\w\s\-,]*?\b(?:country|city|town|state|region|republic|island|village|capital|river|mountain|nation|province|continent)\b", ans, re.I)
+            loc = re.search(r"\b(?:located|situated|lies|part of)\b|\b(?:in|on|of|near)\s+(?:the\s+)?[A-Z][\w\-]*", ans)
+            if not cat and not loc: continue
+            xw = set(content_words(toks(X)))
+            s += (0.5 if xw == known else 0.0) + (0.4 if cat else 0.0) + (0.3 if loc else 0.0)
+            if isinstance(si, str) and si.lower() == X.lower(): s += 0.5          # определение из статьи о самом X
+            if re.search(r"\b(?:\d+(?:st|nd|rd|th)|largest|biggest|smallest|former|minor|war|crisis)\b", ans, re.I): s -= 0.3
+        elif frame["atype"] and frame["atype"] not in toks(ans) and frame["atype"] not in toks(X + " " + Y): s -= 0.2
         out.append((s, ans, (X, rel, Y, si)))
     out.sort(key=lambda t: -t[0]); return out

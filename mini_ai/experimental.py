@@ -73,9 +73,18 @@ class ExperimentalMind:
         if wiki and os.path.exists(os.path.join(RUNS, "simplewiki_full/facts.jsonl")):
             self.kb.load_facts_jsonl(os.path.join(RUNS, "simplewiki_full/facts.jsonl"), wiki_limit)
         learned = os.path.join(self.state_dir, "learned.txt")
-        if os.path.exists(learned): self.kb.read_text(open(learned).read(), "выучено")
+        if os.path.exists(learned): self._load_learned(open(learned).read())
         self.boot = dict(facts=len(self.kb.facts), seconds=round(time.time() - t0, 1), sources=dict(self.kb.sources.most_common(5)))
         self._agent = None; self._coder = None
+
+    def _load_learned(self, text):
+        """learned.txt: блоки «# wiki: Title» читаются с темой статьи (иначе заголовок склеивался с первым
+        предложением и «It is bordered by…» теряло субъект); остальное — как «выучено»."""
+        for i, chunk in enumerate(re.split(r"^# wiki: (.+)$", text, flags=re.M)):
+            if i % 2 == 1: title = chunk.strip(); continue
+            if i == 0: src = "выучено"
+            else: src = title
+            if chunk.strip(): self.kb.read_text(chunk, src)
 
     # ---------- понимание + рассуждение ----------
     def _resolve(self, q):
@@ -122,6 +131,12 @@ class ExperimentalMind:
     def ask(self, q, internet=True):
         q = self._resolve(q); fr = parse_question(q)
         out = dict(question=q, frame=fr, read=[])
+        if internet and fr.get("atype") == "place" and fr["X"]:
+            # «Where is X» — лучший ответ в первом предложении статьи о самом X; читаем её один раз
+            title = " ".join(w.capitalize() for w in fr["X"])
+            if title not in self.kb.sources:
+                n = self._read_wiki(title)
+                if n: out["read"].append(f"{title}: {n} фактов")
         r = self._one_step(fr)
         if not r:
             r2 = self._two_step(fr)
