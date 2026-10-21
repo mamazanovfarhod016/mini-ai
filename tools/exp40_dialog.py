@@ -9,7 +9,9 @@
    • ≥ 70 % случаев «не знаю» на 20 контрольных вопросах превратятся в осмысленный переспрос
      (kind='clarify', в тексте есть распознанная сущность вопроса, варианты — только из фактов памяти);
    • на 20 одинаковых вопросах про один факт — ≥ 3 различных формулировки (контроль: 1);
-   • ответы на обычные вопросы не портятся (те же 30 диалогов — первые реплики).
+   • ответы на обычные вопросы не портятся (те же 30 диалогов — первые реплики);
+   • п.0 (добавлено 12:40 по просьбе родителя, до кода): НЕ-вопросы (hi/thanks/how are you/who are you/what can you
+     do) → kind='chat' без поиска фактов (сейчас «Hi» → статья «Hié»); ожидаю ≥ 14/16 реплик блока smalltalk.
 ЧИСЛО УСПЕХА: диалоги ≥ 20/30, переспрос ≥ 70 %, формулировок ≥ 3. Набор диалогов после начала кода не меняется.
 
 Запуск:  cd ~/Developer/mini-ai-memory/wt && timeout 600 python3 tools/exp40_dialog.py [--control] [--tag before|after]
@@ -86,6 +88,13 @@ def main():
     for r in res: by_type.setdefault(r["type"], [0, 0]); by_type[r["type"]][1] += 1; by_type[r["type"]][0] += r["ok"]
     P(f"## диалоги целиком верны: {good}/30; первые реплики верны: {first_ok}/30; по типам: {by_type}")
 
+    # 2b. small talk (п.0): не-вопросы → kind=chat, без фактов; вопрос после приветствия всё равно отвечается
+    st_ok = 0; st = []
+    for tq in SET.get("smalltalk", []):
+        new_session(m); g = turn(m, tq["q"]); o = ok_turn(tq, g) and not any(b.lower() in g["text"].lower() for b in tq.get("not_contains", []))
+        st_ok += o; st.append(dict(q=tq["q"], **g, ok=o)); P(f"[st] {'✓' if o else '✗'} {tq['q']} -> ({g['kind']}) {g['text']}")
+    P(f"## small talk: {st_ok}/{len(SET.get('smalltalk', []))}")
+
     # 3. разнообразие: 20 раз один факт — свежие сессии и одна сессия
     q = SET["variety_question"]; fresh, same = [], []
     for i in range(SET["variety_repeats"]):
@@ -96,10 +105,10 @@ def main():
     for s in sorted(set(fresh) | set(same)): P("   •", s)
 
     out = dict(tag=tag, control=a.control, facts=len(m.kb.facts), dialogs_ok=good, first_turn_ok=first_ok, by_type=by_type,
-               unknown_total=n_unk, clarify_meaningful=n_clar, variety_fresh=len(set(fresh)), variety_same=len(set(same)),
+               unknown_total=n_unk, clarify_meaningful=n_clar, smalltalk_ok=st_ok, smalltalk=st, variety_fresh=len(set(fresh)), variety_same=len(set(same)),
                variety_texts=sorted(set(fresh) | set(same)), unknown=unk, dialogs=res, seconds=round(time.time() - t0, 1))
     json.dump(out, open(os.path.join(RUNS, f"exp40_dialog_{tag}.json"), "w"), ensure_ascii=False, indent=1)
-    P(f"# ИТОГ {tag}: диалоги {good}/30, переспрос {n_clar}/{n_unk}, формулировок {len(set(fresh))}/{len(set(same))}, {time.time()-t0:.0f}s")
+    P(f"# ИТОГ {tag}: диалоги {good}/30, переспрос {n_clar}/{n_unk}, small talk {st_ok}/{len(SET.get('smalltalk', []))}, формулировок {len(set(fresh))}/{len(set(same))}, {time.time()-t0:.0f}s")
     shutil.rmtree(m.state_dir, ignore_errors=True)
 
 

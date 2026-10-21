@@ -151,20 +151,38 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/memory/ask":
             mind = self._memory_mind()
             text = (body.get("q") or "").strip()
+            sid = str(body.get("sid") or rec.get("device") or "anon")[:64]     # нить разговора — по sid (exp40)
             with self.lock:
+                mind.dialog = self._session(mind, sid)
                 if text.lower().startswith(("/learn ", "выучи ", "запомни ")):
                     r = mind.learn(text.split(" ", 1)[1])
-                    return self._send(200, {"answer": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "how": "learn", "facts": [], "confidence": 1.0})
+                    return self._send(200, {"answer": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "text": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "kind": "learn", "how": "learn", "facts": [], "confidence": 1.0, "sid": sid})
                 if text.lower().startswith(("/tell ", "расскажи про ", "tell me about ")):
                     r = mind.tell(text.split(" ", 2 if text.lower().startswith("расскажи") else 1)[-1])
-                    return self._send(200, {"answer": r["text"] or "Про это у меня нет фактов.", "how": r["how"], "facts": [], "read": r.get("read", []), "confidence": 1.0 if r["text"] else 0.0})
+                    return self._send(200, {"answer": r["text"] or "Про это у меня нет фактов.", "text": r["text"] or "Про это у меня нет фактов.", "kind": "answer" if r["text"] else "unknown", "how": r["how"], "facts": [], "read": r.get("read", []), "confidence": 1.0 if r["text"] else 0.0, "sid": sid})
                 r = mind.ask(text)
-            store.append_jsonl(self.data / "memory_ask.jsonl", {**rec, "answer": r.get("answer"), "how": r.get("how"), "confidence": r.get("confidence")})
-            return self._send(200, {"answer": r.get("text") or r.get("answer"), "short": r.get("answer"), "how": r.get("how"), "facts": r.get("facts", []), "read": r.get("read", []),
-                                    "confidence": r.get("confidence", 0), "frame": r.get("frame"), "n_facts": len(mind.kb.facts)})
+            store.append_jsonl(self.data / "memory_ask.jsonl", {**rec, "sid": sid, "answer": r.get("answer"), "kind": r.get("kind"), "how": r.get("how"), "confidence": r.get("confidence")})
+            return self._send(200, {"answer": r.get("text") or r.get("answer"), "text": r.get("text"), "short": r.get("answer"), "kind": r.get("kind"), "how": r.get("how"),
+                                    "facts": r.get("facts", []), "read": r.get("read", []), "confidence": r.get("confidence", 0), "frame": r.get("frame"),
+                                    "note": r.get("note"), "n_facts": len(mind.kb.facts), "sid": sid})
         return self._send(404, {"error": "not found"})
 
     _mind = None
+    _sessions = {}            # sid → (Dialog, last_ts); нить разговора в памяти, TTL 30 мин, не больше 500 нитей
+    SESSION_TTL = 30 * 60
+
+    @classmethod
+    def _session(cls, mind, sid):
+        now = time.time()
+        if len(cls._sessions) > 500 or (cls._sessions and now - min(t for _, t in cls._sessions.values()) > cls.SESSION_TTL):
+            for k in [k for k, (_, t) in cls._sessions.items() if now - t > cls.SESSION_TTL]: cls._sessions.pop(k, None)
+        d, t = cls._sessions.get(sid, (None, 0))
+        if d is None or now - t > cls.SESSION_TTL:
+            from mini_ai.dialog import Dialog
+            d = Dialog(mind.kb)
+        cls._sessions[sid] = (d, now)
+        return d
+
     @classmethod
     def _memory_mind(cls):
         if cls._mind is None:

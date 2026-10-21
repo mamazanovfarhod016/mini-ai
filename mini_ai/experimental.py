@@ -77,7 +77,9 @@ class ExperimentalMind:
         learned = os.path.join(self.state_dir, "learned.txt")
         if os.path.exists(learned): self._load_learned(open(learned).read())
         self.boot = dict(facts=len(self.kb.facts), seconds=round(time.time() - t0, 1), sources=dict(self.kb.sources.most_common(5)))
-        self._agent = None; self._coder = None; self.dialog = None; self.new_session()
+        self._agent = None; self._coder = None
+        from mini_ai.think import Thinker
+        self.thinker = Thinker(self.kb); self.dialog = None; self.new_session()
 
     def new_session(self):
         """новая нить разговора (сервер держит по одной на sid)"""
@@ -149,6 +151,20 @@ class ExperimentalMind:
             if title not in self.kb.sources:
                 n = self._read_wiki(title)
                 if n: out["read"].append(f"{title}: {n} фактов")
+        # РАССУЖДЕНИЕ ЦЕПОЧКОЙ (think.py): вопрос с типом ответа («in which country», «who», «where») →
+        # путь по фактам до узла нужного типа; показываем шаги. Одношаговый ответ допускается только если тип совпал.
+        th = self.thinker.think(q) if re.search(r"\b(?:which|what) (?:country|city|continent|river|company|language|currency)\b", q.lower()) else None
+        typed_q = bool(re.search(r"\b(?:which|what) (?:country|city|continent|river|company|language|currency)\b", q.lower()))
+        if th:
+            out.update(answer=th["answer"], how=f"{len(th['steps'])} шага: " + " → ".join(th["steps"]), facts=th["steps"], confidence=th["score"])
+            out["text"] = self._phrase(out, fr); out["kind"] = "answer"
+            self.history.append(dict(q=q, a=th["answer"], entity=th["answer"])); return out
+        if typed_q and not th and self.thinker.anchors(q):
+            # тип ответа задан, цепочки нет → честно: знаю сущность, но связи до нужного типа не нашла (не подменять поиском по словам)
+            a = self.thinker.anchors(q)[0]
+            out.update(answer=None, how="нет цепочки", facts=[], confidence=0.0, kind="unknown",
+                       text=f"I know {a.title()}, but I can't trace it to a {self.thinker.goal(q)} from what I've read. Tell me the link and I'll remember.")
+            return out
         r = self._one_step(fr)
         if not r:
             r2 = self._two_step(fr)
@@ -180,9 +196,16 @@ class ExperimentalMind:
 
     # ---------- exp40: слой диалога ----------
     def _ask_dialog(self, q, internet=True):
-        from mini_ai.dialog import _is_question, entity_phrase
+        from mini_ai.dialog import _is_question, entity_phrase, strip_greeting, YES, NO
+        from mini_ai.speak import small_talk
         d = self.dialog; conv = d.conv; q0 = q.strip(); notes = []
         pend = conv.pending()
+        # 0. реплика-собеседник (hi / thanks / how are you / who are you) — без поиска фактов
+        st = small_talk(q0, conv.rng, len(self.kb.facts))
+        if st and not (pend and YES.match(q0)):
+            conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="small talk: " + st[0], facts=[], confidence=1.0, text=st[1], note=None)
+        q0 = strip_greeting(q0)
         # 1. реплика после переспроса: yes/no/выбор варианта/утверждение-обучение
         if pend:
             fact, note = d.answer_pending(q0, pend)
@@ -195,6 +218,9 @@ class ExperimentalMind:
                         else f"Okay. Tell me one sentence about {name} and I'll remember it.")
                 conv.push(q=q0, frame=None, entity=pend.get("entity"), answer=None, kind="clarify", pending=dict(pend, options=[]), key=None)
                 return dict(question=q0, frame=None, read=[], answer=None, kind="clarify", how=note, facts=[], confidence=0.0, text=text, note=None)
+        if YES.match(q0) or NO.match(q0) or len(toks(q0)) == 0:
+            conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="реплика без вопроса", facts=[], confidence=1.0, text="Okay. What would you like to ask?", note=None)
         # 2. утверждение (не вопрос) → выучить и сразу ответить тем, что поняла
         if not _is_question(q0) and len(q0.split()) >= 3:
             facts = [f for f in self.kb.reader.read(q0, "выучено")[0] if "@" not in f[1]]
@@ -203,13 +229,26 @@ class ExperimentalMind:
                 X, rel, Y = facts[0]
                 r = self._reply_fact(q0, X, rel, Y, "выучено", 1.0, how=f"выучила {len(facts)} факт(а)", facts=[f"{X} —{rel}→ {Y}"], frame=None, learned=True)
                 r["learned"] = len(facts); return r
-        # 3. нить: эллипсис и местоимения
-        fr = parse_question(q0)
-        q1, fr1, note = d.resolve(q0, fr)
+        # 2b. одно имя без вопроса («Tashkent?») → что именно интересует
+        if d.bare_entity(q0):
+            c = d.clarify(q0, None)
+            if c["kind"] == "clarify":
+                conv.push(q=q0, frame=None, entity=c["pending"]["name"], answer=None, kind="clarify", pending=c["pending"], key=None)
+                return dict(question=q0, frame=None, read=[], answer=None, kind="clarify", how="имя без вопроса → переспрос", facts=[], confidence=0.0, text=c["text"], note=None)
+        # 3. нить: эллипсис и местоимения — кандидаты по очереди, берётся первый с ответом
+        fr = parse_question(q0); out = None
+        for q1, fr1, note in d.resolve(q0, fr):
+            if fr1 is None and q1 != q0: fr1 = parse_question(q1)
+            if fr1 is None: fr1 = fr
+            out = self._ask_core(q1, internet, fr=fr1)
+            if out.get("answer"): break
         if note: notes.append(note)
-        if fr1 is None and q1 != q0: fr1 = parse_question(q1)
-        if fr1 is None: fr1 = fr
-        out = self._ask_core(q1, internet, fr=fr1)
+        if out.get("answer") and out["how"].startswith("2 шага") and out["confidence"] < 0.6:
+            g = d.guess(q1, out)
+            if g:
+                conv.push(q=q1, frame=fr1, entity=g["pending"]["name"], answer=None, kind="clarify", pending=g["pending"], key=None)
+                return dict(question=q1, frame=fr1, read=out["read"], answer=None, kind="clarify", how="слабая цепочка → догадка-переспрос", facts=out["facts"], confidence=out["confidence"], text=g["text"], note=", ".join(notes) or None)
+            out["answer"] = None                                            # мост через случайное слово — не ответ
         if out.get("answer"):
             X, rel, Y, src = self._fact_of(out)
             r = self._reply_fact(q1, X, rel, Y, src, out["confidence"], how=out["how"], facts=out["facts"], frame=fr1, read=out["read"], two_step=out if len(out["facts"]) > 1 else None)
@@ -233,20 +272,25 @@ class ExperimentalMind:
     def _reply_fact(self, q, X, rel, Y, src, confidence, how, facts, frame, read=None, two_step=None, learned=False):
         """факт → реплика: форма по контексту (повтор → другая + «As I said»), инициатива — ещё факт/встречный вопрос"""
         d = self.dialog; conv = d.conv
-        key = f"{X.lower()}|{rel}|{Y.lower()}"
-        tense = "past" if (rel not in ("be", "have") and rel in __import__("mini_ai.reader", fromlist=["PAST_FORM"]).PAST_FORM) else "present"
+        key = f"{X.lower()}|{rel}|{Y.lower()}"; qkey = " ".join(toks(q))
+        pron, etype = d.persona(X)
+        tense = "past" if (etype == "person" and rel not in ("be", "have")) else "present"
         if two_step: text, style = two_step["text"], "two-step"
         else:
             if learned: text, style = "Got it. " + __import__("mini_ai.speak", fromlist=["phrase"]).phrase(X, rel, Y, "direct", tense), "learned"
-            else: text, style = d.say(X, rel, Y, src, key, confidence, tense)
+            else: text, style = d.say(X, rel, Y, src, key, qkey, confidence, tense)
         answer = Y if (frame and frame.get("slot") == "Y") or (frame is None and conv.last and conv.last.get("pending") and conv.last["pending"].get("want")) else X
         if frame and frame.get("slot") == "X": answer = X
         elif frame and frame.get("slot") == "Y": answer = Y
         elif learned: answer = X
         ini = None if learned else d.initiative(X, rel, Y, set(toks(answer)))
-        if ini: text = text + " " + ini
+        ini_pend = None
+        if ini: text = text + " " + ini[0]; ini_pend = ini[1]; ini = ini[0]
         ent = X if X.lower() not in ("it", "this", "they") else conv.last_entity()
-        conv.push(q=q, frame=frame, entity=ent, answer=answer, kind="answer", style=style, pending=None, key=key)
+        from mini_ai.speak import split_prop
+        sp = split_prop(Y) if rel == "be" else None
+        topic = sp[1] if sp and frame and frame.get("slot") == "X" else None            # «capital of Kazakhstan» → тема Kazakhstan
+        conv.push(q=q, frame=frame, entity=ent, topic=topic, answer=answer, kind="answer", style=style, pending=ini_pend, key=key, qkey=qkey)
         self.history.append(dict(q=q, a=answer, entity=ent))
         return dict(question=q, frame=frame, read=read or [], answer=answer, kind="answer", how=how, facts=facts, confidence=confidence,
                     text=text, style=style, initiative=ini, note=None)

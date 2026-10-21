@@ -15,7 +15,14 @@
 import re, collections, random
 from mini_ai.memory_v2 import toks, content_words
 from mini_ai.reader import lemma
-from mini_ai.speak import phrase, split_prop, STYLES, entity_type, clean_y
+from mini_ai.speak import phrase, split_prop, STYLES, entity_type, clean_y, small_talk
+
+GREET_PREFIX = re.compile(r"^(?:hi|hello|hey|привет|please|пожалуйста)[,!\s]+(?=\S)", re.I)
+
+
+def strip_greeting(q):
+    """«Hi, what is the capital…» → «what is the capital…»"""
+    return GREET_PREFIX.sub("", q.strip()) if len(q.split()) > 2 else q.strip()
 
 QW = ("what", "which", "who", "where", "when", "how", "why")
 YES = re.compile(r"^(?:yes|yeah|yep|sure|ok|okay|да|ага|the first|first|former|right|correct)[\s.!]*$", re.I)
@@ -26,7 +33,7 @@ PROP_WORDS = {"population", "capital", "height", "area", "length", "size", "curr
               "width", "age", "name", "largest city", "biggest city", "main city", "founder", "president", "symbol", "density",
               "mass", "temperature", "color", "colour", "speed"}
 GENERIC_X = {"it", "this", "that", "they", "these", "those", "he", "she", "what", "which", "who", "there", "here"}
-CLASS_WORDS = {"city": "a city", "town": "a town", "capital": "a city", "country": "a country", "republic": "a country",
+CLASS_WORDS = {"person": "a person", "city": "a city", "town": "a town", "capital": "a city", "country": "a country", "republic": "a country",
                "river": "a river", "mountain": "a mountain", "planet": "a planet", "element": "a chemical element",
                "scientist": "a scientist", "physicist": "a scientist", "poet": "a poet", "writer": "a writer", "king": "a ruler",
                "organelle": "a part of the cell", "organ": "an organ", "animal": "an animal", "plant": "a plant", "gas": "a gas"}
@@ -72,10 +79,19 @@ class Conversation:
 
     def pending(self):
         t = self.last
-        return t.get("pending") if t and t.get("kind") in ("clarify", "unknown") else None
+        return t.get("pending") if t else None
 
-    def times_asked(self, key):
-        return sum(1 for t in self.turns if t.get("key") == key and t.get("kind") == "answer")
+    def topic_entities(self):
+        """сущности последних ходов по порядку: ответ последнего хода, затем тема его рамки («of Kazakhstan»), затем раньше"""
+        out = []
+        for t in reversed(self.turns):
+            for e in (t.get("entity"), t.get("topic")):
+                if e and e not in out: out.append(e)
+        return out
+
+    def times_asked(self, qkey):
+        """сколько раз этот же ВОПРОС уже задавали (не факт: «Where is it?» после «longest river» — другой вопрос)"""
+        return sum(1 for t in self.turns if t.get("qkey") == qkey and t.get("kind") == "answer")
 
     def last_style(self, key):
         for t in reversed(self.turns):
@@ -121,8 +137,15 @@ class Dialog:
         for X, rel, Y, src in self.facts_of(name_words):
             sp = split_prop(Y)
             if rel == "have" and sp: props.append((sp[0], (X, rel, Y, src)))
-            elif rel == "be" and clean_y(Y): props.append(("what it is", (X, rel, Y, src)))
-            elif rel not in ("be", "have") and clean_y(Y): props.append((f"what it {rel}s" if rel[-1] not in "s" else f"what it {rel}", (X, rel, Y, src)))
+            elif rel == "be" and sp and sp[0] in PROP_WORDS | {"largest city", "longest river", "highest mountain"}: props.append((f"{sp[0]} of {sp[1]}", (X, rel, Y, src)))
+            elif rel == "be" and clean_y(Y):
+                yl = Y.lower().strip()
+                if re.match(r"^(?:famous|known|notable|responsible) for\b", yl): props.append((f"what it is {yl.split()[0]} for", (X, rel, Y, src)))
+                elif re.match(r"^(?:a|an|the)\s+(?:\w+\s){0,2}\w+\s+(?:in|on|near)\s+[A-Z]", Y.strip()): props.append(("where it is", (X, rel, Y, src)))
+                else: props.append(("what it is", (X, rel, Y, src)))
+            elif rel not in ("be", "have") and clean_y(Y):
+                from mini_ai.speak import verb
+                props.append((f"what it {verb(rel, 'present') or rel}", (X, rel, Y, src)))
         seen = set(); out = []
         for p, f in props:
             if p not in seen: seen.add(p); out.append((p, f))
@@ -145,22 +168,42 @@ class Dialog:
 
     # ---------- 2. нить: подстановка рамки / сущности ----------
     def resolve(self, q, fr):
-        """→ (q', fr', note) — эллипсис и местоимения через историю. fr может быть None (не разобрался)."""
+        """→ список кандидатов [(q', fr', note)] — эллипсис и местоимения через историю; первый, что даст ответ, и берётся.
+        «And its capital?» после «largest city of Kazakhstan → Almaty»: сначала Almaty, потом тема рамки — Kazakhstan."""
         ql = q.strip().rstrip("?!. ").lower()
-        last_fr = self.conv.last_frame(); last_ent = self.conv.last_entity()
+        last_fr = self.conv.last_frame(); last_ent = self.conv.last_entity(); ents = self.conv.topic_entities()
+        m = ELLIPSIS.match(q.strip()) or (re.match(r"^(?:its|his|her|their)\s+(.+?)[?!.]*$", q.strip(), re.I))
+        if m and last_fr:
+            rw = content_words(toks(m.group(1)))
+            if rw and all(w in PROP_WORDS or w in ("the", "a") for w in rw) and ents:
+                return [(f"What is the {' '.join(rw)} of {e}?", None, "эллипсис: свойство") for e in ents[:3]]
+        if last_ent and PRON.search(q) and re.search(r"\b(its|his|her|their)\b", q, re.I):
+            out = []
+            for e in ents[:3]:
+                nq = re.sub(r"\b(its|his|her|their)\b", e + "'s", q, count=1, flags=re.I)
+                nq = re.sub(r"^(what|which) (is|was|are|were) " + re.escape(e) + r"'s (.+?)[?]*$", rf"what is the \3 of {e}?", nq, flags=re.I)
+                out.append((nq, None, "местоимение (притяжательное)"))
+            return out
+        return [self._resolve_one(q, fr, ql, last_fr, last_ent)]
+
+    def _resolve_one(self, q, fr, ql, last_fr, last_ent):
         m = ELLIPSIS.match(q.strip()) or (re.match(r"^(?:its|his|her|their)\s+(.+?)[?!.]*$", q.strip(), re.I))
         if m and last_fr:
             rest = m.group(1).strip(); rw = content_words(toks(rest))
             known = list(last_fr["Y"] if last_fr["slot"] == "X" else last_fr["X"])
             prop_old = [w for w in known if w in PROP_WORDS]
-            if rw and all(w in PROP_WORDS or w in ("the", "a") for w in rw) and last_ent:
-                # «And its population?» → прошлая сущность, новое свойство
-                nq = f"What is the {' '.join(rw)} of {last_ent}?"
-                return nq, None, "эллипсис: свойство"
             if rw and prop_old:
                 # «What about Kazakhstan?» → прошлое свойство, новая сущность
                 nq = f"What is the {' '.join(prop_old)} of {entity_phrase(rw, self.kb)}?"
                 return nq, None, "эллипсис: сущность"
+            prev_q = next((t["q"] for t in reversed(self.conv.turns) if t.get("q") and t.get("frame")), None)
+            if rw and prev_q:
+                # «What about South America?» после «What is the longest river in Africa?» → подставить имя в прошлый вопрос
+                old = self.entities_in(prev_q)
+                if old:
+                    pat = r"\b" + r"\s+".join(re.escape(w) for w in old[-1]) + r"\b"
+                    nq = re.sub(pat, entity_phrase(rw, self.kb), prev_q.rstrip("?"), count=1, flags=re.I) + "?"
+                    if nq.lower() != prev_q.lower(): return nq, None, "эллипсис: сущность в прошлом вопросе"
             if rw and last_fr["slot"] == "X" and last_fr["Y"]:
                 # «And Mars?» после «What does it have?» → та же связь с новой сущностью
                 old_ent = [w for w in known if w not in PROP_WORDS]
@@ -171,15 +214,18 @@ class Dialog:
             if re.search(r"\bthere\b", q, re.I) and re.match(r"^how many people live there", ql):
                 return f"What is the population of {ent}?", None, "местоимение there"
             if re.match(r"^how many people live in (it|there)", ql): return f"What is the population of {ent}?", None, "местоимение it"
-            nq = re.sub(r"\b(its|his|her|their)\b", ent + "'s", q, count=1, flags=re.I) if re.search(r"\b(its|his|her|their)\b", q, re.I) else q
-            if nq != q:
-                nq = re.sub(r"^(what|which) (is|was|are|were) " + re.escape(ent) + r"'s (.+?)[?]*$", rf"what is the \3 of {ent}?", nq, flags=re.I)
-                return nq, None, "местоимение (притяжательное)"
             nq = re.sub(r"\b(it|he|she|they|this|that|there)\b", ent, q, count=1, flags=re.I)
             if nq != q: return nq, None, "местоимение"
         return q, fr, None
 
     # ---------- 1. переспрос ----------
+    def bare_entity(self, q):
+        """«Tashkent?» / «Samarkand» — одно имя без вопроса → спросить, что именно интересует (если фактов ≥ 2)"""
+        qs = q.strip().rstrip("?!. ")
+        if not qs or len(qs.split()) > 3 or qs.split()[0].lower() in QW or not all(w[:1].isupper() for w in qs.split()): return None
+        e = [w.lower() for w in toks(qs)]
+        return e if e and len(self.props_of(e)) >= 2 and len(self.facts_of(e)) >= 2 else None
+
     def clarify(self, q, fr):
         """вопрос без ответа → dict(kind, text, pending) построенный из того, что понято"""
         ents = self.entities_in(q)
@@ -192,8 +238,11 @@ class Dialog:
                 options = [p for p, f in props][:3]
                 if want:                                                     # знаю сущность, но не это свойство
                     wanted = " ".join(sorted(want))
+                    opts = [o for o in options if not o.startswith(("what it", "where it"))][:2]
                     text = f"I don't know the {wanted} of {name} yet. I do know "
-                    text += (", ".join(f"its {o}" for o in options[:2]) if options else "a little about it") + f" — do you mean that? Or tell me the {wanted} in one sentence and I'll remember."
+                    text += (", ".join(f"its {o}" for o in opts) if opts else "what it is") + f" — do you mean that? Or tell me the {wanted} in one sentence and I'll remember."
+                    pend_opts = [(p, f) for p, f in props if p != "what it is"][:2] + [(p, f) for p, f in props if p == "what it is"]
+                    return dict(kind="clarify", text=text, pending=dict(entity=" ".join(e), name=name, options=pend_opts[:3], want=sorted(want)))
                 else:
                     text = f"I know {name}" + (f" is {CLASS_WORDS.get(etype, 'something I have facts about')}" if etype != "thing" else "") + " — what do you want to know about it: " + ", ".join(options) + "?"
                 return dict(kind="clarify", text=text, pending=dict(entity=" ".join(e), name=name, options=[(p, f) for p, f in props][:3], want=sorted(want)))
@@ -206,6 +255,24 @@ class Dialog:
             return dict(kind="unknown", text=f"I don't have a fact about {' '.join(cw)} yet. Tell me one sentence about it and I'll remember.",
                         pending=dict(entity=" ".join(cw[:3]), name=" ".join(cw[:3]), options=[], want=sorted(want)))
         return dict(kind="unknown", text="I didn't understand the question. Ask about one thing, like «What is the capital of Uzbekistan?»", pending=None)
+
+    def guess(self, q, out):
+        """слабая 2-шаговая цепочка (уверенность < 0.6) → не ответ, а ДОГАДКА-переспрос, и только если ответ — сущность с фактами
+        и цепочка касается сущности вопроса; иначе цепочка выбрасывается (мост через случайное слово)"""
+        ans = out.get("answer") or ""
+        aw = " ".join(toks(ans))
+        if not aw or aw not in self.kb.by_x or len(toks(ans)) > 3: return None
+        qents = {w for e in self.entities_in(q) for w in e}
+        facts = []
+        for f in out["facts"]:
+            m = re.match(r"^(.*?) —(.*?)→ (.*)$", f)
+            if m: facts.append(m.groups())
+        if qents and not any(qents & (set(toks(X)) | set(toks(Y))) for X, rel, Y in facts): return None
+        about = [(X, rel, Y, None) for X, rel, Y in facts if " ".join(toks(X)) == aw] or [(X, rel, Y, None) for X, rel, Y in facts]
+        from mini_ai.speak import sentence
+        why = " and ".join(sentence(X, rel, Y) for X, rel, Y, _ in about[:2])
+        text = f"I'm not sure. Do you mean {ans}? I know that {why}."
+        return dict(kind="clarify", text=text, pending=dict(entity=aw, name=ans, options=[(p, f) for p, f in [(ans, about[0])]], want=[]))
 
     def answer_pending(self, q, pend):
         """реплика после переспроса: yes → первый вариант; «its population» → выбранный вариант; no → попросить предложение"""
@@ -221,17 +288,20 @@ class Dialog:
         if rw <= {"person", "place", "thing", "city", "country"} and rw: return None, "класс сущности"
         return None, None
 
-    # ---------- 3. речь: выбор формы ----------
-    def choose_style(self, key, confidence):
-        prev = self.conv.last_style(key); n = self.conv.times_asked(key)
-        if confidence < 0.6: return "unsure", ""
-        if n:                                                          # повторный вопрос — другая форма + «as I said»
-            styles = [s for s in STYLES if s != prev] or list(STYLES)
-            return self.conv.rng.choice(styles), "As I said, "
-        return self.conv.rng.choice(STYLES), ""
+    def persona(self, X):
+        """(pron, etype) сущности по её определению в памяти: Isaac Newton → he/person"""
+        fs = [(x, r, y) for x, r, y, s in self.facts_of(content_words(toks(X)))]
+        return entity_type(fs) if fs else ("it", "thing")
 
-    def say(self, X, rel, Y, src, key, confidence, tense="present"):
-        style, prefix = self.choose_style(key, confidence)
+    # ---------- 3. речь: выбор формы ----------
+    def choose_style(self, key, qkey, confidence):
+        prev = self.conv.last_style(key); n = self.conv.times_asked(qkey)
+        if confidence < 0.6: return "unsure", ""
+        styles = [s for s in STYLES if s != prev] or list(STYLES)         # тот же факт — другая форма, чем в прошлый раз
+        return self.conv.rng.choice(styles), ("As I said, " if n else "")
+
+    def say(self, X, rel, Y, src, key, qkey, confidence, tense="present"):
+        style, prefix = self.choose_style(key, qkey, confidence)
         return phrase(X, rel, Y, style, tense, src, prefix), style
 
     # ---------- 4. инициатива ----------
@@ -241,14 +311,21 @@ class Dialog:
         ent = content_words(toks(X))
         others = [(x, r, y, s) for x, r, y, s in self.facts_of(ent) if (r, clean_y(y)) != (rel, clean_y(Y)) and clean_y(y)]
         others = [f for f in others if not (set(content_words(toks(f[2]))) <= set(content_words(toks(Y))))]
+        # «be + причастие» (conquered by…, thought to…) и длинные/обрывочные Y — не для «кстати»
+        others = [f for f in others if not (f[1] == "be" and re.match(r"^(?:\w+ed|thought|known|made|born|found|used|called|considered|conquered|located)\b", f[2].strip(), re.I))
+                  and len(f[2].split()) <= 14 and not re.search(r"\b(?:figure|table|chapter|below|above|shown)\b", f[2], re.I)]
         if not others: return None
         x, r, y, s = self.conv.rng.choice(others[:5])
         self.conv.last_initiative = self.conv.i
+        pron, etype = self.persona(X); poss = {"he": "his", "she": "her"}.get(pron, "its")
+        if etype == "person" and pron == "he": pron, poss = X, X + "'s"          # пол из фактов не известен → имя, не «he»
         sp = split_prop(y)
         if r == "have" and sp and self.conv.rng.random() < 0.5:
-            return f"Do you want to know its {sp[0]}?"
+            return f"Do you want to know {poss} {sp[0]}?", dict(entity=" ".join(ent), name=X, options=[(sp[0], (x, r, y, s))], want=[sp[0]])
         yy = clean_y(y)
-        if r == "be": return f"By the way, it is also {yy}."
-        if r == "have": return f"By the way, it also has {yy}."
         from mini_ai.speak import verb
-        return f"By the way, it also {verb(r, 'present') or r} {yy}."
+        past = etype == "person" and r not in ("be", "have")
+        if r == "be": t = f"By the way, {pron} {'was' if (etype == 'person') else 'is'} also {yy}."
+        elif r == "have": t = f"By the way, {pron} also {'had' if etype == 'person' else 'has'} {yy}."
+        else: t = f"By the way, {pron} also {verb(r, 'past' if past else 'present') or r} {yy}."
+        return t, None

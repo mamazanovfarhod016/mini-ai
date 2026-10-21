@@ -38,6 +38,7 @@
   var saved = localStorage.getItem(ENGINE_KEY);
   var engine = saved === "memory_core" ? "memory_core" : (saved !== "mlp" && txModel) ? "transformer" : "mlp";
   var memoryFacts = 0;   // сколько фактов в экспериментальной памяти (с сервера)
+  var memorySid = "";    // id нити разговора с экспериментальной памятью (exp40): одна на открытие приложения
 
   function paramsOfCurrentEngine() {
     if (engine === "memory_core") return memoryFacts || 0;
@@ -317,12 +318,16 @@
       // Экспериментальная модель «память без градиента»: факты + рамка + цепочка (сервер /api/memory/ask).
       out.textContent = "";
       out.classList.add("caret");
-      window.MiniLearn._call("/api/memory/ask", { q: text, lang: lang, device: device }).then(function (r) {
+      // sid — нить разговора: сервер помнит последние реплики (эллипсис «And its population?», «yes» на переспрос).
+      if (!memorySid) memorySid = (device || "d") + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+      window.MiniLearn._call("/api/memory/ask", { q: text, lang: lang, device: device, sid: memorySid }).then(function (r) {
         memoryFacts = r.n_facts || memoryFacts; updateParamsLabel();
-        var a = r.answer ? r.answer : "Не знаю — такого факта у меня нет. Напиши «выучи <предложение>» и спроси снова.";
-        if (r.answer && r.confidence < 0.6) a = a + " (не уверена)";
+        if (r.sid) memorySid = r.sid;
+        // text — реплика целиком (ответ своими словами / переспрос / уточнение); answer — для старых серверов
+        var a = r.text || r.answer || "Не знаю — такого факта у меня нет. Напиши «выучи <предложение>» и спроси снова.";
+        if (r.kind === "answer" && r.confidence < 0.6 && !/not sure|не уверена/i.test(a)) a = a + " (не уверена)";
         out.textContent = a;
-        var thought = { engine: "memory_core", answer: a, how: r.how, facts: r.facts || [], read: r.read || [], confidence: r.confidence, frame: r.frame };
+        var thought = { engine: "memory_core", answer: a, short: r.short, kind: r.kind, how: r.how, facts: r.facts || [], read: r.read || [], confidence: r.confidence, frame: r.frame, note: r.note };
         lastThought = { q: text, t: thought };
         finish(a, thought, a, true);
       }).catch(function (e) {
