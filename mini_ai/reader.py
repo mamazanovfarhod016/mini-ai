@@ -22,7 +22,7 @@ TOPIC_WORDS = {"it", "the city", "the country", "the town", "the river", "the is
 PREAMBLE = re.compile(r"^(?:In|By|During|After|Before|Since|According to|Following|At|On|Under|As of|Although|Despite|Today|Historically|Later|Currently|For example|However|Also)\b[^,]{0,60},\s*")
 YEAR = re.compile(r"\b(1\d{3}|20\d{2})\b")
 _V = "|".join(VERBS)
-RX = re.compile(r"^(?P<X>(?:[A-Z][\w'\-]*|the|It|it)(?:\s+(?:[A-Za-z][\w'\-]*)){0,3}?)\s+(?P<V>" + _V + r")\b\s*(?P<Y>(?:[^,.;:()]|,(?=\d)|\.(?=\d)|,(?=\s+(?!and\b|but\b|or\b|which\b|while\b|whereas\b|so\b|yet\b|as\b|because\b|when\b|where\b|who\b|that\b|the\b|a\b|an\b|it\b|he\b|she\b|they\b)[a-z]+\s+[a-z]+)){2,90})")
+RX = re.compile(r"^(?P<X>(?:[A-Z][\w'\-]*|the|It|it)(?:\s+(?:[A-Za-z][\w'\-]*)){0,3}?)\s+(?P<V>" + _V + r")\b\s*(?P<Y>(?:[^,.;:()]|,(?=\d)|\.(?=\d)|,(?=\s+(?!and\b|but\b|or\b|which\b|while\b|whereas\b|so\b|yet\b|as\b|because\b|when\b|where\b|who\b|that\b|the\b|a\b|an\b|it\b|he\b|she\b|they\b)[a-z]+\s+[a-z]+)|,(?=\s+(?:and\s+)?[A-Z][\w\-]*\s+(?:to|in|on)\s+the\s+(?:north|south|east|west|northeast|northwest|southeast|southwest))){2,220})")
 # Y: запятая допустима только перед цифрой (1,500), точка — внутри числа (3.14)
 POSS = re.compile(r"^(?:Its|Their|His|Her)\s+(?P<P>[a-z][\w\s\-]{1,30}?)\s+(?P<V>is|was|are|were)\s+(?P<Y>[^,.;:()]{1,80})")
 PLURAL = re.compile(r"^(?P<L>[A-Z][\w'\-]*(?:,\s*[A-Z][\w'\-]*)*(?:,?\s+and\s+[A-Z][\w'\-]*))\s+(?P<V>are|were|have|had)\b\s*(?P<Y>[^,.;:()]{2,80})")

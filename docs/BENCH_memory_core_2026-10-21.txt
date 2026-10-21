@@ -1,0 +1,5 @@
+bAbI 11 задач: среднее 0.987  min 0.882 (14-time_reasoning)
+мир 350 фактов: усвоение 0.21s | прямые 0.992 | 2 шага 0.983 | 3 шага 1.0 | после перезапуска 0.992
+SciQ 300: 0.19
+операторы на реальной памяти: 12/13  промахи: [('How many countries border Uzbekistan?', 'Let me count: Kazakhstan, Kyrgyzstan, Tajikistan, Afghanistan, Turkmenistan, Tur')]
+sec 21

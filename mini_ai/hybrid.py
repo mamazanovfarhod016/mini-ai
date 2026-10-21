@@ -17,6 +17,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RU = re.compile(r"[а-яё]", re.I)
 
+class Speaker:
+    """говорилка: трансформер из app/www/model_transformer.js (градиент) — только речь, без знаний"""
+    def __init__(self, path=None):
+        from mini_ai.transformer import load_model, KVModel
+        path = path or (ROOT / "app/www/model_transformer.js")
+        s = open(path, encoding="utf-8").read(); j = json.loads(s.split("=", 1)[1].rstrip(";\n"))
+        p, self.cfg, self.tok, meta = load_model(j); self.kv = KVModel(p, self.cfg); self.max_q = j.get("max_q", 40)
+    def speak(self, text):
+        from mini_ai.transformer import BOS, SEP, clean_question
+        ids = [BOS] + self.tok.encode(clean_question(text))[:self.max_q] + [SEP]
+        out, _ = self.kv.generate(ids, max_new=self.cfg["block"] - len(ids), temperature=0.0)
+        t = self.tok.decode(out).strip()
+        return t or None
+
 class Hybrid:
     def __init__(self, mind=None, speaker_path=None, state_dir=None):
         from mini_ai.experimental import ExperimentalMind

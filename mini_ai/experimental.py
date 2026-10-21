@@ -84,7 +84,15 @@ class ExperimentalMind:
         self._agent = None; self._coder = None
         from mini_ai.think import Thinker
         from mini_ai.cot import CoT
-        self.thinker = Thinker(self.kb); self.cot = CoT(self); self.dialog = None; self.new_session()
+        from mini_ai.ops import Ops
+        self.thinker = Thinker(self.kb); self.cot = CoT(self); self.ops = Ops(self.kb); self.ops.meaning = self.meaning
+        if self.use_dialog:
+            from mini_ai.dialog import Dialog
+            self.dialog = Dialog(self.kb, seed=self.seed)          # сервер подменяет на сессионный по sid
+        try:
+            from mini_ai.hybrid import Speaker
+            self.speaker = Speaker()
+        except Exception as e: self.speaker = None; print("говорилка не загружена:", e); self.dialog = None; self.new_session()
 
     def new_session(self):
         """новая нить разговора (сервер держит по одной на sid)"""
@@ -158,6 +166,14 @@ class ExperimentalMind:
                 if n: out["read"].append(f"{title}: {n} фактов")
         # РАССУЖДЕНИЕ ЦЕПОЧКОЙ (think.py): вопрос с типом ответа («in which country», «who», «where») →
         # путь по фактам до узла нужного типа; показываем шаги. Одношаговый ответ допускается только если тип совпал.
+        # ОПЕРАТОРЫ рассуждения (ops.py): сравнение, да/нет, счёт, список, почему, общее — над общей памятью
+        op = self.ops.run(q)
+        if op:
+            if op.get("answer") is None and not op.get("thoughts"):
+                pass                                                  # оператор понял вопрос, но фактов нет → дальше обычный путь (может переспросить)
+            else:
+                out.update(answer=op.get("answer"), how=f"op:{op['op']}", facts=[t.replace("I know: ", "") for t in op["thoughts"] if t.startswith("I know")], confidence=op.get("confidence", 0.0), thoughts=op["thoughts"], text=op["text"], kind=op["kind"])
+                self.history.append(dict(q=q, a=out["answer"], entity=None)); return out
         # CoT (cot.py): мысли пишутся в рабочую память и перечитываются; несколько цепочек → голосование
         cot = self.cot.reason(q, internet=internet) if re.search(r"\b(?:which|what) (?:country|city|continent)\b|\bthe (?:capital|currency|largest city) of\b", q.lower()) else None
         if cot and cot.get("answer"):
@@ -220,9 +236,13 @@ class ExperimentalMind:
         pend = conv.pending()
         # 0. реплика-собеседник (hi / thanks / how are you / who are you) — без поиска фактов
         st = small_talk(q0, conv.rng, len(self.kb.facts))
-        if st and not (pend and YES.match(q0)):
+        is_ru = bool(re.search(r"[а-яё]", q0.lower()))
+        if (st or is_ru) and not (pend and YES.match(q0)) and not re.match(r"^(выучи|запомни|что значит|что такое слово)\b", q0.lower()):
+            # ГИБРИД: болтовня и русский → говорилка (трансформер, обучен градиентом); знания и рассуждение — ядро
+            spoken = self.speaker.speak(q0) if getattr(self, "speaker", None) else None
             conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
-            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="small talk: " + st[0], facts=[], confidence=1.0, text=st[1], note=None)
+            if spoken: return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="speaker: transformer", facts=[], confidence=1.0, text=spoken, note=None)
+            if st: return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="small talk: " + st[0], facts=[], confidence=1.0, text=st[1], note=None)
         q0 = strip_greeting(q0)
         # 1. реплика после переспроса: yes/no/выбор варианта/утверждение-обучение
         if pend:
@@ -267,6 +287,9 @@ class ExperimentalMind:
                 conv.push(q=q1, frame=fr1, entity=g["pending"]["name"], answer=None, kind="clarify", pending=g["pending"], key=None)
                 return dict(question=q1, frame=fr1, read=out["read"], answer=None, kind="clarify", how="слабая цепочка → догадка-переспрос", facts=out["facts"], confidence=out["confidence"], text=g["text"], note=", ".join(notes) or None)
             out["answer"] = None                                            # мост через случайное слово — не ответ
+        if out.get("thoughts") is not None and out.get("how", "").startswith("op:") and out.get("text"):
+            conv.push(q=q1, frame=fr1, entity=None, answer=out.get("answer"), kind=out["kind"], pending=None, key=None)
+            out["question"] = q1; out["note"] = ", ".join(notes) or None; return out
         if out.get("answer") and out.get("thoughts"):
             # ответ получен рассуждением (CoT): текст — мысли как есть, диалоговый слой не перефразирует
             conv.push(q=q1, frame=fr1, entity=out["answer"], answer=out["answer"], kind="answer", pending=None, key=None)
