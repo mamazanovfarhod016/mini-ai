@@ -109,3 +109,5 @@ tools/reason_bench.py — все 20 задач bAbI. tools/school.py — шко�
 
 ### Школа v3 (3000 вопросов с учителем, сервер): test 0.540 vs холодный 0.497 → **+4.3 % от опыта**.
 Modal отключён (workspace disabled) — три школы там оборвались; без deep 8500 вопросов: 0.507, с deep 6500: 0.532.
+exp/reverse-def: 0.563 vs 0.567 — rejected (reverse definition rarely fires on SciQ; 'known as' first version grabbed wrong subject → 0.517)
+exp/consensus: SciQ 0.567 → 0.587 (+9/−3) — merged. Agreement of two different ways of thinking = independent witnesses.
