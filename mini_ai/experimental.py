@@ -109,6 +109,11 @@ class ExperimentalMind:
         from mini_ai.growth import Growth
         from mini_ai.deep import Deep
         self.growth = Growth(self, self.state_dir); self._last_out = None; self._cur_q = ""; self.deep = Deep(self)
+        self.neural = None
+        if os.environ.get("MINI_AI_NEURAL", "1") != "0":
+            try:
+                from mini_ai.neural import SentIndex; self.neural = SentIndex(self.kb)
+            except Exception as e: print("neural off:", e)
         if self.use_dialog:
             from mini_ai.dialog import Dialog
             self.dialog = Dialog(self.kb, seed=self.seed)          # сервер подменяет на сессионный по sid
@@ -269,7 +274,7 @@ class ExperimentalMind:
         hard = {w for w in known if not self._soft(w)} or known
         kidf = sum(idf[w] for w in hard) + 0.3 * sum(idf[w] for w in known - hard)
         qforms = set().union(*[self._forms(w) for w in (known0 | known)]) | {w for w in known0}   # все слова вопроса (и пустышки) — не ответ
-        cnt = collections.Counter(); ctx_hit = collections.Counter()
+        cnt = collections.Counter(); ctx_hit = collections.Counter(); self._neural_hit = {}
         for w in known:
             wgt = idf[w] if w in hard else 0.3 * idf[w]
             for x in ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w}):
@@ -292,6 +297,11 @@ class ExperimentalMind:
             if si in self.kb.sent_glued or re.search(r"\b(?:is|are) (?:called|known as|termed|named|referred to as)\b", self.kb.sents[si][0], re.I): cnt[si] = score * 1.3
         if only_sents is not None:                                   # комбинация: предложения, найденные другим способом — покрытие не проверяем строго
             cnt = collections.Counter({si: max(cnt.get(si, 0), kidf * max(thr, 0.6)) for si in only_sents})
+        elif getattr(self, "neural", None) is not None:
+            # НЕЙРОННЫЙ ГЛАЗ: предложения, близкие к вопросу ПО СМЫСЛУ (другие слова) — добавляем как кандидатов с покрытием = сходство;
+            # дальше они проходят те же проверки (редкие слова, куски), что и найденные по словам
+            for si, sim in self.neural.search(self._cur_q, k=6, min_sim=0.45):
+                cnt[si] = max(cnt.get(si, 0), kidf * sim); self._neural_hit[si] = sim
         for si, score in cnt.most_common(12):
             cov = score / kidf
             if cov < thr: continue
@@ -300,6 +310,7 @@ class ExperimentalMind:
                 sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # определение с отсылкой: слова соседа — тоже «в предложении»
             sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
             rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and not (forms[w] & sforms)]
+            if self._neural_hit.get(si, 0) >= 0.6: rare_missing = rare_missing[:1] if cov >= 0.5 else rare_missing[:2]   # смысл совпал — слова могут отличаться
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
             # (вопрос часто содержит лишнее уточнение: «in physics», «located below the soil», «during evolution»)
             if rare_missing:
@@ -359,6 +370,18 @@ class ExperimentalMind:
 
             if not cands: continue
             if G: cands = [(sc_ * G.pos_prior(self._cur_q, sent, pc), pc) for sc_, pc in cands]     # выученная позиция ответа
+            if getattr(self, "neural", None) is not None and len(cands) > 1:
+                # НЕЙРОННЫЙ ВЫБОР КУСКА: «вопрос + кусок» как утверждение против предложения — какой кусок делает утверждение
+                # ближе к предложению-источнику? («What holds together A and T? hydrogen bonds» ≈ «…held together with two hydrogen bonds»)
+                try:
+                    qbase = re.sub(r"\b(?:what|which|who|where|when|how)\b", "", self._cur_q.rstrip("?"), flags=re.I).strip()
+                    stmts = [f"{qbase} {pc}" for _, pc in cands]
+                    from mini_ai.neural import _model
+                    vs = _model().encode([sent] + stmts, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
+                    sims = vs[1:] @ vs[0]
+                    top = max(sc_ for sc_, _ in cands) or 1.0
+                    cands = [(sc_ * 0.5 + top * 0.5 * float(sm), pc) for (sc_, pc), sm in zip(cands, sims)]
+                except Exception: pass
             ans = max(cands, key=lambda c: c[0])[1]
             ans = re.sub(r"^(?:the|a|an|its|their|also|about|only|all|most|many|some|very)\s+", "", ans, flags=re.I).strip()
             if len(ans) < 2: continue

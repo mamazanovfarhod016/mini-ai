@@ -12,7 +12,7 @@ avail=$(free -m | awk 'NR==2{print $7}')
 if [ "$avail" -lt 4000 ]; then echo "LOW MEMORY: only ${avail} MB available, need 4000"; exit 3; fi
 echo $$ > "$LOCK"
 echo "$(date -u +%FT%TZ) start: $* (avail ${avail} MB)" >> "$LOG"
-( ulimit -v 3500000; echo 1000 > /proc/self/oom_score_adj 2>/dev/null; exec nice -n 19 ionice -c 3 python3 "$@" ) >> "$LOG" 2>&1
+( ulimit -v 3500000; echo 1000 > /proc/self/oom_score_adj 2>/dev/null; exec nice -n 19 ionice -c 3 "$PWD/.venv/bin/python" "$@" ) >> "$LOG" 2>&1
 rc=$?
 echo "$(date -u +%FT%TZ) end rc=$rc" >> "$LOG"; rm -f "$LOCK"
 grep -v "Warning\|warn(" "$LOG" | tail -6
