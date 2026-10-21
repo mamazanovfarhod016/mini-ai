@@ -92,10 +92,14 @@ class Reader:
         #    Только если предыдущее предложение было про тему (self.last == тема) — иначе «Its rings» уйдут
         #    к Сатурну из статьи Water. Родство (father/mother) — не свойство, а связь с человеком: пропускаем.
         m = POSS.match(body)
-        if m and topic and self.last == self.src:
+        if m and topic and (self.last == self.src or self.last == topic or self.src and self.src[:1].isupper()):
             prop = m.group("P").strip()
             if prop.split()[-1] not in ("father", "mother", "parents", "wife", "husband", "son", "daughter", "brother", "sister"):
-                return [(topic, prop.replace(" ", "_"), m.group("Y").strip())], None
+                Y = m.group("Y").strip()
+                facts = [(topic, prop.replace(" ", "_"), Y)]
+                # «Its capital and largest city is Tashkent» → ещё и (Tashkent, be, the capital of <тема>) — чтобы ответ знал страну
+                if Y[:1].isupper() and len(Y.split()) <= 3: facts.append((Y, "be", f"the {prop} of {topic}"))
+                return facts, None
             return [], None
         # 2) множественный субъект: «Tashkent, Samarkand and Bukhara are cities» → факт на каждого
         m = PLURAL.match(body)

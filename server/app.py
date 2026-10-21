@@ -157,10 +157,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {"answer": f"Выучила: +{r['new_facts']} фактов (всего {r['total']}).", "how": "learn", "facts": [], "confidence": 1.0})
                 if text.lower().startswith(("/tell ", "расскажи про ", "tell me about ")):
                     r = mind.tell(text.split(" ", 2 if text.lower().startswith("расскажи") else 1)[-1])
-                    return self._send(200, {"answer": r["text"] or "Про это у меня нет фактов.", "how": r["how"], "facts": [], "confidence": 1.0 if r["text"] else 0.0})
+                    return self._send(200, {"answer": r["text"] or "Про это у меня нет фактов.", "how": r["how"], "facts": [], "read": r.get("read", []), "confidence": 1.0 if r["text"] else 0.0})
                 r = mind.ask(text)
             store.append_jsonl(self.data / "memory_ask.jsonl", {**rec, "answer": r.get("answer"), "how": r.get("how"), "confidence": r.get("confidence")})
-            return self._send(200, {"answer": r.get("answer"), "how": r.get("how"), "facts": r.get("facts", []),
+            return self._send(200, {"answer": r.get("text") or r.get("answer"), "short": r.get("answer"), "how": r.get("how"), "facts": r.get("facts", []), "read": r.get("read", []),
                                     "confidence": r.get("confidence", 0), "frame": r.get("frame"), "n_facts": len(mind.kb.facts)})
         return self._send(404, {"error": "not found"})
 
