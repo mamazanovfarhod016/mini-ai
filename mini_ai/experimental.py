@@ -12,7 +12,7 @@
 """
 import os, re, json, time, collections
 import numpy as np
-from mini_ai.memory_v2 import toks, content_words
+from mini_ai.memory_v2 import toks, content_words, STOP as STOPW
 from mini_ai.reader import Reader
 from mini_ai.question import parse_question, answer_by_frame, rel_ok
 from mini_ai.speak import compose
@@ -26,6 +26,7 @@ class KnowledgeBase:
     def __init__(self):
         self.facts = []; self.by_word = collections.defaultdict(list); self.by_x = collections.defaultdict(list)
         self.df = collections.Counter(); self.n_docs = 0; self.reader = Reader(); self.sources = collections.Counter()
+        self.sents = []; self.sent_by_word = collections.defaultdict(list)        # сырые предложения (для ответа-отрывком, когда читатель не разобрал)
 
     def idf(self, w): return float(np.log((1 + self.n_docs) / (1 + self.df.get(w, 0))) + 1.0)
 
@@ -44,6 +45,9 @@ class KnowledgeBase:
             if len(s) > 400: s = s[:400]                          # очень длинное — читаем начало (там главное)
             ws = set(content_words(toks(s))); self.n_docs += 1
             for w in ws: self.df[w] += 1
+            if src != "user" and len(self.sents) < 400000:
+                si = len(self.sents); self.sents.append((s, src))
+                for w in ws: self.sent_by_word[w].append(si)
             for X, rel, Y in self.reader.read(s, src)[0]:
                 if "@" not in rel: self.add_fact(X, rel, Y, src); n += 1
         return n
@@ -126,17 +130,37 @@ class ExperimentalMind:
             if res: return res[0]
         return self._one_step_soft(fr, known)
 
+    # слова-пустышки вопроса: «what TERM means…», «what TYPE of cell», «by what METHOD» — они задают форму ответа, а не содержание;
+    # в факте их нет и быть не должно → вес ~0 и никогда не обязательны
+    META = set("term type kind name word example else another following describes refers called considered known commonly often usually generally "
+               "typically sometimes main primary major important specific certain particular general overall such like thing things something "
+               "purpose method feature structure form means mean meaning instrument way ways about far best describe refer describe described "
+               "category class sort variety number amount piece unit".split())
+    JUNK = set("today now then also usually often sometimes generally typically however thus therefore example instance figure below above here there".split())
     def _stem(self, w): return w[:-2] if w.endswith("es") and len(w) > 5 else (w[:-1] if w.endswith("s") and len(w) > 4 else w)
+    def _forms(self, w):
+        """множество грубых основ слова: plants/plant, processes/process, invertebrates/invertebrate, bodies/body, moves/move"""
+        f = {w}
+        if len(w) > 4 and w.endswith("ies"): f.add(w[:-3] + "y")
+        if len(w) > 5 and w.endswith("es"): f.add(w[:-2]); f.add(w[:-1])
+        elif len(w) > 4 and w.endswith("s"): f.add(w[:-1])
+        if len(w) > 4 and w.endswith("e"): f.add(w[:-1])
+        if len(w) > 5 and w.endswith("ing"): f.add(w[:-3]); f.add(w[:-3] + "e")
+        if len(w) > 5 and w.endswith("ed"): f.add(w[:-2]); f.add(w[:-1])
+        return f
+    def _widf(self, w): return min(self.kb.idf(w), 0.4) if w in self.META else self.kb.idf(w)
     def _one_step_soft(self, fr, known):
         """ПОНИМАНИЕ ПО СМЫСЛУ: вопрос перефразирован (plants↔plant, forests↔forest, слова переставлены, одно слово
         заменено синонимом) → факт, покрывающий ≥70 % веса слов вопроса с учётом форм и близости смысла (meaning),
         при этом редкие слова (idf высок) обязательны. Ответ — свободная часть факта."""
-        idf = {w: self.kb.idf(w) for w in known}; kidf = sum(idf.values())
-        stems = {self._stem(w): w for w in known}
+        idf = {w: self._widf(w) for w in known}; kidf = sum(idf.values())
+        if kidf <= 0: return None
         cnt = collections.Counter()
         for w in known:
-            ws = {w} | {x for x in self.kb.by_word if len(x) > 3 and self._stem(x) == self._stem(w)} if len(w) > 3 else {w}
-            for x in list(ws)[:6]:
+            if w in self.META: continue
+            fw = self._forms(w)
+            ws = {w} | {x for x in self.kb.by_word if len(x) > 3 and (self._forms(x) & fw)} if len(w) > 3 else {w}
+            for x in list(ws)[:8]:
                 for k in self.kb.by_word.get(x, []): cnt[k] += idf[w] * (1.0 if x == w else 0.9)
         for k in list(cnt):                                                          # + глагол факта, если он в вопросе
             rw = set(toks(self.kb.facts[k][1].replace("_", " "))) & known
@@ -144,8 +168,8 @@ class ExperimentalMind:
         best = None
         for k, score in cnt.most_common(40):
             Xw, rel, Yw, X, Y, src = self.kb.facts[k]; allw = Xw | Yw | set(toks(rel.replace("_", " ")))
-            stemmed = {self._stem(x) for x in allw}
-            missing = [w for w in known if w not in allw and self._stem(w) not in stemmed]
+            stemmed = set().union(*[self._forms(x) for x in allw]) if allw else set()
+            missing = [w for w in known if w not in allw and not (self._forms(w) & stemmed)]
             # пропущенное слово допустимо, только если оно частое (idf < 2.0) или по смыслу близко к какому-то слову факта
             M = getattr(self, "meaning", None); ok = True
             for w in missing:
@@ -182,8 +206,63 @@ class ExperimentalMind:
                 if not best or sc > best[0]: best = (sc, free, (X2, rel2, Y2, src2), (X, rel, Y, src))
         return best[:3] if best else None
 
+    def _span(self, fr, known0):
+        """ОТРЫВОК: читатель не разобрал предложение на факты (длинное, список, «X, Y and Z indicate…»), но
+        предложение памяти покрывает ≥60 % веса слов вопроса → ответ = его свободный кусок: часть предложения
+        (между знаками/союзами), где нет слов вопроса. Это не поиск по словам «на удачу»: обязательны редкие слова."""
+        known = {w for w in known0 if w not in self.META} | {w for w in content_words(toks((fr.get("rel") or "").replace("_", " "))) if w not in self.META}
+        if not known: return None
+        idf = {w: self.kb.idf(w) for w in known}; kidf = sum(idf.values()); forms = {w: self._forms(w) for w in known}
+        qforms = set().union(*[self._forms(w) for w in (known0 | known)]) | {w for w in known0}   # все слова вопроса (и пустышки) — не ответ
+        cnt = collections.Counter()
+        for w in known:
+            for x in ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w}):
+                for si in self.kb.sent_by_word.get(x, []): cnt[si] += idf[w] * (1.0 if x == w else 0.9)
+        best = None
+        for si, score in cnt.most_common(12):
+            cov = score / kidf
+            if cov < 0.6: continue
+            sent, src = self.kb.sents[si]; sw = set(content_words(toks(sent))); sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
+            rare_missing = [w for w in known if idf[w] >= 2.5 and not (forms[w] & sforms)]
+            if rare_missing: continue
+            # куски предложения; кандидат = кусок без слов вопроса, с ≥1 содержательным словом
+            body = re.sub(r"\s*\(([^)]*)\)", r", \1, ", sent)                       # «(about 2 km)» — тоже кусок
+            pieces = [p.strip(" ,;:.") for p in re.split(r",|;|:| — | - |\b(?:and|or|but|because|which|that|while|whereas|so that|such as|called|known as|is|are|was|were|by|through|into|from|than)\b", body)]
+            cands = []
+            for p in pieces:
+                pw = set(content_words(toks(p))) - self.JUNK
+                if not pw: continue
+                pf = set().union(*[self._forms(x) for x in pw])
+                overlap = sum(1 for x in pw if (self._forms(x) & qforms) or x in self.META)        # слов куска, которые есть в вопросе
+                if overlap and len(pw) > overlap:
+                    # кусок со словами вопроса: ответ — самый длинный пробел между ними («most living things use OXYGEN to make ATP»)
+                    run, runs = [], []
+                    for x in toks(p):
+                        if x in STOPW or x in self.JUNK: 
+                            if run: runs.append(run); run = []
+                            continue
+                        if (self._forms(x) & qforms) or x in self.META: 
+                            if run: runs.append(run); run = []
+                        else: run.append(x)
+                    if run: runs.append(run)
+                    for r_ in runs:
+                        if 1 <= len(r_) <= 4: cands.append((max(self.kb.idf(x) for x in r_) * 0.9 - 0.05 * len(r_), " ".join(r_)))
+                    continue
+                if overlap == 0 and len(pw) <= 6:
+                    # лучший кусок — с самым редким словом (термин), не «made»/«used»/«found» (глагольные хвосты)
+                    verbish = all(x.endswith(("ed", "ing")) or x in ("made", "used", "found", "done", "seen", "known") for x in pw)
+                    cands.append((max(self.kb.idf(x) for x in pw) * (0.3 if verbish else 1.0) - 0.05 * len(pw), p))
+            if not cands: continue
+            ans = max(cands, key=lambda c: c[0])[1]
+            ans = re.sub(r"^(?:the|a|an|its|their|also|about|only|all|most|many|some|very)\s+", "", ans, flags=re.I).strip()
+            if len(ans) < 2: continue
+            sc = round(cov * 0.55, 2)
+            if not best or sc > best[0]: best = (sc, ans, (sent[:120], "span", "", src))
+        return best
+
     def _two_step(self, fr, max_f1=60, max_t=8):
         known = set(fr["Y"] if fr["slot"] == "X" else fr["X"])
+        known = known - self.META
         if len(known) < 2: return None
         idf = {w: self.kb.idf(w) for w in known}; kidf = sum(idf.values())
         cnt = collections.Counter()
@@ -267,10 +346,15 @@ class ExperimentalMind:
         r = self._one_step(fr)
         if not r:
             r2 = self._two_step(fr)
+            sp = None if r2 else self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]))
             if r2:
                 s, ans, t, F1, F2 = r2
                 out.update(answer=ans, how=f"2 шага через «{t}»", facts=[f"{F1[3]} —{F1[1]}→ {F1[4]}", f"{F2[3]} —{F2[1]}→ {F2[4]}"], confidence=round(min(1.0, s / 2.0), 2))
                 r = None
+            elif sp:
+                s, ans, (sent, _, _, src) = sp
+                out.update(answer=ans, how="отрывок предложения", facts=[f"{ans} —span→ {sent}"], confidence=round(min(1.0, s / 0.6), 2), text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}.")
+                self.history.append(dict(q=q, a=ans, entity=ans)); return out
             elif internet:
                 # НЕ ЗНАЮ → ИДУ В ИНТЕРНЕТ: ищу статьи Википедии по словам вопроса, читаю, пробую снова
                 for title in self._wiki_titles(fr):
@@ -355,6 +439,9 @@ class ExperimentalMind:
         if out.get("thoughts") is not None and (out.get("how", "").startswith("op:") or out.get("how", "").startswith("few-shot")) and out.get("text"):
             conv.push(q=q1, frame=fr1, entity=None, answer=out.get("answer"), kind=out["kind"], pending=None, key=None)
             out["question"] = q1; out["note"] = ", ".join(notes) or None; return out
+        if out.get("answer") and out.get("how") == "отрывок предложения":
+            conv.push(q=q1, frame=fr1, entity=out["answer"], answer=out["answer"], kind="answer", pending=None, key=None)
+            out["question"] = q1; out["kind"] = "answer"; out["note"] = ", ".join(notes) or None; return out
         if out.get("answer") and out.get("thoughts"):
             # ответ получен рассуждением (CoT): текст — мысли как есть, диалоговый слой не перефразирует
             conv.push(q=q1, frame=fr1, entity=out["answer"], answer=out["answer"], kind="answer", pending=None, key=None)
