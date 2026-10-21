@@ -476,6 +476,14 @@ class ExperimentalMind:
                         cands.append(dict(how="нейронный читатель", answer=ans, confidence=conf, facts=[f"{ans} —span→ {src_sent[:160]}"],
                                           text=f"From what I've read: {src_sent.rstrip('.')[:160]}. So I'd say: {ans}."))
             except Exception as e_: pass
+        # СОГЛАСИЕ: если нейронный читатель и символьный отрывок/факт дали один ответ — это два независимых свидетеля → уверенность вверх
+        nr = next((c for c in cands if c["how"] == "нейронный читатель"), None)
+        if nr:
+            na = set(content_words(toks(str(nr["answer"]))))
+            for c in cands:
+                if c is nr or not na: continue
+                ca = set(content_words(toks(str(c["answer"]))))
+                if ca and (ca <= na or na <= ca): c["confidence"] = round(min(1.0, c["confidence"] + 0.2), 2); c["how"] = c["how"] + " +читатель"
         # ГЛУБОКОЕ РАССУЖДЕНИЕ (deep.py): до 7 шагов по графу фактов с откатом — когда прямые способы слабы или молчат
         try: dp = self.deep.reason(q)                                   # deep думает всегда: его сила — тип ответа и цепочки
         except Exception: dp = None
@@ -626,10 +634,10 @@ class ExperimentalMind:
         # по опыту (этот способ на этой форме вопроса попадал/промахивался) → побеждает лучший, не первый сработавший
         pick = self._arbiter(q, fr)
         r = None
-        if pick and pick["how"] == "1 шаг": r = pick["raw"]; out["arbiter"] = pick["board"]
+        if pick and pick["how"].startswith("1 шаг"): r = pick["raw"]; out["arbiter"] = pick["board"]
         elif pick and pick["how"].startswith("2 шага"):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], arbiter=pick["board"])
-        elif pick and (pick["how"] in ("отрывок предложения", "нейронный читатель") or pick["how"].startswith("комбинация")):
+        elif pick and (pick["how"].startswith(("отрывок предложения", "нейронный читатель", "комбинация"))):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], arbiter=pick["board"])
             self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
         elif pick and "(deep)" in pick["how"]:
@@ -758,7 +766,7 @@ class ExperimentalMind:
         if out.get("thoughts") is not None and (out.get("how", "").startswith("op:") or out.get("how", "").startswith("few-shot")) and out.get("text"):
             conv.push(q=q1, frame=fr1, entity=None, answer=out.get("answer"), kind=out["kind"], pending=None, key=None)
             out["question"] = q1; out["note"] = ", ".join(notes) or None; return out
-        if out.get("answer") and (out.get("how") in ("отрывок предложения", "нейронный читатель") or (out.get("how") or "").startswith("комбинация")):
+        if out.get("answer") and (out.get("how") or "").startswith(("отрывок предложения", "нейронный читатель", "комбинация")):
             conv.push(q=q1, frame=fr1, entity=out["answer"], answer=out["answer"], kind="answer", pending=None, key=None)
             out["question"] = q1; out["kind"] = "answer"; out["note"] = ", ".join(notes) or None; return out
         if out.get("answer") and out.get("thoughts"):

@@ -108,7 +108,7 @@ class Growth:
     # ---------- 2. надёжность способов ----------
     @staticmethod
     def _howkey(how):
-        return re.sub(r"[«»].*", "", (how or "").split(":")[0]).strip() or "?"
+        return re.sub(r"[«»].*", "", (how or "").split(":")[0]).replace(" +читатель", "").strip() or "?"
 
     def trust(self, how, q):
         """множитель уверенности по опыту, С ПЕРЕНОСОМ: точная форма → тип → класс → вообще. Уровни смешиваются:
