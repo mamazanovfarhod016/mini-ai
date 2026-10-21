@@ -121,6 +121,11 @@ class Reader:
         if not m:
             return self._read_general(body, topic)
         X, V, Y = m.group("X").strip(), m.group("V"), m.group("Y").strip().rstrip(".")
+        # «The capital is Astana» / «Its capital is Astana» в статье о стране → (Astana, be, the capital of <тема>) + (тема, capital, Astana)
+        mp = re.match(r"^(?:the|its)\s+(capital|currency|largest city|official language|president|population)$", X.lower())
+        if mp and topic and V.lower() in ("is", "was") and Y[:1].isupper():
+            Yc = re.split(r",\s+(?:and|while|but)\s+|\s+and\s+", Y)[0].strip()
+            return [(Yc, "be", f"the {mp.group(1)} of {topic}"), (topic, mp.group(1).replace(" ", "_"), Yc)], None
         if X.lower() in GENERIC:
             X, how = (topic if X.lower() in TOPIC_WORDS and self.src else self.last), "ctx"
         else:

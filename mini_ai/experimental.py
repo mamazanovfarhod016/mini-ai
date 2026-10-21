@@ -79,7 +79,8 @@ class ExperimentalMind:
         self.boot = dict(facts=len(self.kb.facts), seconds=round(time.time() - t0, 1), sources=dict(self.kb.sources.most_common(5)))
         self._agent = None; self._coder = None
         from mini_ai.think import Thinker
-        self.thinker = Thinker(self.kb); self.dialog = None; self.new_session()
+        from mini_ai.cot import CoT
+        self.thinker = Thinker(self.kb); self.cot = CoT(self); self.dialog = None; self.new_session()
 
     def new_session(self):
         """новая нить разговора (сервер держит по одной на sid)"""
@@ -153,6 +154,14 @@ class ExperimentalMind:
                 if n: out["read"].append(f"{title}: {n} фактов")
         # РАССУЖДЕНИЕ ЦЕПОЧКОЙ (think.py): вопрос с типом ответа («in which country», «who», «where») →
         # путь по фактам до узла нужного типа; показываем шаги. Одношаговый ответ допускается только если тип совпал.
+        # CoT (cot.py): мысли пишутся в рабочую память и перечитываются; несколько цепочек → голосование
+        cot = self.cot.reason(q, internet=internet) if re.search(r"\b(?:which|what) (?:country|city|continent)\b|\bthe (?:capital|currency|largest city) of\b", q.lower()) else None
+        if cot and cot.get("answer"):
+            out.update(answer=cot["answer"], how=f"{len(cot['support'])} chain(s), {len(cot['thoughts'])} thoughts", facts=cot["support"], confidence=cot["confidence"], thoughts=cot["thoughts"])
+            steps = [t for t in cot["thoughts"] if t.startswith("I know") or t.startswith("So ")]
+            out["text"] = self._cot_text(steps, cot["answer"]) if len(steps) > 1 else None; out["kind"] = "answer"
+            if not out["text"]: out.pop("thoughts", None)      # прямой факт — пусть диалоговый слой скажет своими словами
+            self.history.append(dict(q=q, a=cot["answer"], entity=cot["answer"])); return out
         th = self.thinker.think(q) if re.search(r"\b(?:which|what) (?:country|city|continent|river|company|language|currency)\b", q.lower()) else None
         typed_q = bool(re.search(r"\b(?:which|what) (?:country|city|continent|river|company|language|currency)\b", q.lower()))
         if th:
@@ -249,6 +258,10 @@ class ExperimentalMind:
                 conv.push(q=q1, frame=fr1, entity=g["pending"]["name"], answer=None, kind="clarify", pending=g["pending"], key=None)
                 return dict(question=q1, frame=fr1, read=out["read"], answer=None, kind="clarify", how="слабая цепочка → догадка-переспрос", facts=out["facts"], confidence=out["confidence"], text=g["text"], note=", ".join(notes) or None)
             out["answer"] = None                                            # мост через случайное слово — не ответ
+        if out.get("answer") and out.get("thoughts"):
+            # ответ получен рассуждением (CoT): текст — мысли как есть, диалоговый слой не перефразирует
+            conv.push(q=q1, frame=fr1, entity=out["answer"], answer=out["answer"], kind="answer", pending=None, key=None)
+            out["question"] = q1; out["note"] = ", ".join(notes) or None; return out
         if out.get("answer"):
             X, rel, Y, src = self._fact_of(out)
             r = self._reply_fact(q1, X, rel, Y, src, out["confidence"], how=out["how"], facts=out["facts"], frame=fr1, read=out["read"], two_step=out if len(out["facts"]) > 1 else None)
@@ -259,6 +272,19 @@ class ExperimentalMind:
         conv.push(q=q1, frame=fr1, entity=(c["pending"] or {}).get("name"), answer=None, kind=c["kind"], pending=c["pending"], key=None)
         return dict(question=q1, frame=fr1, read=out["read"], answer=None, kind=c["kind"], how="не знаю → " + ("переспрос" if c["kind"] == "clarify" else "уточнение"),
                     facts=[], confidence=0.0, text=c["text"], note=", ".join(notes) or None)
+
+    def _cot_text(self, steps, answer):
+        """мысли → речь: «X —rel→ Y» → «X is in Y», без служебных стрелок; последняя цепочка + вывод"""
+        def nice(t):
+            t = re.sub(r"\s*\(because.*\)\.?$", "", t)
+            t = re.sub(r"—born in country→|—born in continent→", "was born in", t); t = re.sub(r"—company in country→|—company in continent→|—company in→", "is based in", t)
+            t = re.sub(r"—capital in continent→|—city in continent→", "is in", t); t = re.sub(r"—born in→", "was born in", t)
+            t = re.sub(r"—capital of→", "is the capital of", t); t = re.sub(r"—city in→", "is a city in", t); t = re.sub(r"—country in→", "is a country in", t)
+            t = re.sub(r"—largest city of→", "is the largest city of", t); t = re.sub(r"—currency of→", "is the currency of", t)
+            t = re.sub(r"—(\w[\w ]*)→", lambda m: m.group(1).replace("_", " "), t); return t.rstrip(".") + "."
+        facts = [nice(t)[len("I know: "):] for t in steps if t.startswith("I know")][:3]
+        concl = [nice(t) for t in steps if t.startswith("So ") and answer.lower() in t.lower()]
+        return "Let me think. " + " ".join(facts) + (" " + concl[-1] if concl else "") + f" So: {answer}."
 
     def _fact_of(self, out):
         m = re.match(r"^(.*?) —(.*?)→ (.*)$", out["facts"][-1] if len(out["facts"]) > 1 else out["facts"][0])

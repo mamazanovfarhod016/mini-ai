@@ -283,8 +283,11 @@ class Dialog:
         if NO.match(ql):
             return None, "отказ от вариантов"
         rw = set(content_words(toks(ql)))
+        # полный новый вопрос с другой сущностью («What is the capital of Germany?») — это не выбор варианта
+        if _is_question(ql) and len(ql.split()) >= 4 and not (rw & set(content_words(toks(pend.get("name") or "")))): return None, None
         for p, f in pend.get("options", []):
-            if rw & set(content_words(toks(p))): return f, "выбор варианта переспроса"
+            if rw & set(content_words(toks(p))) - {"capital", "city", "country", "population", "largest", "known"}: return f, "выбор варианта переспроса"
+            if rw <= set(content_words(toks(p))): return f, "выбор варианта переспроса"
         if rw <= {"person", "place", "thing", "city", "country"} and rw: return None, "класс сущности"
         return None, None
 
