@@ -16,7 +16,7 @@ def hit(o, g):
     a = ((o.get("text") or "") + " " + str(o.get("answer") or "")).lower(); return str(g).lower() in a
 def rec(m, o):
     adv = getattr(m, "_advice", None) or {}
-    return dict(how=o.get("how"), ans=str(o.get("answer"))[:60], adv_n=adv.get("n", 0), adv_top=round(adv.get("top", 0), 2), soft=sorted(adv.get("soft", [])), board=[(b[0], b[1], b[4]) for b in (o.get("arbiter") or [])][:5])
+    return dict(how=o.get("how"), ans=str(o.get("answer"))[:60], adv_n=adv.get("n", 0), adv_top=round(adv.get("top", 0), 2), bold=adv.get("bold"), soft=sorted(adv.get("soft", [])), board=[(b[0], b[1], b[4]) for b in (o.get("arbiter") or [])][:5])
 deltas = []; t0 = time.time(); D = []
 for lo in slices:
     rows = list(tr.iloc[lo:lo + TEACH + TEST].iterrows()); h1, h2 = rows[:TEACH], rows[TEACH:]
