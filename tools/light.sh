@@ -12,7 +12,7 @@ if [ "$avail" -lt 2500 ]; then echo "LOW MEMORY: ${avail} MB"; exit 3; fi
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1 LIGHT_RUN=1 MINI_AI_NEURAL=${MINI_AI_NEURAL:-0}
 echo 900 > /proc/self/oom_score_adj 2>/dev/null
 # сторож в фоне наблюдает за НАШИМ pid; сам процесс — в foreground через exec после запуска сторожа
-( me=$$; parent=$PPID
+( parent=$$   # $$ и в подоболочке = pid этого скрипта, который после exec станет python; $PPID смотрел бы на внешний shell (и вешал пайп)
   while kill -0 "$parent" 2>/dev/null; do
     rss=$(awk '/VmRSS/{print int($2/1024)}' /proc/$parent/status 2>/dev/null || echo 0); av=$(free -m | awk 'NR==2{print $7}')
     if [ "${rss:-0}" -gt 1600 ] || [ "$av" -lt 1000 ]; then echo "WATCHDOG KILL: rss=${rss}MB avail=${av}MB" >&2; kill -9 "$parent"; break; fi
