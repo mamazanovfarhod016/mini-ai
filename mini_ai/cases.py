@@ -169,11 +169,14 @@ class Cases:
         qw = self._qwords(q)
         soft, need, pos, how = collections.Counter(), collections.Counter(), [], collections.Counter()
         M = getattr(self.mind, "meaning", None); wb = ws = wt = 0.0; sb = st = 0.0
+        soft_mode = os.environ.get("MINI_AI_CASES_SOFT", "exact")                           # exact | meaning (абляция)
+        soft_min = float(os.environ.get("MINI_AI_CASES_SOFT_MIN", "0.65"))                # роль переносится только из ОЧЕНЬ похожих случаев (тот же скелет / те же термины); измерено: 0.0 → +0.044, 0.65 → +0.053
         for s, it in sims:
             for w, role in it["roles"].items():
+                if s < soft_min: break
                 # перенос роли на слова нового вопроса: то же слово, или близкое по смыслу
                 for x in qw:
-                    same = (x == w) or (self.mind._forms(x) & self.mind._forms(w)) or (M is not None and len(x) > 3 and len(w) > 3 and (M.similar(x, w) or 0) > 0.5)
+                    same = (x == w) or (self.mind._forms(x) & self.mind._forms(w)) or (soft_mode == "meaning" and M is not None and len(x) > 3 and len(w) > 3 and (M.similar(x, w) or 0) > 0.5)
                     if same: (soft if role == "extra" else need)[x] += s
             if it.get("pos"): pos.append((it["pos"].get("left"), it["pos"].get("right"), s))
             if it.get("how") and it.get("lesson") == "hit": how[re.sub(r"[«»].*", "", it["how"]).split(":")[0].strip()] += s
@@ -184,6 +187,11 @@ class Cases:
         # общим опытом молчания по ВСЕМ случаям (тоже выучен из исправлений: при 0 случаев смелость 0 → поведение холодной).
         bold = (sb + k * prior) / (st + k) if (st + k) > 0 else 0.0
         soft_set = {w for w, v in soft.items() if v > need.get(w, 0) and v >= 0.6}
+        off = set(os.environ.get("MINI_AI_CASES_OFF", "").split(","))                      # абляция: soft,pos,how,bold
+        if "soft" in off: soft_set = set()
+        if "pos" in off: pos = []
+        if "how" in off: how = collections.Counter()
+        if "bold" in off: bold = 0.0
         return dict(soft=soft_set, need={w for w, v in need.items() if v >= 0.6}, pos=pos, how=how, n=len(sims), top=sims[0][0],
                     bold=round(bold, 2), strict=(ws / wt if wt else 0.0))
 

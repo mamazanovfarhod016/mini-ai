@@ -282,8 +282,9 @@ class ExperimentalMind:
         # СЛУЧАИ: похожие исправленные вопросы говорят, какие слова были лишними → они мягкие здесь
         adv = self._advice if self._advice and self._advice.get("q") == self._cur_q else None
         case_soft = (adv or {}).get("soft", set())
+        case_soft_cov = case_soft if os.environ.get("MINI_AI_CASES_SOFT_COV", "0") == "1" else set()   # измерено: мягкие слова из случаев прощаются только как «редкое слово» (rare_missing), в знаменателе покрытия они остаются (+0.003 vs в знаменателе)
         # покрытие считаем по ТВЁРДЫМ словам (терминам); мягкие (глаголы, связки) — только бонус, не знаменатель
-        hard = {w for w in known if not self._soft(w) and w not in case_soft} or known
+        hard = {w for w in known if not self._soft(w) and w not in case_soft_cov} or known
         kidf = sum(idf[w] for w in hard) + 0.3 * sum(idf[w] for w in known - hard)
         qforms = set().union(*[self._forms(w) for w in (known0 | known)]) | {w for w in known0}   # все слова вопроса (и пустышки) — не ответ
         cnt = collections.Counter(); ctx_hit = collections.Counter(); self._neural_hit = {}; G = getattr(self, "growth", None)
@@ -446,8 +447,8 @@ class ExperimentalMind:
             adv = self._advice if self._advice and self._advice.get("q") == q else None
             bold_c = float((adv or {}).get("bold", 0.0) or 0.0)
             if os.environ.get("MINI_AI_FORCE_BOLD"): bold_c = float(os.environ["MINI_AI_FORCE_BOLD"])                 # замер потолка (probe)
-            if bold_c >= 0.3:
-                sp = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]), relax=0.2)
+            if bold_c >= float(os.environ.get("MINI_AI_BOLD_MIN", "0.3")):
+                sp = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]), relax=float(os.environ.get("MINI_AI_BOLD_RELAX", "0.2")))
                 if sp:
                     s, ans, (sent, _, _, src) = sp
                     cands.append(dict(how="отрывок предложения (смело, по случаям)", answer=ans, confidence=round(min(0.7, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
