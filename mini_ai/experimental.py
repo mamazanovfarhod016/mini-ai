@@ -110,6 +110,8 @@ class ExperimentalMind:
         from mini_ai.growth import Growth
         from mini_ai.deep import Deep
         self.growth = Growth(self, self.state_dir); self._last_out = None; self._cur_q = ""; self.deep = Deep(self)
+        from mini_ai.cases import Cases
+        self.cases = Cases(self, self.state_dir); self._advice = None
         self.neural = None
         if os.environ.get("MINI_AI_NEURAL", "1") != "0":
             try:
@@ -276,8 +278,11 @@ class ExperimentalMind:
         known = known - atype_w
         if not known: return None
         idf = {w: self._widf(w) for w in known}; forms = {w: self._forms(w) for w in known}
+        # СЛУЧАИ: похожие исправленные вопросы говорят, какие слова были лишними → они мягкие здесь
+        adv = self._advice if self._advice and self._advice.get("q") == self._cur_q else None
+        case_soft = (adv or {}).get("soft", set())
         # покрытие считаем по ТВЁРДЫМ словам (терминам); мягкие (глаголы, связки) — только бонус, не знаменатель
-        hard = {w for w in known if not self._soft(w)} or known
+        hard = {w for w in known if not self._soft(w) and w not in case_soft} or known
         kidf = sum(idf[w] for w in hard) + 0.3 * sum(idf[w] for w in known - hard)
         qforms = set().union(*[self._forms(w) for w in (known0 | known)]) | {w for w in known0}   # все слова вопроса (и пустышки) — не ответ
         cnt = collections.Counter(); ctx_hit = collections.Counter(); self._neural_hit = {}; G = getattr(self, "growth", None)
@@ -327,7 +332,7 @@ class ExperimentalMind:
                 sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # определение с отсылкой / следующее предложение: слова соседа — тоже «в предложении»
             sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
             hy = set(re.findall(r"\b([a-z]+)-(?:like|type|shaped|based|free|rich)\b", self._cur_q.lower()))          # «tube-like» — описание, не термин
-            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and not (forms[w] & sforms) and not (G and set(G.paraphrases(w)) & sw)]
+            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and w not in case_soft and not (forms[w] & sforms) and not (G and set(G.paraphrases(w)) & sw)]
             if self._neural_hit.get(si, 0) >= 0.6: rare_missing = rare_missing[:1] if cov >= 0.5 else rare_missing[:2]   # смысл совпал — слова могут отличаться
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
             # (вопрос часто содержит лишнее уточнение: «in physics», «located below the soil», «during evolution»)
@@ -378,6 +383,9 @@ class ExperimentalMind:
                         sc_ = max(self.kb.idf(x) for x in r_) * 0.9 - 0.05 * len(r_)
                         if gap_l and left and (self._forms(left) & self._forms(gap_l)): sc_ += 1.0        # тот же сосед слева, что у «what» в вопросе
                         if gap_r and right and (self._forms(right) & self._forms(gap_r)): sc_ += 0.6
+                        for cl, cr, cs in (adv or {}).get("pos", []):                                     # соседи ответа из похожих случаев
+                            if cl and left and (self._forms(left) & self._forms(cl)): sc_ += 0.5 * cs
+                            if cr and right and (self._forms(right) & self._forms(cr)): sc_ += 0.3 * cs
                         cands.append((sc_, " ".join(r_)))
                     continue
                 if overlap == 0 and len(pw) <= 6:
@@ -499,6 +507,11 @@ class ExperimentalMind:
                 if n_: c["confidence"] = round(min(1.0, c["confidence"] + 0.2 + 0.1 * (n_ - 1)), 2); c["how"] = c["how"] + " +согласие"
                 else: c["confidence"] = round(c["confidence"] * 0.75, 2)
         hints = set(G.hints(q)) if G else set(); prefs = G.slot_prefs(q) if G else {}
+        if self._advice and self._advice.get("q") == q and self._advice.get("how"):
+            for c in cands:                                                 # похожие случаи решались этим способом → бонус
+                hk = re.sub(r"[«»].*", "", c["how"]).split(":")[0].strip()
+                b = self._advice["how"].get(hk, 0)
+                if b: c["confidence"] = round(min(1.0, c["confidence"] + 0.15 * min(1.0, b)), 2)
         dr = G.diag_rates(q) if G else {}
         for c in cands:                                            # диагноз → кого двигать: «не тот факт» → отрывку +, «не тот кусок» → факту +
             if dr.get("wrong-fact", 0) > 0.4 and c["how"] == "отрывок предложения": c["confidence"] = min(1.0, c["confidence"] + 0.1)
@@ -586,6 +599,8 @@ class ExperimentalMind:
 
     def _ask_core(self, q, internet=True, fr=None):
         self._cur_q = q
+        try: a = self.cases.advice(q); self._advice = dict(a, q=q) if a else None
+        except Exception: self._advice = None
         fr = fr or parse_question(q)
         out = dict(question=q, frame=fr, read=[])
         if internet and fr.get("atype") == "place" and fr["X"]:
@@ -682,7 +697,7 @@ class ExperimentalMind:
         #     способ теряет доверие на этой форме вопроса, путь вопрос→X становится схемой, связка слов запоминается
         last = self._last_out
         if re.match(r"^(?:how (?:did|have) you (?:grown|grow|learned|improved)|what have you learned|growth report|show growth|как ты выросла)\s*\??$", q0, re.I):
-            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: report", facts=[], confidence=1.0, text=self.growth.report() + "\n" + self.growth.report_gates(), note=None)
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: report", facts=[], confidence=1.0, text=self.growth.report() + "\n" + self.growth.report_gates() + "\n" + self.cases.report(), note=None)
         # ПОЧЕМУ ТЫ ТАК ОТВЕТИЛА — объяснение реального пути: способ, факты, доска арбитра (кто ещё что предлагал)
         if re.match(r"^(?:why|why (?:did you (?:say|answer|think) that|that|so|not)|how do you know|how did you get that|explain|почему)\s*\??$", q0, re.I) and last:
             how = last.get("how") or "?"; facts = last.get("facts") or []; board = last.get("arbiter") or []
@@ -703,6 +718,10 @@ class ExperimentalMind:
                 conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
                 return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text=f"That's what I said — {right}. Good, I'll trust that way more.", note=None)
             grew = self.growth.learn_from_correction(last["question"], last, right)
+            try:
+                it = self.cases.learn(last["question"], right, last)
+                if it: grew.append("case remembered: " + ", ".join(f"{w} {'needed' if r == 'needed' else 'extra'}" for w, r in list(it["roles"].items())[:4]))
+            except Exception as e: grew.append(f"case error {e}")
             conv.push(q=q0, frame=None, entity=right, answer=right, kind="learned", pending=None, key=None)
             diag = next((g for g in grew if g.startswith("diagnosis")), "")
             why = {"diagnosis: silent": "I had it in memory but didn't dare to answer", "diagnosis: wrong-piece": "I found the right sentence but took the wrong part",
