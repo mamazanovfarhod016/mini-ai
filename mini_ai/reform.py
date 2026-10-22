@@ -50,6 +50,8 @@ class Reform:
         self.sub = collections.defaultdict(collections.Counter)  # слово вопроса → Counter(слово предложения)
         self.n = 0; self.log = []
         self.on = dict(phr=True, typ=True, sub=True)
+        for m in os.environ.get("MINI_AI_REFORM_OFF", "").split(","):          # абляция: MINI_AI_REFORM_OFF=typ,sub
+            if m.strip() in self.on: self.on[m.strip()] = False
         self.load()
 
     # ---------- хранение ----------
@@ -89,19 +91,46 @@ class Reform:
         if run: out.append((intro, run, state))
         return out
 
+    CL_RX = re.compile(r"\s*(?:[,;:—]|\s-\s|\(|\))\s*")
+    def clauses(self, q, present, frac=0.6):
+        """ПРИДАТОЧНЫЕ: части вопроса между запятыми без вопросного слова («…, used to locate underwater objects, …»,
+        «Because sound waves must move through a medium, …», «…, causing death of brain cells») — если ≥ frac их слов отсутствует
+        в предложении, вся часть — уточнитель. → [(intro, absent_words, absent)]"""
+        parts = [p for p in self.CL_RX.split(q.strip().rstrip("?")) if p and p.strip()]
+        if len(parts) < 2: return []
+        out = []
+        for p in parts:
+            t = toks(p)
+            if any(w in QW for w in t): continue
+            cw = [w for w in content_words(t) if w not in DET and w not in INTRO and w not in self.mind.META]
+            if not cw: continue
+            ab = [w for w in cw if not present(w)]
+            out.append((t[0] if t[0] in INTRO or t[0] in STOP else "clause", ab, len(ab) >= frac * len(cw)))
+        return out
+
     @staticmethod
     def _keys(intro, n):
         c = intro_class(intro); n = min(n, 3)
         return (f"{intro}|{n}", intro, f"{c}|{n}", c, "*")
+    @staticmethod
+    def _ckeys(intro):
+        return (f"clause|{intro}", "clause", "*")
 
+    VERBISH = set("occurs serves utilizes contains leads controls carries uses has makes forms causes produces results refers means describes allows "
+                  "helps provides includes involves requires holds takes gives undergo undergoes transports secretes regulates reflects separates "
+                  "surrounds covers lacks consists exists lives feeds eats moves does do can will would should may might".split())
     def typeword(self, q):
-        """слово-тип сразу после what/which: «what PART of», «what SEQUENCE is», «what kind of FEEDBACK» (не «what is the X of»)"""
+        """слово-тип: голова именной группы сразу после what/which (до первого служебного слова или глагола): «what PART of»,
+        «what SEQUENCE is», «what kind of muscle CELLS undergo», «what flying MAMMAL», «what medical EMERGENCY occurs»"""
         ql = q.lower().rstrip("?")
-        m = re.search(r"\b(?:what|which)\s+(?:type|kind|sort|class|category)s?\s+of\s+([a-z]+)", ql)
-        if m: return [m.group(1)]
-        m = re.search(r"\b(?:what|which)\s+(?:[a-z]+\s+)?([a-z]+)\s+(?:of|is|are|was|were|do|does|did|in|that|has|have|can|will|would|for)\b", ql)
-        if m and all(x not in STOP and x not in INTRO and x not in QW for x in m.group(0).split()[1:-1]) and len(m.group(1)) > 2: return [m.group(1)]
-        return []
+        m = re.search(r"\b(?:what|which)\s+(?:(?:type|kind|sort|class|category|group)s?\s+of\s+)?((?:[a-z'\-]+\s*){1,4})", ql)
+        if not m: return []
+        bad = STOP | INTRO | QW | {"many", "much", "type", "kind", "sort", "term", "name"}
+        grp = []
+        for w in m.group(1).split()[:3]:
+            if w in bad or w in self.VERBISH or w.endswith(("ed", "ing")): break
+            grp.append(w)
+        return [grp[-1]] if grp and len(grp[-1]) >= 3 else []
 
     # ---------- учёба ----------
     def _sentence(self, q, right):
@@ -143,12 +172,21 @@ class Reform:
             grew.append(f"«{intro} {' '.join(words)}» was a qualifier")
         if wrong and wrong[0] > 0:
             wf = wrong[3]
-            for intro, words, absent in self.runs(q, lambda w: bool(self._forms(w) & wf) or w in self.mind.META):
+            wpresent = lambda w: bool(self._forms(w) & wf) or w in self.mind.META
+            for intro, words, absent in self.runs(q, wpresent):
                 if absent:
                     for k in self._keys(intro, len(words)): self.phr[k][1] += 1
+            for intro, ab, absent in self.clauses(q, wpresent):
+                if absent:
+                    for k in self._ckeys(intro): self.phr[k][1] += 1
+        for intro, ab, absent in self.clauses(q, present):
+            if absent:
+                for k in self._ckeys(intro): self.phr[k][0] += 1
+                grew.append(f"clause «{intro} {' '.join(ab[:4])}…» was a qualifier")
         for t in self.typeword(q):
-            if not present(t): self.typ[t][0] += 1; grew.append(f"«{t}» names the answer type")
-            elif wrong and not (self._forms(t) & wrong[3]): self.typ[t][1] += 1
+            # по слову и по ФОРМЕ («*»: любое слово сразу после what/which) — опыт переносится на новые слова-типы
+            if not present(t): self.typ[t][0] += 1; self.typ["*"][0] += 1; grew.append(f"«{t}» names the answer type")
+            else: self.typ[t][1] += 1; self.typ["*"][1] += 1
         # замены: отсутствующее слово вопроса ↔ слово предложения, которого нет в вопросе (не ответ), по смыслу
         M = getattr(self.mind, "meaning", None)
         q_abs = [w for _, ws, ab in rs if ab for w in ws if len(w) > 3]
@@ -165,30 +203,37 @@ class Reform:
     def _rate(self, intro, n, min_n=2):
         """кусок формы (intro, n) — уточнитель? Сравниваем P(правильное | кусок отсутствует) у формы с общей: форма, у которой
         отсутствие куска реже делает предложение неправильным, чем в среднем, — уточнитель. Перенос: слово → класс слова → общее."""
+        return self._rate_keys(self._keys(intro, n)[:-1], min_n)
+    def _rate_keys(self, keys, min_n=2):
         A, B = self.phr.get("*", (0, 0))
         if A + B < 4: return False
         g = (A + 1) / (A + B + 2)
-        for k in self._keys(intro, n)[:-1]:
+        for k in keys:
             a, b = self.phr.get(k, (0, 0))
             if a + b >= min_n: return a >= 1 and (a + 1) / (a + b + 2) >= g * self.K
         return False
     K = 1.2
 
+    JUNK_RX = re.compile(r"^(?:'s|'t|don|doesn|isn|aren|won|can|ll|re|ve|[a-z]{1,2})$")
     def qualifiers(self, q, absent_words):
         """слова вопроса, которые на ЭТОМ предложении можно не требовать: они образуют целиком отсутствующий кусок
         формы, выученной как уточнение. absent_words: множество слов вопроса, которых нет в предложении."""
-        if not self.on.get("phr", True) or not self.phr: return set()
-        out = set()
-        for intro, words, absent in self.runs(q, lambda w: w not in absent_words):
+        out = {w for w in absent_words if self.JUNK_RX.match(w) or w in INTRO}      # обломки токенов («'s», «don») и служебные — не термины
+        if not self.on.get("phr", True) or not self.phr: return out
+        present = lambda w: w not in absent_words
+        for intro, words, absent in self.runs(q, present):
             if absent and self._rate(intro, len(words)): out |= set(words)
+        for intro, ab, absent in self.clauses(q, present):
+            if absent and self._rate_keys(self._ckeys(intro)[:-1]): out |= set(ab)
         return out
 
     def type_words(self, q):
         if not self.on.get("typ", True): return set()
-        out = set()
+        out = set(); X, N = self.typ.get("*", (0, 0))
+        general = X >= 4 and X >= 1.5 * N                 # форма «what <слово>» вообще: слово-тип обычно отсутствует в предложении
         for t in self.typeword(q):
             x, need = self.typ.get(t, (0, 0))
-            if x >= 2 and x >= need: out.add(t)
+            if (x >= 2 and x >= need) or (general and x >= need): out.add(t)
         return out
 
     def subs(self, w, min_n=2):

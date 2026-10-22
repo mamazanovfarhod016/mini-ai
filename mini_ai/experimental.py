@@ -342,7 +342,9 @@ class ExperimentalMind:
                 qual = RF.qualifiers(self._cur_q, absent) & absent
                 if qual:
                     drop = sum(idf[w] if w in hard else 0.3 * idf[w] for w in qual)
-                    if any(w not in absent for w in hard) and kidf - drop >= 0.4 * kidf: cov = score / (kidf - drop)
+                    # остаток должен держать смысл: ≥1 твёрдое слово найдено, и остаётся ≥35 % веса (или ≥2 твёрдых найденных слова)
+                    found_hard = [w for w in hard if w not in absent]
+                    if found_hard and (kidf - drop >= 0.35 * kidf or len(found_hard) >= 2) and kidf - drop > 0: cov = score / (kidf - drop)
                     else: qual = set()
             if cov < thr: continue
             hy = set(re.findall(r"\b([a-z]+)-(?:like|type|shaped|based|free|rich)\b", self._cur_q.lower()))          # «tube-like» — описание, не термин
