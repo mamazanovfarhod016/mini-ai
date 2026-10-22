@@ -682,7 +682,7 @@ class ExperimentalMind:
         #     способ теряет доверие на этой форме вопроса, путь вопрос→X становится схемой, связка слов запоминается
         last = self._last_out
         if re.match(r"^(?:how (?:did|have) you (?:grown|grow|learned|improved)|what have you learned|growth report|show growth|как ты выросла)\s*\??$", q0, re.I):
-            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: report", facts=[], confidence=1.0, text=self.growth.report(), note=None)
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: report", facts=[], confidence=1.0, text=self.growth.report() + "\n" + self.growth.report_gates(), note=None)
         # ПОЧЕМУ ТЫ ТАК ОТВЕТИЛА — объяснение реального пути: способ, факты, доска арбитра (кто ещё что предлагал)
         if re.match(r"^(?:why|why (?:did you (?:say|answer|think) that|that|so|not)|how do you know|how did you get that|explain|почему)\s*\??$", q0, re.I) and last:
             how = last.get("how") or "?"; facts = last.get("facts") or []; board = last.get("arbiter") or []

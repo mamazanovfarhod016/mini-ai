@@ -68,6 +68,7 @@ class Growth:
         self.log = []                                             # последние события роста (для объяснения)
         self.rules_saved = {}                                     # форма → [схемы] (копия fewshot.rules для сохранения)
         self.slot_rules = collections.defaultdict(collections.Counter)  # грубая форма → Counter((slot, rel, qwhere)) — для вопросов без имён
+        self.gates = {}; self.audits = []; self._auditing = False; self.n_corr = 0; self.exam = []
         self.attn = collections.defaultdict(lambda: [0, 0])       # слово вопроса → [нужное, лишнее] (выученное внимание)
         self._soft_list = None; self._soft_stamp = -1; self._soft_cache = {}
         self.pos = collections.defaultdict(collections.Counter)   # класс вопроса → Counter(позиция ответа в предложении)
@@ -84,7 +85,8 @@ class Growth:
         except Exception: return
         for k, v in d.get("reliab", {}).items(): self.reliab[k] = v
         for k, v in d.get("coans", {}).items(): self.coans[k] = collections.Counter(v)
-        self.rules_saved = d.get("rules", {}); self.log = d.get("log", [])[-50:]
+        self.rules_saved = d.get("rules", {}); self.log = d.get("log", [])[-80:]
+        self.gates = d.get("gates", {}); self.audits = d.get("audits", [])[-10:]; self.n_corr = d.get("n_corr", 0); self.exam = d.get("exam", [])[-90:]
         for k, v in d.get("attn", {}).items(): self.attn[k] = v
         self.diag = collections.Counter(d.get("diag", {})); self.insights = d.get("insights", [])
         for k, v in d.get("pos", {}).items(): self.pos[k] = collections.Counter(v)
@@ -103,14 +105,55 @@ class Growth:
         examples = {k: [list(e) for e in v] for k, v in fs.examples.items()} if fs else {}
         json.dump(dict(reliab=dict(self.reliab), coans={k: dict(v) for k, v in self.coans.items()}, rules=rules, examples=examples,
                        slot_rules={k: {"|".join(kk): n for kk, n in v.items()} for k, v in self.slot_rules.items()}, attn=dict(self.attn), diag=dict(self.diag), insights=self.insights, pos={k: dict(v) for k, v in self.pos.items()}, board_stats={k: dict(v) for k, v in self.board_stats.items()}, para={k: dict(v) for k, v in self.para.items()},
-                       log=self.log[-50:], when=time.strftime("%Y-%m-%d %H:%M")), open(self.path, "w"), ensure_ascii=False, indent=1)
+                       gates=self.gates, audits=self.audits[-10:], n_corr=self.n_corr, exam=self.exam[-90:],
+                       log=self.log[-80:], when=time.strftime("%Y-%m-%d %H:%M")), open(self.path, "w"), ensure_ascii=False, indent=1)
 
     # ---------- 2. надёжность способов ----------
     @staticmethod
     def _howkey(how):
         return re.sub(r"[«»].*", "", (how or "").split(":")[0]).replace(" +читатель", "").replace(" +согласие", "").strip() or "?"
 
+    # ---------- САМОПРОВЕРКА РОСТА: какие из моих механизмов роста реально помогают? ----------
+    # Абляция (2026-10-21) показала: 8 механизмов по отдельности почти нейтральны, вместе −3 % — много маленьких шумных
+    # правок на 100 примерах. Ответ не «починить каждый», а дать системе проверять себя: раз в AUDIT_EVERY исправлений
+    # она переспрашивает себя на уже исправленных вопросах с каждым механизмом выкл/вкл и ОТКЛЮЧАЕТ те, что не помогают.
+    MECHS = ("trust", "boldness", "attention", "paraphrase", "links", "position", "slots", "board")
+    AUDIT_EVERY = 30
+    AUDIT_MIN = 6
+
+    def on(self, mech):
+        return self.gates.get(mech, True)
+
+    def self_audit(self):
+        """переспросить себя на последних исправленных вопросах: с механизмом и без. Механизм, который не даёт
+        хотя бы +1 попадание на выборке, выключается (gate=False); выключенный — проверяется снова и может вернуться."""
+        sents = [s_.lower() for s_, _ in self.mind.kb.sents[-20000:]]
+        rep = [(e["q"], e["right"]) for e in self.exam if any(e["right"].lower() in s_ for s_ in sents)][-60:]   # экзамен: не учились, ответ в памяти
+        if len(rep) < self.AUDIT_MIN: return []
+        mind = self.mind; out = []
+        def score():
+            ok = 0
+            for q, right in rep:
+                try: o = mind._ask_core(q, internet=False) or {}
+                except Exception as e: self._audit_err = repr(e)[:120]; continue
+                a = ((o.get("text") or "") + " " + str(o.get("answer") or "")).lower()
+                ok += right.lower() in a
+            return ok
+        saved = dict(self.gates); self._auditing = True
+        try:
+            base_all = {m: True for m in self.MECHS}; self.gates = dict(base_all); s_all = score()
+            for m in self.MECHS:
+                self.gates = dict(base_all); self.gates[m] = False; s_off = score()
+                # механизм выключается, только если БЕЗ него лучше (вред доказан); «0→0» — нет данных, оставляем
+                keep = s_off <= s_all
+                out.append((m, s_all, s_off, keep)); saved[m] = keep
+        finally:
+            self._auditing = False; self.gates = saved
+        self.audits.append(dict(t=time.strftime("%m-%d %H:%M"), n=len(rep), res=[(m, a, b, k) for m, a, b, k in out])); self.save()
+        return out
+
     def trust(self, how, q):
+        if not self.on("trust"): return 1.0
         """множитель уверенности по опыту, С ПЕРЕНОСОМ: точная форма → тип → класс → вообще. Уровни смешиваются:
         точный опыт весит больше, но если его мало — тянет опыт класса («все вопросы-определения»). нет опыта → 1.0"""
         hk = self._howkey(how); h = m = 0.0
@@ -122,6 +165,7 @@ class Growth:
         return round(max(0.75, min(1.25, 1.0 + (here - base) * 1.5)), 2)
 
     def boldness(self, q):
+        if not self.on("boldness"): return 0.5
         """0..1 — насколько стоит ДОГАДЫВАТЬСЯ (отрывком) вместо «не знаю» на таком типе вопроса.
         Растёт, когда отрывок попадал, и когда «не знаю» оказывалось ошибкой (ответ был, а она молчала)."""
         def rate(hk, default):
@@ -162,6 +206,7 @@ class Growth:
         return extra
 
     def is_soft_learned(self, w):
+        if not self.on("attention"): return False
         n, x = self.attn.get(w, (0, 0))
         if x >= 3 and x >= 2 * n and self.mind.kb.idf(w) < 3.5: return True       # лишнее стабильно, и это не редкий термин
         # ПЕРЕНОС ПО СМЫСЛУ: слово без опыта, но по смыслу близко к выученному лишнему («objects»→«things», «organ»→«organs/tissue»)
@@ -203,6 +248,7 @@ class Growth:
         return None
 
     def pos_prior(self, q, sent, piece):
+        if not self.on("position"): return 1.0
         """множитель к куску по выученной позиции: где в предложении обычно стоит ответ на такой класс вопроса"""
         c = self.pos.get(qclass(q)) or self.pos.get("*") or {}
         tot = sum(c.values())
@@ -229,6 +275,7 @@ class Growth:
         return dict(slot=best[1], rel=best[2], qwhere=best[3])
 
     def slot_prefs(self, q):
+        if not self.on("slots"): return {}
         """выученные предпочтения «где ответ» С ПЕРЕНОСОМ: тип вопроса (вес 1) + класс (вес 0.4)"""
         c = collections.Counter()
         for k, n in (self.slot_rules.get(qcoarse(q)) or {}).items(): c[k] += n
@@ -243,6 +290,7 @@ class Growth:
         return len(qw) * len(aw[:3])
 
     def hints(self, q):
+        if not self.on("links"): return []
         """слова-подсказки для поиска: что обычно отвечали на такие слова вопроса"""
         c = collections.Counter()
         for w in content_words(toks(q)):
@@ -274,14 +322,26 @@ class Growth:
         return pairs
 
     def paraphrases(self, w):
+        if not self.on("paraphrase"): return []
         """выученные замены слова вопроса (≥2 подтверждения)"""
         return [b for b, n in self.para.get(w, {}).items() if n >= 2]
 
     # ---------- 1. схемы вывода из исправлений ----------
     def learn_from_correction(self, q, out, right):
         """пользователь поправил: «no, it's RIGHT». Запоминаем: (а) способ ошибся, (б) путь вопрос→RIGHT — схема,
-        (в) связка слов. Возвращает человеку объяснение, что именно выросло."""
+        (в) связка слов. Возвращает человеку объяснение, что именно выросло.
+        ЧЕСТНОСТЬ: каждое 3-е исправление НЕ учится, а откладывается как экзамен — на нём самопроверка меряет,
+        помогают ли механизмы роста на вопросах, которых они не видели."""
         grew = []
+        self.n_corr += 1
+        if self.n_corr % 3 == 0:
+            self.exam.append(dict(q=q, right=right)); self.exam = self.exam[-90:]
+            self.log.append(dict(t=time.strftime("%m-%d %H:%M"), kind="exam", q=q, right=right)); self.save()
+            grew.append("kept as an exam question (I'll test my own growth on it)")
+            if self.n_corr % self.AUDIT_EVERY == 0 and not self._auditing:
+                res = self.self_audit(); off = [m for m, a, b, k in res if not k]
+                if res: grew.append("self-audit: " + (("switched off " + ", ".join(off)) if off else "all mechanisms help"))
+            return grew
         if out and out.get("how"): self._mark(out["how"], q, False); grew.append(f"{self._howkey(out['how'])} is less trusted for «{qform(q)}»")
         fs = getattr(self.mind, "fewshot", None)
         if fs:
@@ -309,6 +369,10 @@ class Growth:
         self._maybe_insight()
         if self._link(q, right): grew.append("word link " + ", ".join(f"{w}→{right.split()[0]}" for w in content_words(toks(q))[:2]))
         self.log.append(dict(t=time.strftime("%m-%d %H:%M"), kind="correction", q=q, right=right, grew=grew)); self.save()
+        if self.n_corr % self.AUDIT_EVERY == 0 and not self._auditing:
+            res = self.self_audit()
+            off = [m for m, a, b, k in res if not k]
+            if res: grew.append("self-audit: " + (("switched off " + ", ".join(off)) if off else "all mechanisms help"))
         return grew
 
     def learn_from_confirmation(self, q, out):
@@ -325,6 +389,7 @@ class Growth:
         return ["trust +1 for " + self._howkey(out.get("how"))]
 
     def diag_rates(self, q):
+        if not self.on("boldness"): return {}
         """доли причин ошибок на классе вопроса: silent / wrong-piece / wrong-fact / no-sentence (с переносом на общий)"""
         cls = qclass(q); out = {}
         for d in ("silent", "wrong-piece", "wrong-fact", "no-sentence"):
@@ -392,6 +457,7 @@ class Growth:
         return grew
 
     def place_finders(self, q):
+        if not self.on("board"): return []
         """способы, которые на этом классе вопроса находят ПРАВИЛЬНОЕ ПРЕДЛОЖЕНИЕ (но не ответ): их факты — источник для отрывка"""
         cls = qclass(q); out = []
         for key, st in self.board_stats.items():
@@ -400,6 +466,11 @@ class Growth:
         return out
 
     # ---------- отчёт ----------
+    def report_gates(self):
+        off = [m for m in self.MECHS if not self.on(m)]
+        last = self.audits[-1] if self.audits else None
+        return (f"self-audit ({last['n']} questions): " + "; ".join(f"{m} {'kept' if k else 'OFF'} ({a}→{b} without)" for m, a, b, k in last["res"])) if last else "no self-audit yet"
+
     def report(self):
         fs = getattr(self.mind, "fewshot", None)
         n_rules = len(fs.rules) if fs else len(self.rules_saved)
