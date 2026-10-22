@@ -263,10 +263,11 @@ class ExperimentalMind:
                 if not best or sc > best[0]: best = (sc, free, (X2, rel2, Y2, src2), (X, rel, Y, src))
         return best[:3] if best else None
 
-    def _span(self, fr, known0, only_sents=None):
+    def _span(self, fr, known0, only_sents=None, relax=0.0):
         """ОТРЫВОК: читатель не разобрал предложение на факты (длинное, список, «X, Y and Z indicate…»), но
         предложение памяти покрывает ≥60 % веса слов вопроса → ответ = его свободный кусок: часть предложения
-        (между знаками/союзами), где нет слов вопроса. Это не поиск по словам «на удачу»: обязательны редкие слова."""
+        (между знаками/союзами), где нет слов вопроса. Это не поиск по словам «на удачу»: обязательны редкие слова.
+        relax>0 — ВТОРОЙ, СМЕЛЫЙ проход (случаи сказали: на таких вопросах молчание было ошибкой): порог ниже, одно редкое слово прощается."""
         known = {w for w in known0 if w not in self.META} | {w for w in content_words(toks((fr.get("rel") or "").replace("_", " "))) if w not in self.META and w not in ("prop", "called", "be", "do", "have")}
         # ТИП ОТВЕТА в вопросе («what ANIMAL GROUP», «what OBJECTS are», «what ORGAN in», «what is the RESULT», «which BODY SYSTEM»)
         # — это не слова, которые должны быть в факте; это то, ЧЕМ должен быть ответ. Убираем из обязательных.
@@ -303,6 +304,8 @@ class ExperimentalMind:
         thr = 0.75 - 0.4 * bold                       # смелость 0.5 → порог 0.55; опыт «отрывок попадает, молчать — ошибка» → 0.35
         dr = G.diag_rates(self._cur_q) if G else {}
         if dr: thr -= 0.15 * dr.get("silent", 0) - 0.1 * dr.get("wrong-piece", 0)   # молчала зря → смелее; брала не тот кусок → строже
+        # СМЕЛЫЙ ПРОХОД (из случаев): порог ниже на relax, одно лишнее редкое слово вопроса прощается
+        thr = max(0.3, thr - relax); tol = 1 if relax > 0 else 0
         DEF_RX = re.compile(r"\b(?:is|are) (?:called|known as|termed|named|referred to as)\b|^(?:this|these|that|those|one such|such a|the process|the term|the name)\b", re.I)
         for si, score in list(cnt.most_common(12)):
             # предложение-определение («… is called X», «These are called X», «One such device is X») — именно в нём ответ;
@@ -324,8 +327,11 @@ class ExperimentalMind:
             if nx < len(self.kb.sents) and self.kb.sents[nx][1] == self.kb.sents[si][1] and score / kidf >= thr:
                 if re.match(r"^(?:this|these|that|those|one such|such a|such an|they|it|the process|the term|the result|this is|these are)\b", self.kb.sents[nx][0], re.I) or len(toks(self.kb.sents[nx][0])) <= 8:
                     if cnt.get(nx, 0) < score * 0.9: cnt[nx] = score * 0.9; follow[nx] = si
+        dbg = dict(thr=round(thr, 2), top=[], picked=None)                                   # след для cases.learn / отладки: что видела и почему молчала
+        if only_sents is None and not relax: self._span_dbg = dbg                          # урок берём со строгого прохода
         for si, score in cnt.most_common(12):
             cov = score / kidf
+            dbg["top"].append([si, round(cov, 2), None, None])
             if cov < thr: continue
             sent, src = self.kb.sents[si]; sw = set(content_words(toks(sent)))
             if si in self.kb.sent_glued or si in follow:
@@ -334,12 +340,13 @@ class ExperimentalMind:
             hy = set(re.findall(r"\b([a-z]+)-(?:like|type|shaped|based|free|rich)\b", self._cur_q.lower()))          # «tube-like» — описание, не термин
             rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and w not in case_soft and not (forms[w] & sforms) and not (G and set(G.paraphrases(w)) & sw)]
             if self._neural_hit.get(si, 0) >= 0.6: rare_missing = rare_missing[:1] if cov >= 0.5 else rare_missing[:2]   # смысл совпал — слова могут отличаться
+            dbg["top"][-1][2] = rare_missing
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
             # (вопрос часто содержит лишнее уточнение: «in physics», «located below the soil», «during evolution»)
             if rare_missing:
-                if len(rare_missing) > 2 or cov < thr + 0.1: continue
-                if len(rare_missing) == 2 and cov < 0.75: continue
-                if idf[rare_missing[0]] >= max(idf[w] for w in hard) and len(hard) <= 3 and cov < 0.8: continue
+                if len(rare_missing) > 2 + tol or cov < thr + 0.1 - 0.1 * tol: continue
+                if len(rare_missing) == 2 and cov < 0.75 - 0.2 * tol: continue
+                if not tol and idf[rare_missing[0]] >= max(idf[w] for w in hard) and len(hard) <= 3 and cov < 0.8: continue
             # куски предложения; кандидат = кусок без слов вопроса, с ≥1 содержательным словом
             body = re.sub(r"\s*\(([^)]*)\)", r", \1, ", sent)                       # «(about 2 km)» — тоже кусок
             pieces = [p.strip(" ,;:.") for p in re.split(r",|;|:| — | - |\b(?:and|or|but|because|which|that|while|whereas|so that|such as|called|known as|is|are|was|were|by|through|into|from|than)\b", body)]
@@ -414,6 +421,7 @@ class ExperimentalMind:
             ans = max(cands, key=lambda c: c[0])[1]
             ans = re.sub(r"^(?:the|a|an|its|their|also|about|only|all|most|many|some|very)\s+", "", ans, flags=re.I).strip()
             if len(ans) < 2: continue
+            dbg["top"][-1][3] = ans
             sc = round(cov * 0.55, 2)
             if not best or sc > best[0]: best = (sc, ans, (sent[:120], "span", "", src))
         return best
@@ -432,6 +440,17 @@ class ExperimentalMind:
         if sp:
             s, ans, (sent, _, _, src) = sp
             cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(0.9, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+        elif not cands:
+            # СМЕЛОСТЬ ИЗ СЛУЧАЕВ: на доске пусто, а похожие исправленные вопросы говорят «предложение с ответом было видно, я молчала зря»
+            # → второй, смелый проход отрывка. Только когда иначе был бы «не знаю»: верный ответ другого способа он вытеснить не может.
+            adv = self._advice if self._advice and self._advice.get("q") == q else None
+            bold_c = float((adv or {}).get("bold", 0.0) or 0.0)
+            if os.environ.get("MINI_AI_FORCE_BOLD"): bold_c = float(os.environ["MINI_AI_FORCE_BOLD"])                 # замер потолка (probe)
+            if bold_c >= 0.3:
+                sp = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]), relax=0.2)
+                if sp:
+                    s, ans, (sent, _, _, src) = sp
+                    cands.append(dict(how="отрывок предложения (смело, по случаям)", answer=ans, confidence=round(min(0.7, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
         # УЧЁБА У ПРОИГРАВШИХ (growth.learn_from_board): если на этом классе способ A обычно находит нужное предложение,
         # но не ответ — берём его предложение и достаём ответ как отрывок. Правило выведено ею из исправлений.
         pf = G.place_finders(q) if G else []
@@ -594,11 +613,11 @@ class ExperimentalMind:
             out = self._ask_core(self._resolve(q), internet); out["kind"] = "answer" if out.get("answer") else "unknown"; return out
         out = self._ask_dialog(q, internet)
         if out.get("kind") in ("answer", "clarify", "unknown") and not (out.get("how") or "").startswith("growth"):
-            self._last_out = dict(out, question=out.get("question") or q)
+            self._last_out = dict(out, question=out.get("question") or q, _span_dbg=getattr(self, "_span_dbg", None))   # след чтения — для урока случая
         return out
 
     def _ask_core(self, q, internet=True, fr=None):
-        self._cur_q = q
+        self._cur_q = q; self._span_dbg = None
         try: a = self.cases.advice(q); self._advice = dict(a, q=q) if a else None
         except Exception: self._advice = None
         fr = fr or parse_question(q)
@@ -731,6 +750,8 @@ class ExperimentalMind:
         if last and last.get("answer") and not last.get("_graded") and (YES.match(q0) or re.match(r"^(?:right|correct|exactly|yes that'?s right|верно|правильно)[\s.!]*$", q0, re.I)) and not (pend and pend.get("options")):
             last["_graded"] = True
             self.growth.learn_from_confirmation(last["question"], last)
+            try: self.cases.learn(last["question"], str(last["answer"]), last, hit=True)      # попадание — тоже случай: способ и позиция верны
+            except Exception: pass
             conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
             return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text="Good — I'll trust that way of thinking more for questions like this.", note=None)
         # 0. реплика-собеседник (hi / thanks / how are you / who are you) — без поиска фактов
