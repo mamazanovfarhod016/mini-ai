@@ -118,20 +118,48 @@ class Solver:
         self.stats["applied"] += 1; return True
 
     # ---------- учёба ----------
-    def learn(self, q, cands_board, right, feats=None):
-        """right — верный ответ (из «no, it's X» или подтверждённый). Каждый кандидат доски получает метку 1/0."""
+    def learn(self, q, cands_board, right, feats=None, weight=1.0):
+        """right — верный ответ (из «no, it's X» или подтверждённый). Каждый кандидат доски получает метку 1/0.
+        weight < 1 — псевдометка от самопроверки (без учителя): считается, но слабее человеческой."""
         feats = feats if feats is not None else (self.last_feats if self.last_q == q else None)
         if not feats or len(feats) != len(cands_board): return 0
         rw = set(_toks(right)); k = 0
         for f, c in zip(feats, cands_board):
             aw = set(_toks(str(c.get("answer", ""))))
             y = 1.0 if (rw and aw and (rw <= aw or aw <= rw)) else 0.0
-            f64 = f.astype(np.float64); self.A += np.outer(f64, f64); self.B += f64 * y; self.n += 1; self.n_pos += int(y); k += 1
+            f64 = f.astype(np.float64); self.A += weight * np.outer(f64, f64); self.B += weight * f64 * y; self.n += 1; self.n_pos += int(y); k += 1
         if k: self._solve(); self.stats["learned"] += k; self.save()
         return k
+
+    def learn_negative(self, cands, feats, weight=0.3):
+        """только отрицательные псевдометки (ответ провалил проверку) — без утверждения, что верно"""
+        if not feats or len(feats) != len(cands): return 0
+        for f, c in zip(feats, cands):
+            f64 = f.astype(np.float64); self.A += weight * np.outer(f64, f64); self.n += 1
+        self._solve(); self.stats["self_neg"] = self.stats.get("self_neg", 0) + len(cands); self.save(); return len(cands)
+
+    # ---------- САМОПРОВЕРКА КАК НАГРАДА (аналог RL на проверяемых наградах, без учителя и без градиента) ----------
+    def self_reward(self, q, cands_all, feats, best):
+        """Проверяемые сигналы, которые есть у неё самой, без человека:
+        (+) ≥2 НЕЗАВИСИМЫХ способа дали один ответ и тип ответа не опровергнут — ответ считается верным (псевдометка 1, вес 0.3);
+        (−) самопроверка сказала «тип ✗» или «повторяет вопрос» — такие кандидаты получают 0 (вес 0.3), без утверждения, что верно.
+        Человеческое «yes/no» потом перекрывает: вес 1.0."""
+        if os.environ.get("MINI_AI_SELF_REWARD", "1") == "0" or not cands_all or not feats: return None
+        w = float(os.environ.get("MINI_AI_SELF_W", "0.3"))
+        def aw(c): return {x for x in _toks(str(c.get("answer", ""))) if len(x) > 2}
+        def fam(c): return re.sub(r"[«»(:].*", "", c.get("how", "")).split()[0] if c.get("how") else "?"
+        # согласие независимых семейств способов
+        bw = aw(best); fams = {fam(c) for c in cands_all if aw(c) and (aw(c) <= bw or bw <= aw(c))} if bw else set()
+        chk = str(best.get("check") or "")
+        if len(fams) >= 2 and "✗" not in chk and "repeats" not in chk and best.get("confidence", 0) >= 0.5:
+            self.learn(q, cands_all, str(best["answer"]), feats, weight=w); self.stats["self_pos"] = self.stats.get("self_pos", 0) + 1; return "agree→+"
+        neg = [(c, f) for c, f in zip(cands_all, feats) if "✗" in str(c.get("check") or "") or "repeats" in str(c.get("check") or "")]
+        if neg:
+            self.learn_negative([c for c, _ in neg], [f for _, f in neg], weight=w); return f"check✗→−{len(neg)}"
+        return None
 
     def save(self):
         if self.path: np.savez(self.path, A=self.A, B=self.B, n=self.n, n_pos=self.n_pos)
 
     def report(self):
-        return f"solver: {self.n} labeled candidates ({self.n_pos} right), {'active' if self.ready else 'warming up'}, applied {self.stats['applied']}×"
+        return f"solver: {self.n} labeled candidates ({self.n_pos} right), {'active' if self.ready else 'warming up'}, applied {self.stats['applied']}×, self-reward +{self.stats.get('self_pos', 0)}/−{self.stats.get('self_neg', 0)}"

@@ -628,6 +628,11 @@ class ExperimentalMind:
             else: self._last_cands = (q, [dict(c) for c in cands], feats)
         except Exception as e_: self._last_cands = None
         cands.sort(key=lambda c: -c["score"])
+        # САМОПРОВЕРКА КАК НАГРАДА: согласие независимых способов / провал проверки типа → псевдометки solver'у без учителя (вес 0.3)
+        try:
+            lc = self._last_cands
+            if lc and lc[0] == q: self._self_reward_note = self.solver.self_reward(q, lc[1], lc[2], cands[0])
+        except Exception: pass
         best = cands[0]; best["board"] = [(c["how"], str(c["answer"])[:40], c["confidence"], c["trust"], c["score"], c.get("check"), (c.get("facts") or [""])[-1][:160]) for c in cands]
         return best
 
