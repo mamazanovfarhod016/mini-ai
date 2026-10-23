@@ -29,6 +29,8 @@ class KnowledgeBase:
         self.sents = []; self.sent_by_word = collections.defaultdict(list)        # сырые предложения (для ответа-отрывком, когда читатель не разобрал)
         self.sent_ctx_by_word = collections.defaultdict(list)                     # слово предыдущего предложения → это предложение (контекст абзаца)
         self.sent_glued = set()                                                   # предложения-определения, склеенные с предыдущим
+        self.sent_para = []                                                       # номер абзаца (вызов read_text) каждого предложения — для цепочек по дискурсу
+        self.n_para = 0
 
     def idf(self, w): return float(np.log((1 + self.n_docs) / (1 + self.df.get(w, 0))) + 1.0)
 
@@ -41,6 +43,7 @@ class KnowledgeBase:
 
     def read_text(self, text, src="user"):
         n = 0
+        self.n_para += 1
         for s in re.split(r"(?<=[.!?])\s+(?=[A-ZА-Я0-9\"])", re.sub(r"\s+", " ", text)):
             s = s.strip()
             if len(s) < 15: continue
@@ -48,7 +51,7 @@ class KnowledgeBase:
             ws = set(content_words(toks(s))); self.n_docs += 1
             for w in ws: self.df[w] += 1
             if src != "user" and len(self.sents) < 400000:
-                si = len(self.sents); self.sents.append((s, src))
+                si = len(self.sents); self.sents.append((s, src)); self.sent_para.append(self.n_para)
                 for w in ws: self.sent_by_word[w].append(si)
                 # КОНТЕКСТ АБЗАЦА: «These are called X», «This is called X», «One such device is X» — подлежащее указывает на
                 # предыдущее предложение. Слова соседа индексируются как слабый контекст этого предложения (вес 0.5 при поиске).
@@ -114,6 +117,8 @@ class ExperimentalMind:
         self.cases = Cases(self, self.state_dir); self._advice = None
         from mini_ai.reform import Reform
         self.reform = Reform(self, self.state_dir)                    # выученное перечитывание вопроса (уточнители, слово-тип, замены)
+        from mini_ai.discourse import Discourse
+        self.discourse = Discourse(self)                              # цепочка по абзацу: мост → сосед по связи дискурса → новый термин
         self.neural = None
         if os.environ.get("MINI_AI_NEURAL", "1") != "0":
             try:
@@ -527,6 +532,14 @@ class ExperimentalMind:
             if dp and dp["steps"] >= 2:
                 cands.append(dict(how=f"{dp['steps']} шагов (deep)", answer=dp["answer"], confidence=dp["confidence"], facts=dp["facts"], thoughts=dp["thoughts"],
                                   text=" ".join(dp["thoughts"])))
+        # ЦЕПОЧКА ПО ДИСКУРСУ (discourse.py): вопрос совпал с одним предложением, ответ — в соседнем, связанном отсылкой
+        # («…liquid would be left behind. PLASMA is this fluid part…», «…growth of algae. This is called an ALGAL BLOOM»)
+        if os.environ.get("MINI_AI_DISCOURSE", "1") == "1":
+            try: dc = self.discourse.reason(q, fr)
+            except Exception: dc = None
+            if dc:
+                cands.append(dict(how="3 шага (по абзацу)", answer=dc["answer"], confidence=dc["confidence"], facts=dc["facts"], thoughts=dc["thoughts"],
+                                  text=" ".join(dc["thoughts"])))
         if not cands: return None
         # СОГЛАСИЕ: два разных способа дали один ответ — независимые свидетели → уверенность вверх; одиночка против согласных — вниз.
         # (измерено на SciQ: 16 из 130 промахов — верный ответ был на доске у двух способов, но проигрывал одиночному отрывку 0.9)
@@ -697,7 +710,7 @@ class ExperimentalMind:
         elif pick and (pick["how"].startswith(("отрывок предложения", "нейронный читатель", "комбинация"))):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], arbiter=pick["board"])
             self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
-        elif pick and "(deep)" in pick["how"]:
+        elif pick and ("(deep)" in pick["how"] or "(по абзацу)" in pick["how"]):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], thoughts=pick["thoughts"], arbiter=pick["board"], kind="answer")
             self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
         if not r and not pick:
