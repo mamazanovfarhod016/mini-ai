@@ -124,8 +124,8 @@ class ExperimentalMind:
         try:
             from mini_ai.russian import Russian
             self.russian = Russian(self, self.state_dir)              # русский: слой перевода (словарь + выученные пары + смысл ru-слов)
-            from mini_ai.understand import Understand
-            self.understand = Understand(self, self.state_dir)        # понимание объяснений учителя → правила/формулы (exp67)
+            from mini_ai.analogy import Analogy
+            self.analogy = Analogy(self, self.state_dir, meaning=getattr(self.russian, "meaning_ru", None))   # одна материя: случаи от учителя, перенос по форме+смыслу (exp69/70)
             from mini_ai.converse import Converse
             self.converse = Converse(self, self.state_dir)            # собеседник без параметров: случаи речи, профиль, схемы рассуждения (23.10)
             self._ru_meaning = None
@@ -719,21 +719,36 @@ class ExperimentalMind:
         return best
 
     def ask(self, q, internet=True):
-        # ПОНИМАНИЕ ОБЪЯСНЕНИЯ УЧИТЕЛЯ (understand.py, exp67): объяснение → правило/формула; задача → применение правил.
-        # Стоит ПЕРЕД всем остальным, потому что объяснение правила — не вопрос к памяти фактов.
-        U = getattr(self, "understand", None)
-        if U and re.search(r"[а-яё]", q.lower()):
-            qs = q.strip()
-            if re.match(r"^(?:объясняю|правило|запомни правило|пойми)\s*[:\-—]?\s*", qs, re.I) or (not qs.endswith("?") and (re.match(r"^(?:если|когда)\b", qs, re.I) or re.search(r"\s(?:=|равно)\s|транзитив|по цепочке|переносится|—\s*(?:это\s+)?значит|\sозначает\s|то же,? что|обратно[е]?\s+(?:к|для)?|наоборот|противоположно|антоним|^(?:смотри|например|вот|пример)\b|\b(?:значит|поэтому|следовательно|выходит|получается)\b", qs, re.I))):
-                body = re.sub(r"^(?:объясняю|правило|запомни правило|пойми)\s*[:\-—]?\s*", "", qs, flags=re.I)
-                r, say = U.explain(body)
-                return dict(question=q, frame=None, read=[], answer=say, kind="learned" if r else "clarify", how="understand: rule" if r else "understand: not parsed", facts=[], confidence=1.0 if r else 0.0, text=say, note=None, thoughts=[])
-            if qs.endswith("?") or re.search(r"\bсколько\b|\bкто\b|\bгде\b", qs.lower()):
-                try: res = U.apply(qs)
-                except Exception as e: res = None; print("UNDERSTAND-ERR", e)
-                if res:
-                    text = U.say_steps(res)
-                    return dict(question=q, frame=None, read=[], answer=str(res["answer"]), kind="answer", how=f"understand: {res['kind']}", facts=[], confidence=res["confidence"], text=text, note=None, thoughts=res["steps"], rule=res.get("rule"))
+        # ОДНА МАТЕРИЯ (analogy.py, exp69/70): пример/объяснение → случай; задача с фактами → перенос случая; «нет, … потому что …» → исправление.
+        # Стоит ПЕРЕД всем остальным: это разговор с учителем, не вопрос к памяти фактов.
+        A = getattr(self, "analogy", None)
+        if A and re.search(r"[а-яё]", q.lower()):
+            qs = q.strip(); ql = qs.lower()
+            R = lambda how, text, kind="answer", conf=1.0, **kw: dict(question=q, frame=None, read=[], answer=text, kind=kind, how=how, facts=[], confidence=conf, text=text, note=None, thoughts=kw.get("thoughts", []))
+            try:
+                # 1. исправление: «нет, X, потому что …» / «нет, любит — не старше»
+                if re.match(r"^(?:нет|неверно|неправильно)\b", ql) and getattr(self, "_last_analogy", None):
+                    task, res = self._last_analogy; say = A.correct(task, res, re.sub(r"^(?:нет|неверно|неправильно)[,\s]*", "", qs, flags=re.I))
+                    self._last_analogy = None; return R("analogy: correction", say, "learned")
+                # 2. объяснение/пример: есть вывод (значит/поэтому/то) или связь слов («X — то же, что Y») — и это не вопрос
+                is_expl = not qs.endswith("?") and (A.CONCL_RX.search(qs) or re.match(r"^(?:если|когда|смотри|например|вот|пример)\b", ql) or re.search(r"то же,? что|означает|не\s+(?:про|то же)|≠", ql))
+                if is_expl:
+                    case, say = A.tell(re.sub(r"^(?:объясняю|правило|запомни|пойми)\s*[:\-—]?\s*", "", qs, flags=re.I))
+                    return R("analogy: case" if case else "analogy: told", say, "learned" if case else "clarify", 1.0 if case else 0.5)
+                # 3. задача: факты + вопрос
+                if qs.endswith("?") or re.search(r"\bсколько\b|\bкто\b|\bгде\b", ql):
+                    res = A.solve(qs)
+                    if res:
+                        self._last_analogy = (qs, res); out = R(f"analogy: {len(res['derived'])} переносов", A.say_steps(res), "answer", res["confidence"], thoughts=res["steps"]); out["answer"] = str(res["answer"]); return out
+                    # задача с фактами есть, а переноса нет → честно: чего не хватает (а не мусор из слоя речи)
+                    facts = [t for c, _ in A.clauses(" ".join(p for p in re.split(r"(?<=[.!?])\s+", qs) if not p.endswith("?"))) for t in A.triples(c)]
+                    if len(facts) >= 2 and A.question(qs.split(". ")[-1]):
+                        rels = sorted({t[1] for t in facts if t[2] != "#"} | {t[1].split()[-1] for t in facts if t[2] == "#"})
+                        self._last_analogy = (qs, None)
+                        return R("analogy: no case", f"Вижу связи «{'», «'.join(rels[:3])}», но у меня нет примера, как их переносить. Покажи один раз: «… — значит …», и я применю.", "clarify", 0.3)
+            except Exception as e:
+                print("ANALOGY-ERR", repr(e))
+
         if not self.use_dialog:
             out = self._ask_core(self._resolve(q), internet); out["kind"] = "answer" if out.get("answer") else "unknown"; return out
         out = self._ask_dialog(q, internet)

@@ -53,6 +53,7 @@ def nominative(w):
 CLASS = ("область", "области", "район", "районе", "город", "городе", "страна", "стране", "азии", "азия")
 
 class Analogy:
+    CONCL_RX = CONCL
     def __init__(self, mind=None, state_dir=None, meaning=None):
         self.mind = mind; self.path = os.path.join(state_dir, "analogy.json") if state_dir else None
         self.cases = []; self.bad = collections.Counter(); self.links = {}; self.log = []; self._M = meaning; self._vc = {}
