@@ -19,8 +19,15 @@
 """
 import re, json, os, collections
 
-# ---------- отношения (грамматика): слово → (имя отношения, обратное, тип) ----------
-REL = {
+# ---------- отношения ----------
+# ГРАММАТИКА (закрытая, как предлоги): только «в» и составные «родился раньше».
+# Все слова-сравнения (старше/тяжелее/сильнее/…) НЕ прописаны: они ОТКРЫВАЮТСЯ из формы фразы «A <слово> B (на N)»
+# + смысла слова (meaning_ru: близость к уже известным сравнениям) + морфологии (-ее/-ше/-же/-че). MINI_AI_OPEN_REL=0 → старая закрытая таблица.
+REL_GRAMMAR = {
+    "в": ("in", None, "loc"), "внутри": ("in", None, "loc"), "входит в": ("in", None, "loc"), "находится в": ("in", None, "loc"), "часть": ("in", None, "loc"),
+    "родился раньше": ("born_earlier", "born_later", "cmp"), "родился позже": ("born_later", "born_earlier", "cmp"),
+}
+REL_CLOSED = {
     "старше": ("older", "younger", "cmp"), "младше": ("younger", "older", "cmp"), "моложе": ("younger", "older", "cmp"),
     "выше": ("taller", "shorter", "cmp"), "ниже": ("shorter", "taller", "cmp"),
     "больше": ("more", "less", "cmp"), "меньше": ("less", "more", "cmp"),
@@ -29,13 +36,16 @@ REL = {
     "раньше": ("earlier", "later", "cmp"), "позже": ("later", "earlier", "cmp"),
     "тяжелее": ("heavier", "lighter", "cmp"), "легче": ("lighter", "heavier", "cmp"),
     "сильнее": ("stronger", "weaker", "cmp"), "слабее": ("weaker", "stronger", "cmp"),
-    "в": ("in", None, "loc"), "внутри": ("in", None, "loc"), "входит в": ("in", None, "loc"), "находится в": ("in", None, "loc"), "часть": ("in", None, "loc"),
-    "родился раньше": ("born_earlier", "born_later", "cmp"), "родился позже": ("born_later", "born_earlier", "cmp"),
 }
+OPEN_REL = os.environ.get("MINI_AI_OPEN_REL", "1") != "0"
+REL = dict(REL_GRAMMAR) if OPEN_REL else {**REL_CLOSED, **REL_GRAMMAR}
 REL_WORDS = sorted(REL, key=len, reverse=True)
 REL_SAY = {"older": "старше", "younger": "младше", "taller": "выше", "shorter": "ниже", "more": "больше", "less": "меньше", "pricier": "дороже", "cheaper": "дешевле",
            "faster": "быстрее", "slower": "медленнее", "earlier": "раньше", "later": "позже", "heavier": "тяжелее", "lighter": "легче", "stronger": "сильнее", "weaker": "слабее",
            "in": "в", "born_earlier": "родился раньше", "born_later": "родился позже"}
+CMP_SUFFIX = re.compile(r"(?:ее|ей|ше|же|че|ще|ьше)$")
+STOP_REL = set("меня тебя нас вас него нее них у и а но или же ли бы не ни это этот эта то те он она оно они его ее их ему ей им на с со у к ко о об от до из за по под над при для про без через между есть был была было были будет быть "
+               "мы вы я ты мне тебе нам вам мой моя наш ваш свой так также тоже уже еще очень как что кто где когда который чем тем самый самая самое год года лет см кг км сум раз".split())
 VARS = {"x", "y", "z", "а", "б", "в", "икс", "игрек", "зет", "a", "b", "c"}
 NAME_RX = re.compile(r"\b([А-ЯЁ][а-яё]{2,}|[XYZ]|[XYZ][a-z]?)\b")
 NUM_RX = re.compile(r"(\d+(?:[.,]\d+)?)")
@@ -57,23 +67,101 @@ class Understand:
     def __init__(self, mind=None, state_dir=None):
         self.mind = mind; self.path = os.path.join(state_dir, "understand.json") if state_dir else None
         self.rules = []; self.formulas = {}; self.log = []
+        self.open_rels = {}          # слово → (имя, обратное|None, "cmp"): отношения, ОТКРЫТЫЕ из текста/объяснений, не из таблицы
+        self.rel_seen = collections.Counter()
+        self._M = None               # meaning_ru (ленивая загрузка) — смысл слова как второй свидетель «это сравнение»
         self.load()
+
+    # ---------- открытые отношения ----------
+    def _meaning(self):
+        if self._M is None:
+            self._M = False
+            try:
+                import numpy as np
+                from mini_ai.meaning import Meaning
+                from mini_ai.russian import RU_BASE_NPZ
+                if os.path.exists(RU_BASE_NPZ):
+                    M = getattr(self.mind, "_ru_meaning", None)
+                    if M is None: M = Meaning(None); M.load(RU_BASE_NPZ)
+                    self._M = M
+            except Exception as e: print("understand: meaning off:", e)
+        return self._M or None
+
+    def _cmp_sim(self, w):
+        """близость смысла слова к уже известным сравнениям (из meaning_ru), 0 если базы нет"""
+        M = self._meaning(); seeds = [x for x, v in self.open_rels.items() if v[2] == "cmp"] + [x for x, v in REL_CLOSED.items()][:0]
+        if not M or not seeds: return 0.0
+        import numpy as np
+        def v(x):
+            a = M.vec(x.replace("ё", "е")); return None if a is None else a / (np.linalg.norm(a) + 1e-9)
+        a = v(w)
+        if a is None: return 0.0
+        S = [v(x) for x in seeds[:30]]; S = [t for t in S if t is not None]
+        return max((float(a @ t) for t in S), default=0.0)
+
+    def _all_rels(self): return {**REL, **self.open_rels}
+
+    def _add_open_rel(self, w, inverse=None, why="form"):
+        w = w.lower().replace("ё", "е")
+        if w in REL or w in self.open_rels: return self.open_rels.get(w)
+        self.open_rels[w] = (w, inverse, "cmp"); REL_SAY.setdefault(w, w); self.rel_seen[w] += 1
+        self.log.append(dict(kind="open_rel", word=w, why=why)); return self.open_rels[w]
+
+    def _discover_rel(self, sent):
+        """«A <слово> B (на N)» без известного отношения → кандидат = слово между двумя сущностями.
+        Свидетели: форма (между сущностями, «на N» рядом), морфология сравнительной степени, смысл (близость к известным сравнениям).
+        Нужны ≥2 свидетеля ИЛИ форма + «на N»."""
+        toks = re.findall(r"[А-ЯЁа-яё]+|\d+", sent)
+        for i, t in enumerate(toks):
+            tl = t.lower().replace("ё", "е")
+            if t[0].isupper() or tl in STOP_REL or tl in self.VERBS or t.isdigit() or len(tl) < 4: continue
+            ent = lambda x: len(x) >= 3 and not x.isdigit() and x.lower() not in STOP_REL and x.lower() not in self.VERBS
+            left = [x for x in toks[:i] if ent(x)]; right = [x for x in toks[i+1:] if ent(x)]
+            if not left or not right: continue
+            num = 1 if re.search(r"\bна\s+\d", sent[sent.find(t):]) else 0
+            morph = 1 if CMP_SUFFIX.search(tl) else 0
+            sim = self._cmp_sim(tl); sem = 1 if sim >= 0.2 else 0
+            # форма «A w B» + (сравнительная степень ИЛИ «на N» вместе со смыслом)
+            if morph or (num and sem):
+                self._add_open_rel(tl, why=f"form{'+на N' if num else ''}{'+morph' if morph else ''}{f'+sim{sim:.2f}' if sem else ''}")
+                return self.open_rels[tl], tl
+        return None, None
 
     # ================= 1. ОБЪЯСНЕНИЕ → СТРУКТУРА =================
     def explain(self, text):
         """учитель объясняет → правило/формула. Возвращает (правило, пересказ) или (None, что не понято)."""
         t = text.strip().rstrip(".")
-        r = self._parse_formula(t) or self._parse_transitive(t) or self._parse_if_then(t) or self._parse_equiv(t)
+        self._words_as_rels(t)
+        m0 = re.match(r"^([а-яё]+)\s*[—\-:]?\s*(?:это\s+)?(?:транзитив|переносится|по цепочке|сравнение)", t.lower().replace("ё", "е"))
+        if m0 and m0.group(1) not in ("любое", "всякое", "все", "каждое"): self._add_open_rel(m0.group(1), why="teacher: transitive")
+        r = self._parse_formula(t) or self._parse_inverse(t) or self._parse_transitive(t) or self._parse_if_then(t) or self._parse_equiv(t)
         if r is None: return None, "Не поняла объяснение: не вижу в нём отношения между X и Y (старше/в/стоит…) или формулы (A = B / C)."
-        if any(x.text == r.text for x in self.rules): return r, "Это я уже знаю: " + self.retell(r)
+        if any(x.text == r.text for x in self.rules) and r.kind != "inverse": return r, "Это я уже знаю: " + self.retell(r)
         self.rules.append(r); self.save(); self.log.append(dict(kind="explain", text=text[:120]))
         return r, self.retell(r)
 
     def _rel_in(self, s):
-        sl = s.lower()
-        for w in REL_WORDS:
-            if re.search(r"(?<![а-яё])" + re.escape(w) + r"(?![а-яё])", sl): return REL[w], w
+        sl = s.lower().replace("ё", "е"); rels = self._all_rels()
+        for w in sorted(rels, key=len, reverse=True):
+            if re.search(r"(?<![а-яё])" + re.escape(w) + r"(?![а-яё])", sl): return rels[w], w
         return None, None
+
+    def _rel_by_stem(self, word):
+        """«старший/старшая/самый тяжёлый/высокая» → отношение по общей основе (старш↔старше, тяжел↔тяжелее, высок↔выше?)"""
+        w = word.lower().replace("ё", "е"); rels = self._all_rels()
+        if w in rels: return rels[w][0]
+        base = re.sub(r"(?:ый|ий|ой|ая|яя|ое|ее|ые|ие|ого|ему|ым|их)$", "", w)
+        best = None
+        for rw, v in rels.items():
+            if v[2] != "cmp" or " " in rw: continue
+            rb = CMP_SUFFIX.sub("", rw)
+            k = 0
+            while k < min(len(base), len(rb)) and base[k] == rb[k]: k += 1
+            if k >= 4 and (best is None or k > best[0]): best = (k, v[0])
+        if best: return best[1]
+        for a, b in (("высок", "выше"), ("низк", "ниже"), ("дорог", "дороже"), ("дешев", "дешевле"), ("тяжел", "тяжелее"), ("легк", "легче"), ("быстр", "быстрее"), ("медленн", "медленнее"), ("стар", "старше"), ("молод", "младше"), ("сильн", "сильнее"), ("слаб", "слабее"), ("больш", "больше"), ("маленьк", "меньше")):
+            if base.startswith(a) and b in rels: return rels[b][0]
+        return None
 
     def _vars(self, s):
         """переменные в объяснении: X, Y, Z / икс, игрек / имена-заглушки (Петя, Вася) → порядковые"""
@@ -100,6 +188,22 @@ class Understand:
         vs2 = [v for v in self._vars(concl_s) if v.lower() != w2]
         if len(vs2) < 2: return None
         return Rule(conds, [rel2[0], vs2[0], vs2[1]], t)
+
+    def _parse_inverse(self, t):
+        """«ниже — обратное к выше», «младше — это наоборот старше», «дешевле противоположно дороже»"""
+        m = re.match(r"^([а-яё]+)\s*[—\-:]?\s*(?:это\s+)?(?:обратно[е]?\s+(?:к|для)?|наоборот|противоположно(?:\s+к)?|антоним(?:\s+к)?)\s*([а-яё]+)$", t.lower().replace("ё", "е"), re.I)
+        if not m: return None
+        a, b = m.group(1), m.group(2)
+        self._add_open_rel(a, inverse=b, why="teacher: inverse"); self._add_open_rel(b, inverse=a, why="teacher: inverse")
+        self.open_rels[a] = (a, b, "cmp"); self.open_rels[b] = (b, a, "cmp"); self.save()
+        return Rule([[a, "X", "Y"]], [b, "Y", "X"], t, kind="inverse")
+
+    def _words_as_rels(self, t):
+        """слова объяснения вида «если X <w> Y …» — открыть <w> как отношение (учитель назвал его явно)"""
+        for m in re.finditer(r"\b(?:X|Y|Z|[А-ЯЁ][а-яё]{2,})\s+([а-яё]+(?:\s+[а-яё]+)?)\s+(?:X|Y|Z|[А-ЯЁ][а-яё]{2,})\b", t):
+            w = m.group(1).lower().replace("ё", "е")
+            if w in REL or w in self.open_rels or w.split()[0] in STOP_REL: continue
+            if CMP_SUFFIX.search(w.split()[-1]) or self._cmp_sim(w) >= 0.2 or re.search(r"транзитив|по цепочке|переносится", t, re.I): self._add_open_rel(w, why="teacher: rule")
 
     def _parse_transitive(self, t):
         """«старше — это транзитивно», «если X старше Y, а Y старше Z, то X старше Z», «старше переносится по цепочке»"""
@@ -139,6 +243,8 @@ class Understand:
         if r.kind == "transitive":
             if r.concl[0] == "*cmp": return "Поняла: любое сравнение (старше, выше, тяжелее, дороже…) переносится по цепочке — если первый больше второго, а второй третьего, то первый больше третьего."
             s = REL_SAY.get(r.concl[0], r.concl[0]); return f"Поняла: «{s}» переносится по цепочке — если первый {s} второго, а второй {s} третьего, то первый {s} третьего."
+        if r.kind == "inverse":
+            return f"Поняла: «{r.cond[0][0]}» — это «{r.concl[0]}» наоборот: если первый {r.cond[0][0]} второго, то второй {r.concl[0]} первого."
         if r.kind == "equiv":
             return f"Поняла: «{REL_SAY.get(r.cond[0][0])}» и «{REL_SAY.get(r.concl[0])}» — одно и то же."
         cs = " и ".join(f"{a} {REL_SAY.get(rel, rel)} {b}" for rel, a, b in r.cond); rel, a, b = r.concl
@@ -194,13 +300,16 @@ class Understand:
 
     def parse_task(self, text):
         facts = []; quants = {}; raw = []; last_place = None
-        sents = re.split(r"[.;!?]\s*|,\s*(?=[а-яёА-ЯЁ][^,]*\b(?:" + "|".join(map(re.escape, REL_WORDS)) + r")\b)", text)
+        rels_rx = "|".join(map(re.escape, sorted(self._all_rels(), key=len, reverse=True)))
+        # новое предложение = после «,» идёт Имя / класс-слово / «слово <отношение>» / «слово <сравнит.степень>»
+        sents = re.split(r"[.;!?]\s*|,\s*(?=[А-ЯЁ][а-яё]+\s)|,\s*(?=(?:область|район|город|страна)\s)|,\s*(?=[а-яё]+\s+(?:" + rels_rx + r")(?![а-яё]))|,\s*(?=[а-яё]+\s+[а-яё]+(?:ее|ей|ше|же|че)\s)", text)
         for sent in sents:
             sl = sent.lower().strip()
             if not sl or any(re.search(r"(?<![а-яё])" + q + r"(?![а-яё])", sl) for q in self.QWORDS): continue  # вопрос — не факт
             rel, w = self._rel_in(sent)
+            if not rel and OPEN_REL: rel, w = self._discover_rel(sent)
             if rel:
-                m = re.search(r"(?<![а-яё])" + re.escape(w) + r"(?![а-яё])", sl)
+                sl = sl.replace("ё", "е"); m = re.search(r"(?<![а-яё])" + re.escape(w) + r"(?![а-яё])", sl)
                 left, right = sent[: m.start()], sent[m.end():]
                 m_n = re.search(r"\bна\s+(\d+(?:[.,]\d+)?)", sent)
                 right_core = re.split(r"\bна\s+\d", right)[0]
@@ -256,7 +365,7 @@ class Understand:
         known = {(rel, a, b): n for rel, a, b, n in facts}
         # обратные отношения тоже известны
         for (rel, a, b), n in list(known.items()):
-            inv = next((v[1] for v in REL.values() if v[0] == rel and v[1]), None)
+            inv = self._inverse(rel)
             if inv: known.setdefault((inv, b, a), n)
         derived = []; changed = True; guard = 0
         while changed and guard < 6:
@@ -268,18 +377,17 @@ class Understand:
                     if rel == "*cmp": rel = binding["*cmp"]
                     if (rel, a, b) not in known:
                         known[(rel, a, b)] = nsum; derived.append((r, rel, a, b, nsum)); changed = True
-                        inv = next((v[1] for v in REL.values() if v[0] == rel and v[1]), None)
+                        inv = self._inverse(rel)
                         if inv: known.setdefault((inv, b, a), nsum)
         # --- вопрос ---
         ans = None; why = []
-        m = re.search(r"кто (?:самый |самая |из них )?(старш|младш|выш|ниж|больш|меньш|дорож|дешевл|быстр|медленн|старее|раньше|позже|тяжел|легч|сильн|слаб|высок|низк|дорог|дешев|тяжёл|лёгк|сильн|слаб)", q)
+        m = re.search(r"кто (?:самый |самая |самое |из них )?([а-яё]+)", q)
         if m and not re.search(r"\bили\b", q):
-            key = m.group(1); key = {"высок": "выше", "низк": "ниже", "дорог": "дороже", "дешев": "дешевле", "тяжёл": "тяжелее", "лёгк": "легче"}.get(key, key)
-            rel = next((REL[w][0] for w in REL if w.startswith(key[:4])), None)
+            rel = self._rel_by_stem(m.group(1))
             people = {x for (_, a, b) in known for x in (a, b) if x != "?"}
             if rel and people:
                 tops = [p for p in people if all((rel, p, o) in known for o in people if o != p)]
-                if tops: ans = tops[0]; why = [f"{a} {REL_SAY[rel]} {b}" + (f" на {n:g}" if n else "") for (r_, a, b), n in known.items() if r_ == rel and a == ans]
+                if tops: ans = tops[0]; why = [f"{a} {REL_SAY.get(rel, rel)} {b}" + (f" на {n:g}" if n else "") for (r_, a, b), n in known.items() if r_ == rel and a == ans]
         m = re.search(r"(?:где|в чём|в чем)\s+(?:находится\s+)?([А-ЯЁ][а-яё]+)", text, re.I)
         if m and not ans:
             x = self._name(m.group(1)); chain = [(b, n) for (r_, a, b), n in known.items() if r_ == "in" and a == x]
@@ -289,20 +397,20 @@ class Understand:
                 conts = [b for b, _ in chain]
                 outer = [b for b in conts if not any((("in", b, c) in known) for c in conts if c != b)]
                 ans = outer[0] if outer else conts[-1]; why = [f"{x} в {b}" for b in conts]
-        m = re.search(r"(?:кто|что)\s+(" + "|".join(w for w in REL_WORDS if " " not in w and REL[w][2] == "cmp") + r")\s*[:—-]?\s*([А-ЯЁа-яё]+)\s+или\s+([А-ЯЁа-яё]+)", text, re.I)
+        m = re.search(r"(?:кто|что)\s+([а-яё]+)\s*[:—-]?\s*([А-ЯЁа-яё]+)\s+или\s+([А-ЯЁа-яё]+)", text, re.I)
         if m and not ans:
-            rel = REL[m.group(1)][0]; a, b = self._name(m.group(2)), self._name(m.group(3))
-            if (rel, a, b) in known: ans = a; why = [f"{a} {REL_SAY[rel]} {b}" + (f" на {known[(rel, a, b)]:g}" if known[(rel, a, b)] else "")]
-            elif (rel, b, a) in known: ans = b; why = [f"{b} {REL_SAY[rel]} {a}" + (f" на {known[(rel, b, a)]:g}" if known[(rel, b, a)] else "")]
+            rel = self._rel_by_stem(m.group(1)); a, b = self._name(m.group(2)), self._name(m.group(3))
+            if rel and (rel, a, b) in known: ans = a; why = [f"{a} {REL_SAY.get(rel, rel)} {b}" + (f" на {known[(rel, a, b)]:g}" if known[(rel, a, b)] else "")]
+            elif rel and (rel, b, a) in known: ans = b; why = [f"{b} {REL_SAY.get(rel, rel)} {a}" + (f" на {known[(rel, b, a)]:g}" if known[(rel, b, a)] else "")]
             if ans and re.search(r"на сколько", q):
                 k = (rel, ans, b if ans == a else a)
                 if known.get(k) is not None: ans = f"{ans}, на {known[k]:g}"
         m = re.search(r"на сколько\b", q)
         if m and ans is None and len(facts) >= 2:
             # просто «на сколько X старше Z» / «на сколько самса дороже чая»
-            mm = re.search(r"на сколько\s+([А-ЯЁа-яё]+)\s+(старше|младше|выше|ниже|больше|меньше|дороже|дешевле)\s+([А-ЯЁа-яё]+)", text, re.I)
-            if mm:
-                rel = REL[mm.group(2)][0]; a, b = self._name(mm.group(1)), self._name(mm.group(3)); k = (rel, a, b)
+            mm = re.search(r"на сколько\s+([А-ЯЁа-яё]+)\s+([а-яё]+)\s+([А-ЯЁа-яё]+)", text, re.I)
+            if mm and self._rel_by_stem(mm.group(2)):
+                rel = self._rel_by_stem(mm.group(2)); a, b = self._name(mm.group(1)), self._name(mm.group(3)); k = (rel, a, b)
                 if k in known and known[k] is not None: ans = f"на {known[k]:g}"; why = [f"{a} {REL_SAY[rel]} {b} на {known[k]:g}"]
         if ans is None: return None
         used = [r.text for r, *_ in derived]
@@ -311,10 +419,15 @@ class Understand:
         steps += [f"по правилу «{r.text}»: {a} {REL_SAY.get(rel, rel)} {b}" + (f" на {n:g}" if n else "") for r, rel, a, b, n in derived[:4]]
         return dict(answer=ans, steps=steps, rule=used[0] if used else None, kind="rule", confidence=0.85 if derived else 0.7)
 
+    def _inverse(self, rel):
+        for v in self._all_rels().values():
+            if v[0] == rel and v[1]: return v[1]
+        return None
+
     def _match(self, cond, known):
         """все подстановки переменных, при которых все условия есть в known; суммирует числа («на 3» + «на 2» → 5)"""
         results = [({}, 0.0)]
-        cmp_rels = {v[0] for v in REL.values() if v[2] == "cmp"}
+        cmp_rels = {v[0] for v in self._all_rels().values() if v[2] == "cmp"}
         for rel, A, B in cond:
             nxt = []
             for binding, nsum in results:
@@ -342,14 +455,16 @@ class Understand:
         return "Думаю так: " + " ".join(f"{i+1}) {s}." for i, s in enumerate(res["steps"])) + f" Значит: {res['answer']}."
 
     def report(self):
-        return f"understand: {len(self.rules)} правил от учителя ({sum(1 for r in self.rules if r.kind == 'formula')} формул), применено {sum(r.applied for r in self.rules)} раз"
+        return f"understand: {len(self.open_rels)} открытых отношений ({', '.join(list(self.open_rels)[:8])}), {len(self.rules)} правил от учителя ({sum(1 for r in self.rules if r.kind == 'formula')} формул), применено {sum(r.applied for r in self.rules)} раз"
 
     def save(self):
-        if self.path: json.dump(dict(rules=[r.to_json() for r in self.rules], log=self.log[-100:]), open(self.path, "w"), ensure_ascii=False, indent=1)
+        if self.path: json.dump(dict(rules=[r.to_json() for r in self.rules], open_rels=self.open_rels, log=self.log[-100:]), open(self.path, "w"), ensure_ascii=False, indent=1)
     def load(self):
         if not self.path or not os.path.exists(self.path): return
         try:
             z = json.load(open(self.path, encoding="utf-8")); self.rules = [Rule.from_json(d) for d in z.get("rules", [])]; self.log = z.get("log", [])
+            self.open_rels = {k: tuple(v) for k, v in z.get("open_rels", {}).items()}
+            for k in self.open_rels: REL_SAY.setdefault(k, k)
             for r in self.rules:
                 if r.kind == "formula": self.formulas[r.concl[0]] = r
         except Exception: self.rules = []

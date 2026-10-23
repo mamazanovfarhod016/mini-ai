@@ -31,10 +31,10 @@ if __name__ == "__main__":
 
     print("\n=== УЧИТЕЛЬ объясняет по одному разу ===")
     U = Understand(None, None)
-    for expl in ["если X старше Y, а Y старше Z, то X старше Z", "старше — значит родился раньше", "если X в Y и Y в Z, то X в Z",
+    for expl in ["если X старше Y, а Y старше Z, то X старше Z", "старше — значит родился раньше", "младше — обратное к старше", "если X в Y и Y в Z, то X в Z",
                  "время = путь / скорость", "остаток = было − потратил", "выше — транзитивно", "быстрее переносится по цепочке", "если X дороже Y и Y дороже Z, то X дороже Z"]:
         r, retell = U.explain(expl); print(f"  учитель: «{expl}»\n  она:     {retell}")
     print("\n=== ПРИМЕНЕНИЕ к новым задачам ===")
     t = run(U, AGE, "возраст") + run(U, LOC, "место") + run(U, FORM, "формулы")
-    print(f"\nИТОГ: без объяснения {c}/{len(AGE)+len(LOC)+len(FORM)} → после 8 объяснений {t}/{len(AGE)+len(LOC)+len(FORM)}   | {U.report()}")
+    print(f"\nИТОГ: без объяснения {c}/{len(AGE)+len(LOC)+len(FORM)} → после 9 объяснений {t}/{len(AGE)+len(LOC)+len(FORM)}   | {U.report()}")
     r = U.apply(AGE[1][0]); print("\nПример вслух:", U.say_steps(r) if r else None)
