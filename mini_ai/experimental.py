@@ -461,7 +461,9 @@ class ExperimentalMind:
         sp = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]))
         if sp:
             s, ans, (sent, _, _, src) = sp
-            cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(0.9, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+            aw_ = [w for w in toks(ans) if w not in STOPW]
+            vb_ = bool(aw_) and all(len(w) > 4 and w.endswith(("ed", "ing")) for w in aw_)             # «classified», «surrounding» — глагольная форма редко бывает ответом
+            cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(0.9, s / 0.6) * (0.8 if vb_ else 1.0), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
         elif not cands:
             # СМЕЛОСТЬ ИЗ СЛУЧАЕВ: на доске пусто, а похожие исправленные вопросы говорят «предложение с ответом было видно, я молчала зря»
             # → второй, смелый проход отрывка. Только когда иначе был бы «не знаю»: верный ответ другого способа он вытеснить не может.
