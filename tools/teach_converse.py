@@ -13,7 +13,7 @@ EN_BASE = os.path.expanduser("~/Developer/mini-ai-runs/learning-core/meaning_bas
 if os.path.exists(EN_BASE): m.meaning.load(EN_BASE)
 C = Converse(m, state); C.cases = []; C.schemes = []; C.stats.clear()
 rows = []
-for pat in ["data/dialogs/ru.jsonl", "data/dialogs/_rr_parts/*.jsonl", "data/dialogs/ru_reasoning.jsonl", "data/dialogs/en.jsonl"]:
+for pat in ["data/dialogs/en.jsonl", "data/dialogs/ru.jsonl", "data/dialogs/_rr_parts/*.jsonl", "data/dialogs/ru_reasoning.jsonl"]:   # англ. первыми: при любой обрезке русские (ценнее) остаются
     for f in sorted(glob.glob(pat)):
         rs = [json.loads(l) for l in open(f, encoding="utf-8") if l.strip()]
         if "en.jsonl" in f: rs = rs[:int(args.get("en_limit", 4000))]

@@ -124,6 +124,8 @@ class ExperimentalMind:
         try:
             from mini_ai.russian import Russian
             self.russian = Russian(self, self.state_dir)              # русский: слой перевода (словарь + выученные пары + смысл ru-слов)
+            from mini_ai.understand import Understand
+            self.understand = Understand(self, self.state_dir)        # понимание объяснений учителя → правила/формулы (exp67)
             from mini_ai.converse import Converse
             self.converse = Converse(self, self.state_dir)            # собеседник без параметров: случаи речи, профиль, схемы рассуждения (23.10)
             self._ru_meaning = None
@@ -717,6 +719,21 @@ class ExperimentalMind:
         return best
 
     def ask(self, q, internet=True):
+        # ПОНИМАНИЕ ОБЪЯСНЕНИЯ УЧИТЕЛЯ (understand.py, exp67): объяснение → правило/формула; задача → применение правил.
+        # Стоит ПЕРЕД всем остальным, потому что объяснение правила — не вопрос к памяти фактов.
+        U = getattr(self, "understand", None)
+        if U and re.search(r"[а-яё]", q.lower()):
+            qs = q.strip()
+            if re.match(r"^(?:объясняю|правило|запомни правило|пойми)\s*[:\-—]?\s*", qs, re.I) or (not qs.endswith("?") and (re.match(r"^(?:если|когда)\b", qs, re.I) or re.search(r"\s(?:=|равно)\s|транзитив|по цепочке|переносится|—\s*(?:это\s+)?значит|\sозначает\s|то же,? что", qs, re.I))):
+                body = re.sub(r"^(?:объясняю|правило|запомни правило|пойми)\s*[:\-—]?\s*", "", qs, flags=re.I)
+                r, say = U.explain(body)
+                return dict(question=q, frame=None, read=[], answer=say, kind="learned" if r else "clarify", how="understand: rule" if r else "understand: not parsed", facts=[], confidence=1.0 if r else 0.0, text=say, note=None, thoughts=[])
+            if qs.endswith("?") or re.search(r"\bсколько\b|\bкто\b|\bгде\b", qs.lower()):
+                try: res = U.apply(qs)
+                except Exception as e: res = None; print("UNDERSTAND-ERR", e)
+                if res:
+                    text = U.say_steps(res)
+                    return dict(question=q, frame=None, read=[], answer=str(res["answer"]), kind="answer", how=f"understand: {res['kind']}", facts=[], confidence=res["confidence"], text=text, note=None, thoughts=res["steps"], rule=res.get("rule"))
         if not self.use_dialog:
             out = self._ask_core(self._resolve(q), internet); out["kind"] = "answer" if out.get("answer") else "unknown"; return out
         out = self._ask_dialog(q, internet)

@@ -423,10 +423,10 @@ class Converse:
     # ---------- состояние ----------
     def save(self):
         if not self.path: return
-        light = [dict((k, v) for k, v in c.items() if k != "vec") for c in self.cases[-9000:]]
+        light = [dict((k, v) for k, v in c.items() if k != "vec") for c in self.cases[-20000:]]
         sch = [dict((k, v) for k, v in s.items() if k != "vec") for s in self.schemes[-2000:]]
         json.dump(dict(cases=light, schemes=sch, log=self.log[-200:], stats=dict(self.stats)), open(self.path, "w"), ensure_ascii=False)
-        vs = [c["vec"] for c in self.cases[-9000:]]
+        vs = [c["vec"] for c in self.cases[-20000:]]
         if vs: np.save(self.path.replace(".json", "_vecs.npy"), np.stack([v if v is not None else np.zeros(4096, np.float32) for v in vs]).astype(np.float16))
         sv = [s["vec"] for s in self.schemes[-2000:]]
         if sv: np.save(self.path.replace(".json", "_svecs.npy"), np.stack([v if v is not None else np.zeros(4096, np.float32) for v in sv]).astype(np.float16))

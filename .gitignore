@@ -28,3 +28,9 @@ data/reasoning.json
 
 # Задачи по Python — большой файл, пересобирается tools/make_python_tasks.py
 data/python_tasks.json
+
+# большие датасеты (локально, не в git)
+data/ru/dataset.jsonl.gz
+data/ru/ru_dialogues2.jsonl
+data/ru/opus_en_ru.parquet
+data/ru/ruwiki_intro.jsonl
