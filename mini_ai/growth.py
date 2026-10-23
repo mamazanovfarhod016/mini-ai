@@ -98,8 +98,11 @@ class Growth:
             for k, schemas in self.rules_saved.items(): fs.rules[k] = {tuple(s) for s in schemas}
             for k, ex in d.get("examples", {}).items(): fs.examples[k] = [tuple(e) for e in ex]
 
-    def save(self):
+    def save(self, force=False):
         if not self.path: return
+        self._since_save = getattr(self, "_since_save", 0) + 1                      # пишем раз в 10 уроков (json 130 КБ на каждое «yes» — 0.2 с)
+        if not force and self._since_save < 10: return
+        self._since_save = 0
         fs = getattr(self.mind, "fewshot", None)
         rules = {k: [list(s) for s in v] for k, v in fs.rules.items()} if fs else self.rules_saved
         examples = {k: [list(e) for e in v] for k, v in fs.examples.items()} if fs else {}

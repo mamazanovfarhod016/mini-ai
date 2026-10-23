@@ -57,8 +57,25 @@ class Cases:
         if not self.path or not os.path.exists(self.path): return
         try: self.items = json.load(open(self.path))[-2000:]
         except Exception: self.items = []
-    def save(self):
-        if self.path: json.dump(self.items[-2000:], open(self.path, "w"), ensure_ascii=False)
+        vp = self.path.replace(".json", "_vecs.npy")
+        if os.path.exists(vp):                                                    # смысл-векторы отдельно (npy), в json их нет
+            try:
+                V = np.load(vp); j = 0
+                for it in self.items:
+                    if it.get("vec") == "npy" and j < len(V): it["vec"] = V[j].tolist(); j += 1
+            except Exception: pass
+        self._since_save = 0
+    def save(self, force=False):
+        """Профиль школы (23.10): json.dump cases.json с 4096-мерными векторами = 1.8 с на каждое исправление (60 % шага учёбы).
+        Теперь: векторы — в отдельный .npy, json — без них; писать раз в 10 уроков (и при force)."""
+        if not self.path: return
+        self._since_save = getattr(self, "_since_save", 0) + 1
+        if not force and self._since_save < 10: return
+        items = self.items[-2000:]; vecs = [it["vec"] for it in items if isinstance(it.get("vec"), list)]
+        light = [dict(it, vec=("npy" if isinstance(it.get("vec"), list) else it.get("vec"))) for it in items]
+        json.dump(light, open(self.path, "w"), ensure_ascii=False)
+        if vecs: np.save(self.path.replace(".json", "_vecs.npy"), np.array(vecs, dtype=np.float16))
+        self._since_save = 0
 
     def _encode(self, texts):
         if os.environ.get("MINI_AI_NEURAL", "1") == "0": return None

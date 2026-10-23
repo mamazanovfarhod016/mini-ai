@@ -171,8 +171,16 @@ class ExperimentalMind:
     JUNK = set("today now then also usually often sometimes generally typically however thus therefore example instance figure below above here there "
                "several many some few most all each every both another other such one two three first second last next various numerous".split())
     def _stem(self, w): return w[:-2] if w.endswith("es") and len(w) > 5 else (w[:-1] if w.endswith("s") and len(w) > 4 else w)
+    _FORMS_CACHE = {}
     def _forms(self, w):
-        """множество грубых основ слова: plants/plant, processes/process, invertebrates/invertebrate, bodies/body, moves/move, held/hold"""
+        """множество грубых основ слова: plants/plant, processes/process, invertebrates/invertebrate, bodies/body, moves/move, held/hold.
+        Кэш на уровне класса: 10 млн вызовов за 40 вопросов (65 % времени ответа) → словарь (profile 23.10)."""
+        c = ExperimentalMind._FORMS_CACHE.get(w)
+        if c is not None: return c
+        f = self._forms_raw(w)
+        if len(ExperimentalMind._FORMS_CACHE) < 400000: ExperimentalMind._FORMS_CACHE[w] = f
+        return f
+    def _forms_raw(self, w):
         f = {w}
         if w in self.IRREG: f.add(self.IRREG[w]); f.add(self.IRREG[w] + "s")
         if len(w) > 4 and w.endswith("ies"): f.add(w[:-3] + "y")

@@ -39,10 +39,11 @@ for i, (_, r) in enumerate(rows):
     if (i + 1) % 100 == 0: print(f"  {i+1} … {time.time()-t0:.0f}s  (last ask {_tq:.2f}s)  {m.solver.report()[:70]}", flush=True)
     if (i + 1) % 500 == 0 or i + 1 == len(rows):
         acc = round(win_h / max(1, win_n), 3); prog["curve"].append([i + 1, acc]); win_h = win_n = 0
-        m.growth.save(); json.dump(prog, open(PROG, "w"))
+        m.growth.save(force=True); m.cases.save(force=True); m.solver.save(force=True); json.dump(prog, open(PROG, "w"))
         soft = [w for w in m.growth.attn if m.growth.is_soft_learned(w)]
         print(f"{i+1:6d}  last-500 acc {acc:.3f}  corrections {prog['corr']}  attn-soft {len(soft)}  slot-rules {sum(len(v) for v in m.growth.slot_rules.values())}  "
               f"forms {len([k for k in m.growth.reliab if not k.endswith('|*')])}  {time.time()-t0:.0f}s", flush=True)
+m.growth.save(force=True); m.cases.save(force=True); m.solver.save(force=True)
 print("--- growth report ---"); print(m.growth.report())
 # проверка: test 300, без учителя, учебник test в память
 for _, r in te.iterrows(): m.kb.read_text(str(r["support"]), "учебник")
