@@ -39,10 +39,12 @@ for lo in slices:
         o = m1.ask(r["question"], internet=False); g = rec(m1, o); h = hit(o, r["correct_answer"]); gh += h
         D.append(dict(slice=lo, q=r["question"], gold=r["correct_answer"], cold=c, grown=g, cold_hit=c["hit"], grown_hit=h))
     grown = gh / len(h2)
+    if hasattr(m1, "reform"): extra_r = " | " + m1.reform.report()[:160]
+    else: extra_r = ""
     deltas.append(grown - cold)
     extra = ""
     if hasattr(m1, "cases"): extra += f" cases {len(m1.cases.items)}"
-    print(f"[{lo}] cold {cold:.3f} → grown {grown:.3f} ({grown - cold:+.3f}) corrections {nc}{extra}", flush=True)
+    print(f"[{lo}] cold {cold:.3f} → grown {grown:.3f} ({grown - cold:+.3f}) corrections {nc}{extra}{extra_r}", flush=True)
     del m1; gc.collect()
 if dump: json.dump(D, open(dump, "w"), ensure_ascii=False, indent=0)
 print(f"GROWTH mean {sum(deltas) / len(deltas):+.3f} over {len(deltas)} slices ({int(time.time() - t0)}s) tag={tag}", flush=True)

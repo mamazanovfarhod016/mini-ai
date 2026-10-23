@@ -112,6 +112,8 @@ class ExperimentalMind:
         self.growth = Growth(self, self.state_dir); self._last_out = None; self._cur_q = ""; self.deep = Deep(self)
         from mini_ai.cases import Cases
         self.cases = Cases(self, self.state_dir); self._advice = None
+        from mini_ai.reform import Reform
+        self.reform = Reform(self, self.state_dir)                    # выученное перечитывание вопроса (уточнители, слово-тип, замены)
         self.neural = None
         if os.environ.get("MINI_AI_NEURAL", "1") != "0":
             try:
@@ -277,6 +279,8 @@ class ExperimentalMind:
         if qt2: atype_w.add(qt2.group(1))
         atype_w |= {w for w in known if w in ("result", "outcome", "objects", "object", "body", "group", "organ", "material", "substance", "structure", "feature", "property", "process", "system", "element", "term", "type", "kind")}
         known = known - atype_w
+        RF = getattr(self, "reform", None)
+        if RF: known = known - RF.type_words(self._cur_q)            # выученное: «what PART of…» — part задаёт тип ответа, не искомое слово
         if not known: return None
         idf = {w: self._widf(w) for w in known}; forms = {w: self._forms(w) for w in known}
         # СЛУЧАИ: похожие исправленные вопросы говорят, какие слова были лишними → они мягкие здесь
@@ -292,6 +296,7 @@ class ExperimentalMind:
             wgt = idf[w] if w in hard else 0.3 * idf[w]
             alts = ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w})
             if G: alts |= set(G.paraphrases(w))                                       # выученный перефраз: holds → held, make → produce
+            if RF: alts |= set(RF.subs(w))                                            # выученная замена из выравнивания вопроса с предложением
             for x in alts:
                 for si in self.kb.sent_by_word.get(x, []): cnt[si] += wgt * (1.0 if x == w else 0.9)
                 for si in self.kb.sent_ctx_by_word.get(x, []):
@@ -333,13 +338,24 @@ class ExperimentalMind:
         for si, score in cnt.most_common(12):
             cov = score / kidf
             dbg["top"].append([si, round(cov, 2), None, None])
-            if cov < thr: continue
             sent, src = self.kb.sents[si]; sw = set(content_words(toks(sent)))
             if si in self.kb.sent_glued or si in follow:
                 sw = sw | set(content_words(toks(self.kb.sents[si - 1][0])))        # определение с отсылкой / следующее предложение: слова соседа — тоже «в предложении»
             sforms = set().union(*[self._forms(x) for x in sw]) if sw else set()
+            # ВЫУЧЕННЫЕ УТОЧНИТЕЛИ (reform): кусок вопроса, целиком отсутствующий в предложении и имеющий форму, которая в исправлениях
+            # оказывалась лишней («within an incomplete digestive system», «such as the breakdown of…»), — не требуем; покрытие пересчитываем
+            absent = {w for w in known if not (forms[w] & sforms)}; qual = set(); cov_raw = cov
+            if RF and absent:
+                qual = RF.qualifiers(self._cur_q, absent) & absent
+                if qual:
+                    drop = sum(idf[w] if w in hard else 0.3 * idf[w] for w in qual)
+                    # остаток должен держать смысл: ≥1 твёрдое слово найдено, и остаётся ≥35 % веса (или ≥2 твёрдых найденных слова)
+                    found_hard = [w for w in hard if w not in absent]
+                    if found_hard and (kidf - drop >= 0.35 * kidf or len(found_hard) >= 2) and kidf - drop > 0: cov = score / (kidf - drop)
+                    else: qual = set()
+            if cov < thr: continue
             hy = set(re.findall(r"\b([a-z]+)-(?:like|type|shaped|based|free|rich)\b", self._cur_q.lower()))          # «tube-like» — описание, не термин
-            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and w not in case_soft and not (forms[w] & sforms) and not (G and set(G.paraphrases(w)) & sw)]
+            rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and w not in case_soft and w not in qual and not (forms[w] & sforms) and not (G and set(G.paraphrases(w)) & sw) and not (RF and set(RF.subs(w)) & sw)]
             if self._neural_hit.get(si, 0) >= 0.6: rare_missing = rare_missing[:1] if cov >= 0.5 else rare_missing[:2]   # смысл совпал — слова могут отличаться
             dbg["top"][-1][2] = rare_missing
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
@@ -423,7 +439,7 @@ class ExperimentalMind:
             ans = re.sub(r"^(?:the|a|an|its|their|also|about|only|all|most|many|some|very)\s+", "", ans, flags=re.I).strip()
             if len(ans) < 2: continue
             dbg["top"][-1][3] = ans
-            sc = round(cov * 0.55, 2)
+            sc = round(cov_raw * 0.55, 2)                    # уверенность — по честному покрытию: уточнитель открывает дверь, но не добавляет веры
             if not best or sc > best[0]: best = (sc, ans, (sent[:120], "span", "", src))
         return best
 
@@ -739,6 +755,10 @@ class ExperimentalMind:
                 return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text=f"That's what I said — {right}. Good, I'll trust that way more.", note=None)
             grew = self.growth.learn_from_correction(last["question"], last, right)
             try:
+                rg = self.reform.learn(last["question"], right)
+                if rg: grew.append("how to read it: " + "; ".join(rg[:3]))
+            except Exception as e: grew.append(f"reform error {e}")
+            try:
                 it = self.cases.learn(last["question"], right, last)
                 if it: grew.append("case remembered: " + ", ".join(f"{w} {'needed' if r == 'needed' else 'extra'}" for w, r in list(it["roles"].items())[:4]))
             except Exception as e: grew.append(f"case error {e}")
@@ -752,6 +772,8 @@ class ExperimentalMind:
             last["_graded"] = True
             self.growth.learn_from_confirmation(last["question"], last)
             try: self.cases.learn(last["question"], str(last["answer"]), last, hit=True)      # попадание — тоже случай: способ и позиция верны
+            except Exception: pass
+            try: self.reform.learn(last["question"], str(last["answer"]), confirmed=True)
             except Exception: pass
             conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
             return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text="Good — I'll trust that way of thinking more for questions like this.", note=None)
