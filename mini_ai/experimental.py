@@ -113,7 +113,9 @@ class ExperimentalMind:
         from mini_ai.cases import Cases
         self.cases = Cases(self, self.state_dir); self._advice = None
         from mini_ai.reform import Reform
-        self.reform = Reform(self, self.state_dir)                    # выученное перечитывание вопроса (уточнители, слово-тип, замены)
+        self.reform = Reform(self, self.state_dir)
+        from mini_ai.solver import Solver
+        self.solver = Solver(self, self.state_dir); self._last_cands = None   # обучаемый арбитр без градиента (solver.py): признаки → решение уравнения                    # выученное перечитывание вопроса (уточнители, слово-тип, замены)
         self.neural = None
         if os.environ.get("MINI_AI_NEURAL", "1") != "0":
             try:
@@ -571,6 +573,10 @@ class ExperimentalMind:
             # «what kind of CELL» / «which ORGAN» (ответ должен быть определён как такой тип или по смыслу близок);
             # (б) ответ не повторяет слова вопроса; (в) ответ не «мусор» (одно служебное слово). Несовпадение — штраф, не запрет.
             chk = self._self_check(fr, c["answer"]); c["check"] = chk["note"]; c["score"] = round(c["score"] * chk["mult"], 3)
+        # ОБУЧАЕМЫЙ АРБИТР (solver.py): признаки каждого кандидата → вероятность «верен», выученная из исправлений решением уравнения
+        try:
+            feats = self.solver.features(q, cands); self.solver.apply(cands, feats); self._last_cands = (q, [dict(c) for c in cands], feats)
+        except Exception as e_: self._last_cands = None
         cands.sort(key=lambda c: -c["score"])
         best = cands[0]; best["board"] = [(c["how"], str(c["answer"])[:40], c["confidence"], c["trust"], c["score"], c.get("check"), (c.get("facts") or [""])[-1][:160]) for c in cands]
         return best
@@ -733,7 +739,7 @@ class ExperimentalMind:
         #     способ теряет доверие на этой форме вопроса, путь вопрос→X становится схемой, связка слов запоминается
         last = self._last_out
         if re.match(r"^(?:how (?:did|have) you (?:grown|grow|learned|improved)|what have you learned|growth report|show growth|как ты выросла)\s*\??$", q0, re.I):
-            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: report", facts=[], confidence=1.0, text=self.growth.report() + "\n" + self.growth.report_gates() + "\n" + self.cases.report(), note=None)
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: report", facts=[], confidence=1.0, text=self.growth.report() + "\n" + self.growth.report_gates() + "\n" + self.cases.report() + "\n" + self.solver.report(), note=None)
         # ПОЧЕМУ ТЫ ТАК ОТВЕТИЛА — объяснение реального пути: способ, факты, доска арбитра (кто ещё что предлагал)
         if re.match(r"^(?:why|why (?:did you (?:say|answer|think) that|that|so|not)|how do you know|how did you get that|explain|почему)\s*\??$", q0, re.I) and last:
             how = last.get("how") or "?"; facts = last.get("facts") or []; board = last.get("arbiter") or []
@@ -751,6 +757,10 @@ class ExperimentalMind:
             if last.get("answer") and set(content_words(toks(right))) and set(content_words(toks(right))) <= set(content_words(toks(str(last["answer"])))):
                 # «no, it's oxygen» — а она и сказала oxygen → это подтверждение, не исправление
                 self.growth.learn_from_confirmation(last["question"], last)
+                try:
+                    lc = self._last_cands
+                    if lc and lc[0] == last["question"]: self.solver.learn(lc[0], lc[1], right, lc[2])
+                except Exception: pass
                 conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
                 return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="growth: confirmation", facts=[], confidence=1.0, text=f"That's what I said — {right}. Good, I'll trust that way more.", note=None)
             grew = self.growth.learn_from_correction(last["question"], last, right)
@@ -758,6 +768,10 @@ class ExperimentalMind:
                 rg = self.reform.learn(last["question"], right)
                 if rg: grew.append("how to read it: " + "; ".join(rg[:3]))
             except Exception as e: grew.append(f"reform error {e}")
+            try:
+                lc = self._last_cands
+                if lc and lc[0] == last["question"]: self.solver.learn(lc[0], lc[1], right, lc[2])
+            except Exception as e: grew.append(f"solver error {e}")
             try:
                 it = self.cases.learn(last["question"], right, last)
                 if it: grew.append("case remembered: " + ", ".join(f"{w} {'needed' if r == 'needed' else 'extra'}" for w, r in list(it["roles"].items())[:4]))
@@ -772,6 +786,10 @@ class ExperimentalMind:
             last["_graded"] = True
             self.growth.learn_from_confirmation(last["question"], last)
             try: self.cases.learn(last["question"], str(last["answer"]), last, hit=True)      # попадание — тоже случай: способ и позиция верны
+            except Exception: pass
+            try:
+                lc = self._last_cands
+                if lc and lc[0] == last["question"]: self.solver.learn(lc[0], lc[1], str(last["answer"]), lc[2])
             except Exception: pass
             try: self.reform.learn(last["question"], str(last["answer"]), confirmed=True)
             except Exception: pass

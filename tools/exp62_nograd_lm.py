@@ -87,13 +87,16 @@ class Reservoir:
         v = rng.normal(size=N).astype(np.float32)
         for _ in range(60): v = W @ v; v /= (np.linalg.norm(v) + 1e-9)
         W *= rho / (np.linalg.norm(W @ v) + 1e-9); self.Wres = W
-        self.V, self.d, self.N, self.F, self.lam = V, d, N, N + d + 1, lam
+        self.hist = int(ARGS.get("hist", 0)); self.leak = float(ARGS.get("leak", 1.0))
+        self.V, self.d, self.N, self.F, self.lam = V, d, N, N + d * (1 + self.hist) + 1, lam
         self.A = np.zeros((self.F, self.F), np.float64); self.B = np.zeros((V, self.F), np.float64); self.Wout = None
     def features(self, X):
         Bt, T = X.shape; h = np.zeros((Bt, self.N), np.float32); F = np.zeros((Bt, T, self.F), np.float32)
         for t in range(T):
-            x = self.E[X[:, t]]; h = np.tanh(x @ self.Win + h @ self.Wres)
+            x = self.E[X[:, t]]; h = (1 - self.leak) * h + self.leak * np.tanh(x @ self.Win + h @ self.Wres)
             F[:, t, :self.N] = h; F[:, t, self.N:self.N + self.d] = x; F[:, t, -1] = 1.0
+            for k in range(1, self.hist + 1):       # явная короткая память: коды k-го предыдущего слова
+                if t - k >= 0: F[:, t, self.N + k * self.d:self.N + (k + 1) * self.d] = self.E[X[:, t - k]]
         return F
     def accumulate(self, X, M, weight=1.0):
         Phi = self.features(X)[M]; y = X[:, 1:][M[:, :-1]] if False else np.roll(X, -1, axis=1)[M]
@@ -117,9 +120,10 @@ class Reservoir:
     def generate(self, prefix, max_new=12, temp=0.7, rng=None):
         rng = rng or np.random.default_rng(1); ids = list(prefix); h = np.zeros((1, self.N), np.float32)
         for i in range(len(ids) + max_new):
-            x = self.E[[ids[i]]]; h = np.tanh(x @ self.Win + h @ self.Wres)
+            x = self.E[[ids[i]]]; h = (1 - self.leak) * h + self.leak * np.tanh(x @ self.Win + h @ self.Wres)
             if i < len(ids) - 1: continue
-            phi = np.concatenate([h[0], x[0], [1.0]]); out = phi @ self.Wout; out = np.clip(out, 1e-4, None) ** (1 / temp); p = out / out.sum()
+            hist = [self.E[ids[i - k]] if i - k >= 0 else np.zeros(self.d, np.float32) for k in range(1, self.hist + 1)]
+            phi = np.concatenate([h[0], x[0]] + hist + [[1.0]]); out = phi @ self.Wout; out = np.clip(out, 1e-4, None) ** (1 / temp); p = out / out.sum()
             nxt = int(rng.choice(self.V, p=p)); ids.append(nxt)
             if nxt == EOS: break
         return " ".join(itos[i] for i in ids[len(prefix):] if i != EOS)
@@ -164,6 +168,8 @@ res["oneshot"] = {"new_before": before_new, "new_after": after_new, "test_before
 print(f"[one-shot] новые предложения: до {before_new:.2f} → после {after_new:.2f} (одно обновление, {t_one:.1f}s); тест {before_test:.3f} → {after_test:.3f}", flush=True)
 
 # ---------------------------------------------------------------- контроль: трансформер (градиент), то же время CPU
+if ARGS.get("tf", "1") == "0":
+    json.dump(res, open(OUT.replace(".json", f"_{ARGS.get('tag','v')}.json"), "w"), indent=1, default=float); print(f"[done] {time.time()-t0:.0f}s (без трансформера)"); sys.exit(0)
 from mini_ai.transformer import init_params, n_params, loss_and_grads, AdamW, clip_grads, forward
 budget = float(TF_SECONDS) if TF_SECONDS else t_fit
 p, cfg = init_params(V, d=128, n_layer=2, n_head=4, pos="rope", seed=0); opt = AdamW(p, lr=3e-3, wd=0.01)
