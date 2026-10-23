@@ -30,12 +30,13 @@ win_h = 0; win_n = 0
 for i, (_, r) in enumerate(rows):
     if i < prog["done"]: continue
     m.kb.read_text(str(r["support"]), "учебник")
-    o = m.ask(r["question"], internet=False); ok = hit(o, r["correct_answer"])
+    _ta = time.time(); o = m.ask(r["question"], internet=False); ok = hit(o, r["correct_answer"]); _tq = time.time() - _ta
     prog["hits"] += ok; win_h += ok; win_n += 1
     if ok: m.ask("yes", internet=False)
     elif o.get("kind") in ("answer", "clarify", "unknown"):
         m.ask(f"no, it's {r['correct_answer']}", internet=False); prog["corr"] += 1
     prog["done"] = i + 1
+    if (i + 1) % 100 == 0: print(f"  {i+1} … {time.time()-t0:.0f}s  (last ask {_tq:.2f}s)  {m.solver.report()[:70]}", flush=True)
     if (i + 1) % 500 == 0 or i + 1 == len(rows):
         acc = round(win_h / max(1, win_n), 3); prog["curve"].append([i + 1, acc]); win_h = win_n = 0
         m.growth.save(); json.dump(prog, open(PROG, "w"))
