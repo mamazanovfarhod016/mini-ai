@@ -724,7 +724,7 @@ class ExperimentalMind:
         U = getattr(self, "understand", None)
         if U and re.search(r"[а-яё]", q.lower()):
             qs = q.strip()
-            if re.match(r"^(?:объясняю|правило|запомни правило|пойми)\s*[:\-—]?\s*", qs, re.I) or (not qs.endswith("?") and (re.match(r"^(?:если|когда)\b", qs, re.I) or re.search(r"\s(?:=|равно)\s|транзитив|по цепочке|переносится|—\s*(?:это\s+)?значит|\sозначает\s|то же,? что", qs, re.I))):
+            if re.match(r"^(?:объясняю|правило|запомни правило|пойми)\s*[:\-—]?\s*", qs, re.I) or (not qs.endswith("?") and (re.match(r"^(?:если|когда)\b", qs, re.I) or re.search(r"\s(?:=|равно)\s|транзитив|по цепочке|переносится|—\s*(?:это\s+)?значит|\sозначает\s|то же,? что|обратно[е]?\s+(?:к|для)?|наоборот|противоположно|антоним|^(?:смотри|например|вот|пример)\b|\b(?:значит|поэтому|следовательно|выходит|получается)\b", qs, re.I))):
                 body = re.sub(r"^(?:объясняю|правило|запомни правило|пойми)\s*[:\-—]?\s*", "", qs, flags=re.I)
                 r, say = U.explain(body)
                 return dict(question=q, frame=None, read=[], answer=say, kind="learned" if r else "clarify", how="understand: rule" if r else "understand: not parsed", facts=[], confidence=1.0 if r else 0.0, text=say, note=None, thoughts=[])

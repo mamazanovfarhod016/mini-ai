@@ -81,7 +81,7 @@ class Understand:
                 from mini_ai.meaning import Meaning
                 from mini_ai.russian import RU_BASE_NPZ
                 if os.path.exists(RU_BASE_NPZ):
-                    M = getattr(self.mind, "_ru_meaning", None)
+                    R = getattr(self.mind, "russian", None); M = getattr(R, "meaning_ru", None) if R else None   # одна копия базы на сервер
                     if M is None: M = Meaning(None); M.load(RU_BASE_NPZ)
                     self._M = M
             except Exception as e: print("understand: meaning off:", e)
