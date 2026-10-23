@@ -133,8 +133,10 @@ class Understand:
         t = text.strip().rstrip(".")
         self._words_as_rels(t)
         m0 = re.match(r"^([а-яё]+)\s*[—\-:]?\s*(?:это\s+)?(?:транзитив|переносится|по цепочке|сравнение)", t.lower().replace("ё", "е"))
-        if m0 and m0.group(1) not in ("любое", "всякое", "все", "каждое"): self._add_open_rel(m0.group(1), why="teacher: transitive")
-        r = self._parse_formula(t) or self._parse_inverse(t) or self._parse_transitive(t) or self._parse_if_then(t) or self._parse_equiv(t)
+        if m0 and m0.group(1) not in ("любое", "всякое", "все", "каждое", "смотри", "например", "вот"): self._add_open_rel(m0.group(1), why="teacher: transitive")
+        # пример с конкретными именами (≥2 Имени с большой буквы или ≥2 посылок) разбирается раньше формулировок
+        ex = self._parse_example(t) if (len(re.findall(r"\b[А-ЯЁ][а-яё]{2,}", t)) >= 2 or t.count(",") >= 1) and re.search(r"значит|поэтому|следовательно|выходит|получается", t, re.I) and not re.match(r"^(?:если|когда)", t, re.I) else None
+        r = ex or self._parse_formula(t) or self._parse_inverse(t) or self._parse_transitive(t) or self._parse_if_then(t) or self._parse_equiv(t)
         if r is None: return None, "Не поняла объяснение: не вижу в нём отношения между X и Y (старше/в/стоит…) или формулы (A = B / C)."
         if any(x.text == r.text for x in self.rules) and r.kind != "inverse": return r, "Это я уже знаю: " + self.retell(r)
         self.rules.append(r); self.save(); self.log.append(dict(kind="explain", text=text[:120]))
@@ -205,6 +207,28 @@ class Understand:
             if w in REL or w in self.open_rels or w.split()[0] in STOP_REL: continue
             if CMP_SUFFIX.search(w.split()[-1]) or self._cmp_sim(w) >= 0.2 or re.search(r"транзитив|по цепочке|переносится", t, re.I): self._add_open_rel(w, why="teacher: rule")
 
+    def _parse_example(self, t):
+        """ПРАВИЛО ИЗ ПРИМЕРА, не из формулировки: «смотри: Диёр старше Сардора, Сардор старше Камрона — значит Диёр старше Камрона».
+        Факты-посылки и вывод разбираются как задача; имена заменяются переменными по порядку появления → правило с X/Y/Z.
+        Это индукция из ОДНОГО примера: обобщение = «имена не важны, важна структура»."""
+        m = re.match(r"^(?:смотри|например|пример|вот)?\s*[:,]?\s*(.+?)\s*(?:[—\-]+|,)?\s*(?:значит|поэтому|следовательно|выходит|то есть|получается)\s*[,:]?\s*(.+)$", t, re.I)
+        if not m: return None
+        prem, concl = m.group(1), m.group(2)
+        pf, _ = self.parse_task(prem + "."); cf, _ = self.parse_task(concl + ".")
+        if len(pf) < 1 or len(cf) != 1: return None
+        names = {}; var = iter("XYZWV")
+        def v(n):
+            k = self._phrase_stem(n)
+            if k not in names: names[k] = next(var)
+            return names[k]
+        cond = [[rel, v(a), v(b)] for rel, a, b, _ in pf]
+        rel, a, b, _ = cf[0]
+        if self._phrase_stem(a) not in names or self._phrase_stem(b) not in names: return None   # вывод про кого-то, кого не было в посылках — не правило
+        concl_s = [rel, v(a), v(b)]
+        if concl_s in cond: return None
+        kind = "transitive" if (len(cond) == 2 and cond[0][0] == cond[1][0] == rel and cond[0][2] == cond[1][1] and concl_s == [rel, cond[0][1], cond[1][2]]) else "rule"
+        return Rule(cond, concl_s, t, kind=kind)
+
     def _parse_transitive(self, t):
         """«старше — это транзитивно», «если X старше Y, а Y старше Z, то X старше Z», «старше переносится по цепочке»"""
         if re.search(r"^(?:любое|всякое|все|всякие|любые)\s+сравнени", t, re.I) and re.search(r"транзитив|по цепочке|переносится|передаётся|передается", t, re.I):
@@ -248,7 +272,8 @@ class Understand:
         if r.kind == "equiv":
             return f"Поняла: «{REL_SAY.get(r.cond[0][0])}» и «{REL_SAY.get(r.concl[0])}» — одно и то же."
         cs = " и ".join(f"{a} {REL_SAY.get(rel, rel)} {b}" for rel, a, b in r.cond); rel, a, b = r.concl
-        return f"Поняла: если {cs}, то {a} {REL_SAY.get(rel, rel)} {b}."
+        pre = "Поняла из примера, имена не важны: " if re.search(r"значит|поэтому|следовательно|выходит|получается", r.text) and not re.match(r"^(?:если|когда)", r.text, re.I) else "Поняла: "
+        return f"{pre}если {cs}, то {a} {REL_SAY.get(rel, rel)} {b}."
 
     # ================= 3. РАЗБОР ЗАДАЧИ В ОТНОШЕНИЯ =================
     # --- имена: русские падежи → одна сущность по основе («Сардора» = «Сардор», «Азизы» = «Азиза») ---
