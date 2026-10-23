@@ -32,10 +32,18 @@ class Solver:
         self.F = N_RES + self.n_raw + 1
         self.A = np.zeros((self.F, self.F), np.float64); self.B = np.zeros(self.F, np.float64); self.n = 0; self.n_pos = 0
         self.W = None; self.path = os.path.join(state_dir, "solver.npz") if state_dir else None
+        # РЕКУРРЕНТНАЯ ФОРМА (exp64, RLS): P = (A+λI)⁻¹ и Wr поддерживаются на каждой метке за O(F²), тождественно решению системы
+        self.rls = os.environ.get("MINI_AI_SOLVER_RLS", "1") != "0"
+        self.Pinv = np.eye(self.F) / LAM; self.Wr = np.zeros(self.F, np.float64)
         self.last_feats = None; self.last_q = None; self.stats = {"applied": 0, "learned": 0}
         self._since_solve = 0; self.solve_every = int(os.environ.get("MINI_AI_SOLVER_EVERY", "20"))   # решать не на каждой метке: суммы копятся всегда, W — раз в N меток
         if self.path and os.path.exists(self.path):
-            z = np.load(self.path); self.A, self.B, self.n, self.n_pos = z["A"], z["B"], int(z["n"]), int(z["n_pos"]); self._solve(force=True)
+            z = np.load(self.path); self.n, self.n_pos = int(z["n"]), int(z["n_pos"])
+            if "P" in z and self.rls: self.Pinv, self.Wr = z["P"], z["Wr"]
+            elif "A" in z:
+                self.A, self.B = z["A"], z["B"]
+                if self.rls: self.Pinv = np.linalg.inv(self.A + LAM * np.eye(self.F)); self.Wr = self.Pinv @ self.B      # перенос старого состояния
+            self._solve(force=True)
 
     # ---------- признаки ----------
     def _sem(self, words):
@@ -100,8 +108,13 @@ class Solver:
         self.last_feats = out; self.last_q = q; return out
 
     # ---------- решение и применение ----------
+    def _rls_update(self, f64, y, weight):
+        Pphi = self.Pinv @ f64; k = Pphi / (1.0 / weight + f64 @ Pphi)
+        self.Wr += k * (y - f64 @ self.Wr); self.Pinv -= np.outer(k, Pphi)
+
     def _solve(self, force=False):
         if self.n < MIN_N or self.n_pos == 0 or self.n_pos == self.n: self.W = None; return
+        if self.rls: self.W = self.Wr.astype(np.float32); self._since_solve = 0; return      # уже обновлено рекуррентно
         if not force and self.W is not None and self._since_solve < self.solve_every: return
         self.W = np.linalg.solve(self.A + LAM * np.eye(self.F), self.B).astype(np.float32); self._since_solve = 0
 
@@ -129,7 +142,9 @@ class Solver:
         for f, c in zip(feats, cands_board):
             aw = set(_toks(str(c.get("answer", ""))))
             y = 1.0 if (rw and aw and (rw <= aw or aw <= rw)) else 0.0
-            f64 = f.astype(np.float64); self.A += weight * np.outer(f64, f64); self.B += weight * f64 * y; self.n += 1; self.n_pos += int(y); k += 1
+            f64 = f.astype(np.float64); self.n += 1; self.n_pos += int(y); k += 1
+            if self.rls: self._rls_update(f64, y, weight)
+            else: self.A += weight * np.outer(f64, f64); self.B += weight * f64 * y
         if k: self._since_solve += k; self._solve(force=(weight >= 1.0)); self.stats["learned"] += k; self.save()   # человеческая метка — решаем сразу
         return k
 
@@ -137,7 +152,9 @@ class Solver:
         """только отрицательные псевдометки (ответ провалил проверку) — без утверждения, что верно"""
         if not feats or len(feats) != len(cands): return 0
         for f, c in zip(feats, cands):
-            f64 = f.astype(np.float64); self.A += weight * np.outer(f64, f64); self.n += 1
+            f64 = f.astype(np.float64); self.n += 1
+            if self.rls: self._rls_update(f64, 0.0, weight)
+            else: self.A += weight * np.outer(f64, f64)
         self._since_solve += len(cands); self._solve(); self.stats["self_neg"] = self.stats.get("self_neg", 0) + len(cands); self.save(); return len(cands)
 
     # ---------- САМОПРОВЕРКА КАК НАГРАДА (аналог RL на проверяемых наградах, без учителя и без градиента) ----------
@@ -162,7 +179,10 @@ class Solver:
 
     def save(self, force=False):
         self._since_save = getattr(self, "_since_save", 0) + 1
-        if self.path and (force or self._since_save >= 25): np.savez(self.path, A=self.A, B=self.B, n=self.n, n_pos=self.n_pos); self._since_save = 0
+        if self.path and (force or self._since_save >= 25):
+            if self.rls: np.savez(self.path, P=self.Pinv, Wr=self.Wr, n=self.n, n_pos=self.n_pos, rls=1)
+            else: np.savez(self.path, A=self.A, B=self.B, n=self.n, n_pos=self.n_pos)
+            self._since_save = 0
 
     def report(self):
         return f"solver: {self.n} labeled candidates ({self.n_pos} right), {'active' if self.ready else 'warming up'}, applied {self.stats['applied']}×, self-reward +{self.stats.get('self_pos', 0)}/−{self.stats.get('self_neg', 0)}"

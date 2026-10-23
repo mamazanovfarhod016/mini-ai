@@ -626,7 +626,7 @@ class ExperimentalMind:
                             alt_cands[j]["score"] = round(main["score"] * 1.01, 3); alt_cands[j]["how"] = "отрывок: другое предложение (по solver)"; cands.append(alt_cands[j])
                 self._last_cands = (q, [dict(c) for c in cands_all], feats + fa)
             else: self._last_cands = (q, [dict(c) for c in cands], feats)
-        except Exception as e_: self._last_cands = None
+        except Exception as e_: self._last_cands = None; print("SOLVER-ERR", repr(e_)) if os.environ.get("MINI_AI_DEBUG") else None
         cands.sort(key=lambda c: -c["score"])
         # САМОПРОВЕРКА КАК НАГРАДА: согласие независимых способов / провал проверки типа → псевдометки solver'у без учителя (вес 0.3)
         try:
