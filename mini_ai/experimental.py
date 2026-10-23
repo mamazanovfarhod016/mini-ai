@@ -29,6 +29,8 @@ class KnowledgeBase:
         self.sents = []; self.sent_by_word = collections.defaultdict(list)        # сырые предложения (для ответа-отрывком, когда читатель не разобрал)
         self.sent_ctx_by_word = collections.defaultdict(list)                     # слово предыдущего предложения → это предложение (контекст абзаца)
         self.sent_glued = set()                                                   # предложения-определения, склеенные с предыдущим
+        self.sent_para = []                                                       # номер абзаца (вызов read_text) каждого предложения — для цепочек по дискурсу
+        self.n_para = 0
 
     def idf(self, w): return float(np.log((1 + self.n_docs) / (1 + self.df.get(w, 0))) + 1.0)
 
@@ -41,6 +43,7 @@ class KnowledgeBase:
 
     def read_text(self, text, src="user"):
         n = 0
+        self.n_para += 1
         for s in re.split(r"(?<=[.!?])\s+(?=[A-ZА-Я0-9\"])", re.sub(r"\s+", " ", text)):
             s = s.strip()
             if len(s) < 15: continue
@@ -48,7 +51,7 @@ class KnowledgeBase:
             ws = set(content_words(toks(s))); self.n_docs += 1
             for w in ws: self.df[w] += 1
             if src != "user" and len(self.sents) < 400000:
-                si = len(self.sents); self.sents.append((s, src))
+                si = len(self.sents); self.sents.append((s, src)); self.sent_para.append(self.n_para)
                 for w in ws: self.sent_by_word[w].append(si)
                 # КОНТЕКСТ АБЗАЦА: «These are called X», «This is called X», «One such device is X» — подлежащее указывает на
                 # предыдущее предложение. Слова соседа индексируются как слабый контекст этого предложения (вес 0.5 при поиске).
@@ -116,6 +119,15 @@ class ExperimentalMind:
         self.reform = Reform(self, self.state_dir)
         from mini_ai.solver import Solver
         self.solver = Solver(self, self.state_dir); self._last_cands = None   # обучаемый арбитр без градиента (solver.py): признаки → решение уравнения                    # выученное перечитывание вопроса (уточнители, слово-тип, замены)
+        from mini_ai.discourse import Discourse
+        self.discourse = Discourse(self)                              # цепочка по абзацу: мост → сосед по связи дискурса → новый термин
+        try:
+            from mini_ai.russian import Russian
+            self.russian = Russian(self, self.state_dir)              # русский: слой перевода (словарь + выученные пары + смысл ru-слов)
+            from mini_ai.converse import Converse
+            self.converse = Converse(self, self.state_dir)            # собеседник без параметров: случаи речи, профиль, схемы рассуждения (23.10)
+            self._ru_meaning = None
+        except Exception as e: self.russian = None; print("russian off:", e)
         self.neural = None
         if os.environ.get("MINI_AI_NEURAL", "1") != "0":
             try:
@@ -476,7 +488,9 @@ class ExperimentalMind:
         sp = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]))
         if sp:
             s, ans, (sent, _, _, src) = sp
-            cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(0.9, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+            aw_ = [w for w in toks(ans) if w not in STOPW]
+            vb_ = bool(aw_) and all(len(w) > 4 and w.endswith(("ed", "ing")) for w in aw_)             # «classified», «surrounding» — глагольная форма редко бывает ответом
+            cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(0.9, s / 0.6) * (0.8 if vb_ else 1.0), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
             # варианты куска — на доску с пониженной уверенностью; выиграть могут только через обучаемый арбитр (solver), в согласие не входят
             if os.environ.get("MINI_AI_SPAN_ALTS", "1") != "0":
                 seen_ = {str(ans).lower()}
@@ -572,6 +586,14 @@ class ExperimentalMind:
             if dp and dp["steps"] >= 2:
                 cands.append(dict(how=f"{dp['steps']} шагов (deep)", answer=dp["answer"], confidence=dp["confidence"], facts=dp["facts"], thoughts=dp["thoughts"],
                                   text=" ".join(dp["thoughts"])))
+        # ЦЕПОЧКА ПО ДИСКУРСУ (discourse.py): вопрос совпал с одним предложением, ответ — в соседнем, связанном отсылкой
+        # («…liquid would be left behind. PLASMA is this fluid part…», «…growth of algae. This is called an ALGAL BLOOM»)
+        if os.environ.get("MINI_AI_DISCOURSE", "1") == "1":
+            try: dc = self.discourse.reason(q, fr)
+            except Exception: dc = None
+            if dc:
+                cands.append(dict(how="3 шага (по абзацу)", answer=dc["answer"], confidence=dc["confidence"], facts=dc["facts"], thoughts=dc["thoughts"],
+                                  text=" ".join(dc["thoughts"])))
         if not cands: return None                                 # _last_cands при молчании уже содержит отвергнутого смелого кандидата
         # СОГЛАСИЕ: два разных способа дали один ответ — независимые свидетели → уверенность вверх; одиночка против согласных — вниз.
         # (измерено на SciQ: 16 из 130 промахов — верный ответ был на доске у двух способов, но проигрывал одиночному отрывку 0.9)
@@ -766,7 +788,7 @@ class ExperimentalMind:
         elif pick and (pick["how"].startswith(("отрывок предложения", "нейронный читатель", "комбинация"))):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], arbiter=pick["board"])
             self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
-        elif pick and "(deep)" in pick["how"]:
+        elif pick and ("(deep)" in pick["how"] or "(по абзацу)" in pick["how"]):
             out.update(answer=pick["answer"], how=pick["how"], facts=pick["facts"], confidence=pick["confidence"], text=pick["text"], thoughts=pick["thoughts"], arbiter=pick["board"], kind="answer")
             self.history.append(dict(q=q, a=pick["answer"], entity=pick["answer"])); return out
         if not r and not pick:
@@ -812,8 +834,17 @@ class ExperimentalMind:
             if len(board) > 1: lines.append("Other ways proposed: " + "; ".join(f"{b[0]} → «{b[1]}» (score {b[4]})" for b in board[1:4]) + ".")
             if last.get("confidence") is not None: lines.append(f"My confidence was {last['confidence']}." + (" I wasn't sure — tell me if it's wrong and I'll learn why." if last["confidence"] < 0.6 else ""))
             return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="explain", facts=facts, confidence=1.0, text=" ".join(lines), note=None)
-        mc = re.match(r"^(?:no|nope|wrong|incorrect|not that|нет|неверно)[,.!\s]*(?:it'?s|it is|the answer is|answer is|actually|это)?\s*[:\-—]?\s*(?P<a>[A-Za-z0-9][^?!.]{0,60})$", q0, re.I) \
-             or re.match(r"^(?:the answer is|answer:|correct answer is|правильно)\s*[:\-—]?\s*(?P<a>[A-Za-z0-9][^?!.]{0,60})$", q0, re.I)
+        mc = re.match(r"^(?:no|nope|wrong|incorrect|not that|нет|неверно|неправильно|не так)[,.!\s]*(?:it'?s|it is|the answer is|answer is|actually|это|правильно|ответ)?\s*[:\-—]?\s*(?P<a>[A-Za-zА-Яа-яЁё0-9][^?!.]{0,60})$", q0, re.I) \
+             or re.match(r"^(?:the answer is|answer:|correct answer is|правильно|правильный ответ)\s*[:\-—]?\s*(?P<a>[A-Za-zА-Яа-яЁё0-9][^?!.]{0,60})$", q0, re.I)
+        if mc and re.search(r"[а-яё]", mc.group("a").lower()) and getattr(self, "russian", None):
+            # русская поправка «нет, это кислород» → переводим ответ на английский (язык фактов); если слова нет в словаре — учим пару позже
+            en_a, _, unk_a = self.russian.to_en(mc.group("a"))
+            en_a = re.sub(r"^(?:what|which|who|is|are|the|a|an)\s+", "", en_a.rstrip("?")).strip()
+            if en_a and not unk_a: mc = re.match(r"(?P<a>.+)", en_a)
+            elif unk_a and last and not last.get("_graded"):
+                last["_graded"] = True; conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+                return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="russian: unknown word", facts=[], confidence=1.0,
+                            text="Хочу запомнить поправку, но не знаю слов: " + ", ".join(unk_a) + ". Скажи «по-русски <слово> значит <english>» — и повтори поправку.", note=None)
         if mc and last and last.get("question") and not last.get("_graded") and not (pend and pend.get("options")):
             last["_graded"] = True
             right = mc.group("a").strip(" .")
@@ -861,12 +892,78 @@ class ExperimentalMind:
         # 0. реплика-собеседник (hi / thanks / how are you / who are you) — без поиска фактов
         st = small_talk(q0, conv.rng, len(self.kb.facts))
         is_ru = bool(re.search(r"[а-яё]", q0.lower()))
-        if (st or is_ru) and not (pend and YES.match(q0)) and not re.match(r"^(выучи|запомни|что значит|что такое слово)\b", q0.lower()):
-            # ГИБРИД: болтовня и русский → говорилка (трансформер, обучен градиентом); знания и рассуждение — ядро
-            spoken = self.speaker.speak(q0) if getattr(self, "speaker", None) else None
+        # РУССКИЙ: «по-русски дом значит house» → пара в словарь; русский вопрос → перевод → ядро → ответ по-русски
+        R = getattr(self, "russian", None)
+        # АРИФМЕТИКА: «1+1», «сколько будет 7*8», «what is 12/4» → считаем, не ищем (любой язык)
+        ma = re.search(r"(-?\d+(?:[.,]\d+)?(?:\s*[-+*/×÷:^]\s*-?\d+(?:[.,]\d+)?)+)", q0.replace("х", "*").replace("x", "*"))
+        if ma and re.fullmatch(r"[\d\s.,+\-*/×÷:^()]+", ma.group(1)):
+            expr = ma.group(1).replace(",", ".").replace("×", "*").replace("÷", "/").replace(":", "/").replace("^", "**")
+            try:
+                val = eval(expr, {"__builtins__": {}}, {})
+                val = int(val) if isinstance(val, float) and val.is_integer() else (round(val, 6) if isinstance(val, float) else val)
+                conv.push(q=q0, frame=None, entity=str(val), answer=str(val), kind="answer", pending=None, key=None)
+                return dict(question=q0, frame=None, read=[], answer=str(val), kind="answer", how="арифметика", facts=[f"{expr.strip()} = {val}"], confidence=1.0,
+                            text=(f"{expr.strip()} = {val}" if not is_ru else f"{expr.strip()} = {val}."), note=None)
+            except Exception: pass
+        if is_ru and R is not None:
+            mt = re.match(r"^по-русски\s+([а-яё\-]+)\s+(?:значит|это|=|—|-)\s+([a-z\-]+)\s*\.?$", q0.strip().lower())
+            if mt:
+                R.learn_pair(mt.group(1), mt.group(2)); conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+                return dict(question=q0, frame=None, read=[], answer=None, kind="learned", how="russian: pair", facts=[], confidence=1.0, text=f"Запомнила: «{mt.group(1)}» = {mt.group(2)}.", note=None)
+            # приветствие/спасибо — короткий честный ответ без фактов (закрытая таблица, не говорилка)
+            if st and st[0] in ("greet", "thanks", "how_are_you", "bye"):
+                conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+                ru_st = {"greet": "Привет. Спроси меня о чём-нибудь — я отвечаю по фактам, которые прочитала, и учусь на твоих поправках.",
+                         "thanks": "Пожалуйста.", "how_are_you": f"Работаю. В памяти {len(self.kb.facts):,} фактов; учусь на каждом «нет, это…».".replace(",", " "), "bye": "До встречи."}
+                return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="small talk: " + st[0], facts=[], confidence=1.0, text=ru_st.get(st[0], st[1]), note=None)
+            # СОБЕСЕДНИК (converse.py): «лучше сказать так: …» → учится говорить; память о тебе; арифметика; схема рассуждения с шагами
+            C = getattr(self, "converse", None)
+            if C is not None:
+                mb = re.match(r"^(?:лучше\s+(?:сказать\s+)?(?:так|ответить так)|скажи так|лучше так|правильнее так)\s*[:\-—]\s*(?P<b>.{3,})$", q0.strip(), re.I)
+                if mb and getattr(self, "_last_ru", None):
+                    inp0, out0, cid = self._last_ru
+                    C.correct(inp0, out0, mb.group("b").strip(), cid); C.save()
+                    conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+                    return dict(question=q0, frame=None, read=[], answer=None, kind="learned", how="речь: исправление", facts=[], confidence=1.0, text="Запомнила, в следующий раз скажу так.", note=None)
+                cr = C.respond(q0)
+                if cr and (cr["how"].startswith(("память", "арифметика", "схема")) or not (_is_question(q0) and re.search(r"\b(?:что|кто|где|когда|почему|как|какой|какая|какое|какие|сколько|чем|кем|кого|зачем)\b", q0.lower()))):
+                    # фактические вопросы («что такое…», «какая столица…») — ядру; остальное (разговор, о себе, задачи) — собеседнику
+                    self._last_ru = (q0, cr["text"], cr.get("case_id")); C.save() if C.stats.get("cases_learned", 0) % 10 == 0 else None
+                    conv.push(q=q0, frame=None, entity=None, answer=cr["text"], kind="chat", pending=None, key=None)
+                    return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how=cr["how"], facts=[], confidence=cr.get("confidence", 0.5), text=cr["text"], thoughts=cr.get("thoughts"), note=None)
+            # ВСЁ ОСТАЛЬНОЕ ПО-РУССКИ → перевод → ядро. Никакой говорилки: если ядро не знает — говорит честно, что поняла и чего не нашла.
+            en_q, rep, unknown = R.to_en(q0)
+            core = self._ask_core(en_q, internet) if len(toks(en_q)) >= 2 else dict(answer=None, how="не знаю", facts=[])
+            conv.push(q=q0, frame=None, entity=core.get("answer"), answer=core.get("answer"), kind="answer" if core.get("answer") else "unknown", pending=None, key=None)
+            out_ru = dict(question=q0, frame=core.get("frame"), read=[], answer=core.get("answer"), kind="answer" if core.get("answer") else "unknown",
+                          how="russian→en: " + (core.get("how") or "?"), facts=core.get("facts") or [], confidence=core.get("confidence", 0.0), text=R.say(core, en_q, rep, unknown),
+                          thoughts=core.get("thoughts"), arbiter=core.get("arbiter"), note="translated: " + en_q)
+            self._last_out = dict(out_ru, question=en_q, _span_dbg=getattr(self, "_span_dbg", None))     # чтобы «нет, это X» после русского вопроса училось так же
+            if C is not None and not core.get("answer"):
+                # ядро не нашло — пусть ответит собеседник (случай речи), а не сухое «не нашла»
+                cr = C.respond(q0)
+                if cr and cr.get("confidence", 0) >= 0.5:
+                    self._last_ru = (q0, cr["text"], cr.get("case_id")); out_ru.update(text=cr["text"], how=cr["how"], kind="chat")
+            return out_ru
+        # АНГЛИЙСКИЙ СОБЕСЕДНИК: то же, что по-русски — «better say: …» учит речь; о себе; арифметика; реплики без фактического вопроса
+        C = getattr(self, "converse", None)
+        if C is not None and not is_ru and not (pend and (pend.get("options") or YES.match(q0) or NO.match(q0))):
+            mb = re.match(r"^(?:better(?: to)? say|say it like this|better like this|rather say)\s*[:\-—]\s*(?P<b>.{3,})$", q0.strip(), re.I)
+            if mb and getattr(self, "_last_ru", None):
+                inp0, out0, cid = self._last_ru
+                C.correct(inp0, out0, mb.group("b").strip(), cid); C.save()
+                conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+                return dict(question=q0, frame=None, read=[], answer=None, kind="learned", how="речь: исправление", facts=[], confidence=1.0, text="Got it — I'll say it that way next time.", note=None)
+            factual = _is_question(q0) and re.search(r"\b(?:what|which|who|where|when|why|how many|how much|how does|how do|how did|name)\b", q0.lower()) and not re.search(r"\b(?:my|me|i|am i|do i|you|your)\b", q0.lower())
+            if not factual and not re.match(r"^(?:example:|learn |выучи|/)", q0.lower()):
+                cr = C.respond(q0)
+                if cr and (cr["how"].startswith(("память", "арифметика", "схема")) or cr.get("confidence", 0) >= 0.45 or st):
+                    self._last_ru = (q0, cr["text"], cr.get("case_id"))
+                    conv.push(q=q0, frame=None, entity=None, answer=cr["text"], kind="chat", pending=None, key=None)
+                    return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how=cr["how"], facts=[], confidence=cr.get("confidence", 0.5), text=cr["text"], thoughts=cr.get("thoughts"), note=None)
+        if st and not (pend and YES.match(q0)):
             conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
-            if spoken: return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="speaker: transformer", facts=[], confidence=1.0, text=spoken, note=None)
-            if st: return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="small talk: " + st[0], facts=[], confidence=1.0, text=st[1], note=None)
+            return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="small talk: " + st[0], facts=[], confidence=1.0, text=st[1], note=None)
         q0 = strip_greeting(q0)
         # 1. реплика после переспроса: yes/no/выбор варианта/утверждение-обучение
         if pend:
