@@ -24,7 +24,7 @@ STOP = set("и а но или же ли бы не ни это этот эта т
 CONCL = re.compile(r"\s*(?:[—\-]+|,)?\s*\b(?:значит|поэтому|следовательно|выходит|получается|то есть|тогда|то)\b\s*[,:]?\s*", re.I)
 NUM = re.compile(r"\d+(?:[.,]\d+)?")
 CMP = re.compile(r"(?:ее|ей|ше|же|че|ще|вле)$")
-QW = ("на сколько", "сколько", "кто", "что", "где", "какой", "какая", "за сколько")
+QW = ("на сколько", "сколько", "кто", "что", "где", "какой", "какая", "какое", "за сколько")
 VERBS_SKIP = set("бежит бегает едет идет живет находится входит лежит весит стоит прыгает плавает растет ехать идти доедет займет зайдет был была будет есть имею имеет".split())
 
 def _n(s): return float(s.replace(",", "."))
@@ -46,7 +46,7 @@ def same(a, b):
 
 def nominative(w):
     if " " in w or not w[:1].isupper(): return w
-    for e, r in (("ы", "а"), ("ки", "ка"), ("ги", "га"), ("хи", "ха"), ("и", "я"), ("я", "ь"), ("а", ""), ("ом", ""), ("ем", "ь"), ("у", ""), ("ю", "ь"), ("е", "")):
+    for e, r in (("ы", "а"), ("ки", "ка"), ("ги", "га"), ("хи", "ха"), ("ури", "ура"), ("и", "я"), ("я", "ь"), ("ура", "ур"), ("ара", "ар"), ("ира", "ир"), ("а", ""), ("ом", ""), ("ем", "ь"), ("у", ""), ("ю", "ь"), ("е", "")):
         if w.endswith(e) and len(w) - len(e) >= 3: return w[: -len(e)] + r
     return w
 
@@ -67,7 +67,7 @@ class Analogy:
         m = CONCL.search(text); prem, concl = (text[: m.start()], text[m.end():]) if m and m.start() > 0 else (text, None)
         prem = re.sub(r"^(?:если|когда|смотри|например|вот|пример)\s*[:,]?\s*", "", prem, flags=re.I)
         out = []
-        for part in re.split(r"[.;!?]\s*|,\s*(?=[А-ЯЁ][а-яё]+\s)|,\s*(?=(?:" + "|".join(CLASS) + r")\s)|,\s*(?=[а-яё]+\s+[а-яё]+(?:ее|ей|ше|же|че|ле)\s)|,\s*(?=[а-яё]+\s+в\s)|\s+а\s+(?=[А-ЯЁXYZ])", prem):
+        for part in re.split(r"[.;!?]\s*|,\s*(?=[А-ЯЁ][а-яё]+\s)|,\s*(?=(?:у|в|на)\s+[А-ЯЁ][а-яё]+\s)|,\s*(?=(?:" + "|".join(CLASS) + r")\s)|,\s*(?=[а-яё]+\s+[а-яё]+(?:ее|ей|ше|же|че|ле)\s)|,\s*(?=[а-яё]+\s+в\s)|\s+а\s+(?=[А-ЯЁXYZ])", prem):
             if part.strip(): out.append((part.strip(), False))
         if concl: out.append((concl.strip(), True))
         return out
@@ -77,7 +77,13 @@ class Analogy:
     def triples(self, clause):
         """одна часть → тройки. Принцип один: в части есть сущности (Имя / X,Y,Z / «я» / строчное существительное у края
         сравнительного слова / число) и слова между ними = связь. «на N» после пары = число связи. Число с единицей = (субъект, единица, #, N)."""
-        toks = re.findall(r"[А-ЯЁа-яёA-Za-z]+(?:/[а-яё]+)?|\d+(?:[.,]\d+)?", clause)
+        toks = re.findall(r"[А-ЯЁа-яёA-Za-z]+(?:/[а-яё]+)?|\d+(?:[.,]\d+)?|,", clause)
+        commas = {i for i, t in enumerate(toks) if t == ","}; toks = [t for t in toks if t != ","]
+        # позиции запятых в терминах индексов оставшихся токенов: запятая ПЕРЕД токеном j
+        after_comma = set(); k = 0
+        for i, t in enumerate(re.findall(r"[А-ЯЁа-яёA-Za-z]+(?:/[а-яё]+)?|\d+(?:[.,]\d+)?|,", clause)):
+            if t == ",": after_comma.add(k)
+            else: k += 1
         if not toks: return []
         low = [t.lower().replace("ё", "е") for t in toks]
         kind = ["w"] * len(toks)
@@ -85,7 +91,7 @@ class Analogy:
             if NUM.fullmatch(t): kind[i] = "n"
             elif t in ("X", "Y", "Z", "W"): kind[i] = "e"
             elif low[i] in ("я", "меня", "мне"): kind[i] = "e"
-            elif t[0].isupper() and len(t) >= 3 and low[i] not in STOP and low[i] not in VERBS_SKIP: kind[i] = "e"
+            elif t[0].isupper() and len(t) >= 2 and low[i] not in STOP and low[i] not in VERBS_SKIP and not (i == 0 and low[i] in ("у", "в", "на", "из", "до", "за")): kind[i] = "e"
         # «на N» — число связи, не сущность
         for i in range(1, len(toks)):
             if kind[i] == "n" and low[i - 1] == "на" and not (i + 1 < len(toks) and low[i + 1] in self.UNITS and low[i + 1] in ("км/ч", "м/с")): kind[i] = "d"
@@ -105,18 +111,26 @@ class Analogy:
                 if i + 1 < len(toks) and low[i + 1] in CLASS and kind[i + 1] != "e": name += " " + toks[i + 1]; ents.append((i, i + 2, name)); i += 2; continue
                 ents.append((i, i + 1, name if name == "я" or name in ("X", "Y", "Z", "W") else name[0].upper() + name[1:])); i += 1; continue
             if kind[i] == "n":
-                unit = low[i + 1] if i + 1 < len(toks) and low[i + 1] in self.UNITS else ""
+                # единица = следующее слово, если это не сущность/связь: «5 книг», «20 яблок», «3 ручки», «15 км»
+                nxt_ok = i + 1 < len(toks) and (i + 1) not in after_comma
+                unit = low[i + 1] if nxt_ok and (low[i + 1] in self.UNITS or (kind[i + 1] == "w" and low[i + 1] not in STOP and low[i + 1] not in VERBS_SKIP and not CMP.search(low[i + 1]) and len(low[i + 1]) >= 3 and not re.search(r"(?:ил|ла|ло|ли|ал|ет|ит|ят|ут|ют|ал[аи]?|ел[аи]?|ала|ала)$", low[i + 1]))) else ""
                 ents.append((i, i + 2 if unit else i + 1, ("#", float(low[i].replace(",", ".")), unit))); i += 2 if unit else 1; continue
             i += 1
         trip = []
+        def after_comma_before(pos):   # индексы токенов, отделённые запятой от pos (слева)
+            cut = max([c for c in after_comma if c <= pos], default=0); return set(range(0, cut))
         subj = next((e[2] for e in ents if isinstance(e[2], str)), "я")
         for k, (s1, e1, A) in enumerate(ents):
             if not isinstance(A, str):
                 # число: связь = единица или слово перед числом (было/потратил/отдал), субъект = ближайшая сущность слева (или «я»)
                 used = {j for (a0, b0, X) in ents if not isinstance(X, str) for j in range(a0, b0)}
-                prev_w = [low[j] for j in range(s1 - 1, -1, -1) if kind[j] == "w" and j not in used and (low[j] not in STOP or low[j] in ("есть", "было", "был", "была"))][:1]
+                cand = [low[j] for j in range(s1 - 1, -1, -1) if kind[j] == "w" and j not in used and j not in after_comma_before(s1) and (low[j] not in STOP or low[j] in ("есть", "было", "был", "была"))]
+                verbs = [w for w in cand if re.search(r"(?:ил|ла|ло|ли|ал|ел|ит|ет|ят|ут|ют|ала|ыл|ыла|дал|ёл|ел)$", w) or w in ("есть", "было", "был", "была", "стоит", "стоят", "всего", "сдача", "осталось")]
+                prev_w = (verbs[:1] or cand[:1])
                 left = next((e[2] for e in reversed(ents[:k]) if isinstance(e[2], str)), subj)
-                rel = " ".join(x for x in ((prev_w[0] if prev_w else ""), A[2]) if x).strip()
+                pw = prev_w[0] if prev_w else ""
+                if pw and kind[[j for j in range(s1 - 1, -1, -1) if kind[j] == "w" and low[j] == pw][0]] == "w" and s1 - 1 >= 0 and kind[s1 - 1] == "e": pw = ""   # «у Лолы 5 книг»: слово перед числом — сущность, не глагол
+                rel = " ".join(x for x in (pw, A[2]) if x).strip()
                 if rel: trip.append((left, rel, "#", A[1]))
                 continue
             nxt = next(((s2, e2, B) for (s2, e2, B) in ents[k + 1:] if isinstance(B, str)), None)
@@ -135,6 +149,8 @@ class Analogy:
         q = text.strip().rstrip("?").lower().replace("ё", "е")
         hole = next((w for w in QW if re.search(r"(?<![а-яё])" + w + r"(?![а-яё])", q)), None)
         if re.search(r"\b(?:кто|что)\b", q) and re.search(r"\bили\b", q): hole = "кто"
+        if hole in ("какой", "какая", "какое") and not re.search(r"\bсам", q): hole = "сколько"        # «какая сдача?» = числовой вопрос про «сдача»
+        if hole in ("кто", "что") and re.search(r"\bсам", q): hole = "кто"
         if not hole: return None
         toks = re.findall(r"[а-яё]+", q)
         cands = [t for t in re.findall(r"[А-ЯЁ][а-яё]+", text) if t.lower() not in ("кто", "что", "где", "сколько", "какой", "какая", "за", "на")]
@@ -163,6 +179,8 @@ class Analogy:
         if a == b: return 1.0
         if stem(a) == stem(b): return 0.95
         wa, wb = a.split(), b.split()
+        gen = lambda w: len(w) == 1 and w[0] not in self.UNITS and not CMP.search(w[0]) and not re.search(r"(?:ил|ла|ло|ли|ал|ел|ит|ет|ят|ут|ют|ыл|дал|ёл|ть|ось)$", w[0]) and w[0] not in ("было", "есть", "всего", "сдача", "стоит")
+        if gen(wa) and gen(wb): return 0.6        # «книг» vs «ручки»: оба — просто предметы, которые считают; форма «у кого N штук» одна
         if len(wa) > 1 or len(wb) > 1:
             ua, ub = (wa[-1] if wa[-1] in self.UNITS else ""), (wb[-1] if wb[-1] in self.UNITS else "")
             if ua and ub and ua != ub: return 0.0
@@ -275,7 +293,8 @@ class Analogy:
         known = list(dict.fromkeys(facts)); derived = []
         for _ in range(depth):
             new = []
-            for c in sorted(self.cases, key=lambda c: -(c["ok"] + 1) / (c["used"] + 2)):
+            # порядок: доверие учителя (ok) → случай с числом (op) раньше случая без числа → больше посылок; «использовался» не штраф
+            for c in sorted(self.cases, key=lambda c: (-c["ok"], 0 if c["op"] else 1, -len(c["prem"]))):
                 A, r, B, cn = c["concl"]
                 for bnd, sc, nums, rels in self._match(c, known):
                     a, b = bnd.get(A, A), bnd.get(B, B)
@@ -292,7 +311,12 @@ class Analogy:
                         o = c["op"]; n = F[o[0]](nums[o[1]], nums[o[2]])
                         if len(o) == 5 and n is not None: n = F[o[3]](n, nums[o[4]])
                     t = (a, rel, b, n)
-                    if not any(k[:3] == t[:3] and (k[2] != "#" or k[3] == t[3]) for k in known + new):
+                    dup = next((k for k in known + new if k[:3] == t[:3] and (k[2] != "#" or k[3] == t[3])), None)
+                    if dup is not None and dup[3] is None and n is not None:      # было без числа — заменяем на вывод с числом
+                        if dup in known: known[known.index(dup)] = t
+                        else: new[new.index(dup)] = t
+                        derived.append((t, c, sc, [tuple(sorted((p[1], r2))) for p, r2 in zip(c["prem"], rels) if p[1] != r2])); continue
+                    if dup is None:
                         pairs = [tuple(sorted((p[1], r2))) for p, r2 in zip(c["prem"], rels) if p[1] != r2]   # переносы по смыслу, не по слову
                         new.append(t); derived.append((t, c, sc, pairs))
             if not new: break
@@ -321,6 +345,8 @@ class Analogy:
         q = self.question(qs[0]) if qs else None
         if not facts or not q: return None
         known, derived = self.closure(facts)
+        if any((t[1], t[2], t[0]) == (u[1], u[0], u[2]) for t in known for u in known if t[2] != "#" and t is not u):   # A r B и B r A — противоречие
+            self._contradiction = [t for t in known if any((t[1], t[2], t[0]) == (u[1], u[0], u[2]) for u in known if u is not t)][:2]; return None
         ents = [x for t in known for x in (t[0], t[2]) if x not in ("#", "я")]; ents = list(dict.fromkeys(ents))
         name = lambda w: next((e for e in ents if same(e, w)), w)
         ans = None; why = []
@@ -333,13 +359,19 @@ class Analogy:
             best = max(rel_words, key=lambda r: self.rel_sim(word, r), default=None)
             if best and self.rel_sim(word, best) >= 0.35: return best
             # «старший»/«высокая»/«тяжёлый» → основа
+            base = re.sub(r"(?:ший|шая|шее|кий|кая|кое|ый|ая|ое|ой|ий|ие)$", "", word)
             for r in rel_words:
-                if stem(r)[:4] == stem(word)[:4] or CMP.sub("", r)[:4] == re.sub(r"(?:ший|шая|кий|кая|ый|ая|ой|ий)$", "", word)[:4]: return r
+                if stem(r)[:4] == stem(word)[:4] or CMP.sub("", r)[:4] == base[:4]: return r
+            lk = self.links.get(word) or next((v for (a_, b_), v in [((k[0], k[1]), k) for k in self.links] if a_ == word or b_ == word), None)
             return None
+        def rel_any(word):
+            """связь из вопроса, которой нет в фактах, но есть случай-обратное: «кто самый сильный» при фактах «слабее» →
+            закрытие уже вывело «сильнее»-тройки, если был пример; иначе None (честно)"""
+            return rel_of(word)
         if q["hole"] == "на сколько":
             r = rel_of(q["rel"])
             ws = [w for w in q["words"] if w != q["rel"] and w not in ("на", "сколько")]
-            cs = [name(c) for c in q["cands"]] if len(q["cands"]) >= 2 else [name(w) for w in ws if name(w) != w]
+            cs = [name(c) for c in q["cands"]] if len(q["cands"]) >= 2 else [name(w) for w in ws if name(w) != w or any(same(e, w) for e in ents)]
             if len(cs) >= 2:
                 a, b = cs[0], cs[-1]
                 for t in known:
@@ -349,7 +381,7 @@ class Analogy:
             if r and len(cs) >= 2:
                 for a, b in ((cs[0], cs[1]), (cs[1], cs[0])):
                     t = next((t for t in known if t[1] == r and t[0] == a and t[2] == b), None)
-                    if t: ans = a; why = [t]; break
+                    if t: ans = nominative(a) if not any(k[0] == a for k in facts) else a; why = [t]; break
                 if ans and "на сколько" in q["text"] and why[0][3] is not None: ans += f", на {why[0][3]:g}"
         elif q["hole"] in ("кто", "что") and q["superl"]:
             r = rel_of(q["rel"])
@@ -417,3 +449,92 @@ class Analogy:
             z = json.load(open(self.path, encoding="utf-8")); self.cases = z.get("cases", []); self.bad = collections.Counter({tuple(k.split("|")): v for k, v in z.get("bad", {}).items()}); self.links = {tuple(k.split("|")): v for k, v in z.get("links", {}).items()}; self.log = z.get("log", [])
             for c in self.cases: c["prem"] = [tuple(p) for p in c["prem"]]; c["concl"] = tuple(c["concl"]); c["op"] = tuple(c["op"]) if c["op"] else None
         except Exception: self.cases = []
+
+
+# ======================= РЕЧЬ ТОЙ ЖЕ МАТЕРИЕЙ (23.10, его выбор «2») =======================
+# Реплика → ответ = тоже случай от учителя: (форма входа → форма ответа). Имена/числа → слоты. Новая реплика → ближайший
+# случай ПО СМЫСЛУ (средний вектор слов meaning_ru + общие слова), слоты заполняются из новой реплики. Ниже порога — честно:
+# «не знаю, как ответить; скажи: на это отвечай …». Никаких случаев из датасетов — только то, чему научил учитель (Фарход или я).
+SPEECH_STOP = set("и а но или же ли бы не ни это этот эта то те он она оно они его ее их ему ей им в во на с со у к ко о об от до из за по под над при для про без через есть был была было были будет быть ты вы мне тебе нам вам мой моя твой твоя наш ваш так тоже уже еще очень как что кто где когда который чем тем".split())
+
+class Speech:
+    def __init__(self, state_dir=None, meaning=None):
+        self.path = os.path.join(state_dir, "speech.json") if state_dir else None
+        self.cases = []; self.links = {}; self._M = meaning; self._vc = {}; self.log = []; self.load()
+
+    def link(self, a, b):
+        """учитель: «благодарю — то же, что спасибо» → одно слово для сходства"""
+        a, b = a.lower().replace("ё", "е"), b.lower().replace("ё", "е"); root = self.links.get(b, b); self.links[a] = root; self.save()
+        return f"Поняла: «{a}» — как «{b}»."
+
+    # ---- форма реплики: слова + слоты ----
+    @staticmethod
+    def slots(text):
+        names = [n for n in re.findall(r"\b[А-ЯЁ][а-яё]{2,}\b", text) if not text.startswith(n)]   # Имя не в начале фразы
+        nums = NUM.findall(text)
+        return names, nums
+    def words(self, text):
+        all_ = [w for w in re.findall(r"[а-яёa-z]+", text.lower().replace("ё", "е")) if len(w) > 1]
+        ws = [w for w in all_ if w not in SPEECH_STOP]
+        ws = ws if len(ws) >= 2 else all_          # короткая реплика («ну как ты») — форма и есть смысл, служебные слова оставляем
+        return [self.links.get(w, w) for w in ws]   # слова, которые учитель связал («глупая = тупая»), считаем одним
+    def vec(self, text):
+        if self._M is None: return None
+        import numpy as np
+        ws = self.words(text); vs = []
+        for w in ws:
+            if w not in self._vc:
+                x = self._M.vec(w); self._vc[w] = None if x is None else x / (float(np.linalg.norm(x)) + 1e-9)
+            if self._vc[w] is not None: vs.append(self._vc[w])
+        if not vs: return None
+        v = np.mean(vs, 0); return v / (float(np.linalg.norm(v)) + 1e-9)
+    def sim(self, a, b):
+        """смысл (вектор) 0.7 + общие значимые слова 0.3; без базы — только слова"""
+        wa, wb = set(self.words(a)), set(self.words(b)); j = len(wa & wb) / max(1, len(wa | wb))
+        va, vb = self.vec(a), self.vec(b)
+        if va is None or vb is None: return j
+        return 0.7 * max(0.0, float(va @ vb)) + 0.3 * j
+
+    # ---- учитель ----
+    def teach(self, inp, out, w=1.0):
+        names, nums = self.slots(inp); o = out
+        for n in names: o = re.sub(r"\b" + re.escape(n) + r"\b", "[ИМЯ]", o)
+        for n in nums: o = o.replace(n, "[ЧИСЛО]", 1) if n in o else o
+        if any(c["inp"] == inp for c in self.cases):
+            for c in self.cases:
+                if c["inp"] == inp: c["out"] = o; c["w"] = max(c["w"], w)
+        else: self.cases.append(dict(inp=inp, out=o, w=w, used=0))
+        self.save(); return f"Поняла: на «{inp}» — «{out}». И на похожее по смыслу тоже."
+
+    def parse_teach(self, text):
+        """«на „как ты сам“ отвечай „нормально, учусь“» / «когда говорят X, отвечай Y» / «X → Y»"""
+        t = text.strip().rstrip(".")
+        m = re.match(r"^(?:на|когда (?:говорят|спрашивают|пишут))\s*[«\"„']?(.+?)[»\"“']?\s*[,]?\s*(?:отвечай|говори|скажи|ответ)\s*[:\-—]?\s*[«\"„']?(.+?)[»\"“']?$", t, re.I)
+        if not m: m = re.match(r"^[«\"„']?(.+?)[»\"“']?\s*(?:→|->|=>)\s*[«\"„']?(.+?)[»\"“']?$", t)
+        return (m.group(1).strip(), m.group(2).strip()) if m else None
+
+    # ---- ответ ----
+    def reply(self, inp, thr=0.55):
+        if not self.cases: return None
+        scored = sorted(((self.sim(inp, c["inp"]) * (0.8 + 0.2 * min(c["w"], 2)), c) for c in self.cases), key=lambda x: -x[0])
+        s, c = scored[0]
+        wa, wb = set(self.words(inp)), set(self.words(c["inp"]))
+        if s < thr or (not (wa & wb) and s < 0.8): return dict(text=None, sim=round(s, 2), near=c["inp"], how=f"речь: нет случая (ближайшее {s:.2f})")
+        names, nums = self.slots(inp); out = c["out"]
+        out = out.replace("[ИМЯ]", names[0] if names else "ты").replace("[ЧИСЛО]", nums[0] if nums else "")
+        c["used"] += 1
+        return dict(text=out, sim=round(s, 2), near=c["inp"], how=f"речь: случай учителя (сходство {s:.2f})", case=c)
+
+    def correct(self, inp, better, bad_case=None):
+        if bad_case is not None:
+            bad_case["w"] = max(0.1, bad_case["w"] * 0.5)
+            self.teach(bad_case["inp"], better, w=2.0)   # исправленный ответ ставим на ТУ форму, что сработала, иначе старый случай побеждает на её перефразах
+        return self.teach(inp, better, w=2.0)
+
+    def report(self): return f"speech: {len(self.cases)} случаев от учителя"
+    def save(self):
+        if self.path: json.dump(dict(cases=self.cases, links=self.links), open(self.path, "w"), ensure_ascii=False, indent=1)
+    def load(self):
+        if self.path and os.path.exists(self.path):
+            try: z = json.load(open(self.path, encoding="utf-8")); self.cases = z.get("cases", []); self.links = z.get("links", {})
+            except Exception: self.cases = []

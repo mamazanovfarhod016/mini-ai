@@ -126,6 +126,8 @@ class ExperimentalMind:
             self.russian = Russian(self, self.state_dir)              # русский: слой перевода (словарь + выученные пары + смысл ru-слов)
             from mini_ai.analogy import Analogy
             self.analogy = Analogy(self, self.state_dir, meaning=getattr(self.russian, "meaning_ru", None))   # одна материя: случаи от учителя, перенос по форме+смыслу (exp69/70)
+            from mini_ai.analogy import Speech
+            self.speech = Speech(self.state_dir, meaning=getattr(self.russian, "meaning_ru", None))            # речь той же материей: реплика→ответ от учителя (exp71)
             from mini_ai.converse import Converse
             self.converse = Converse(self, self.state_dir)            # собеседник без параметров: случаи речи, профиль, схемы рассуждения (23.10)
             self._ru_meaning = None
@@ -748,6 +750,33 @@ class ExperimentalMind:
                         return R("analogy: no case", f"Вижу связи «{'», «'.join(rels[:3])}», но у меня нет примера, как их переносить. Покажи один раз: «… — значит …», и я применю.", "clarify", 0.3)
             except Exception as e:
                 print("ANALOGY-ERR", repr(e))
+        # РЕЧЬ ТОЙ ЖЕ МАТЕРИЕЙ (exp71): «на „X“ отвечай „Y“» → случай; «лучше так: …» → исправление; реплика → ближайший случай по смыслу или честное «не знаю».
+        S = getattr(self, "speech", None)
+        if S and re.search(r"[а-яё]", q.lower()):
+            qs = q.strip(); ql = qs.lower()
+            R = lambda how, text, kind="chat", conf=1.0: dict(question=q, frame=None, read=[], answer=text, kind=kind, how=how, facts=[], confidence=conf, text=text, note=None, thoughts=[])
+            try:
+                pt = S.parse_teach(qs)
+                if pt: self._last_speech = None; return R("речь: научил", S.teach(*pt), "learned")
+                ml = re.match(r"^([а-яё]+)\s*[—\-:]?\s*(?:это\s+)?(?:как|то же,? что|значит)\s+([а-яё]+)$", ql)
+                if ml and getattr(self, "_last_speech", None) is None and not A.CONCL_RX.search(qs): return R("речь: связь слов", S.link(ml.group(1), ml.group(2)), "learned")
+                mb = re.match(r"^(?:лучше\s+(?:сказать\s+)?(?:так|ответить так)|скажи так|лучше так|правильнее так|отвечай так)\s*[:\-—]\s*(.{2,})$", qs, re.I)
+                if mb and getattr(self, "_last_speech", None):
+                    inp0, case0 = self._last_speech; say = S.correct(inp0, mb.group(1).strip(), case0); self._last_speech = None; return R("речь: исправление", say, "learned")
+                # реплика без фактов и без задачи → речь учителя; факты/задачи/команды идут дальше в ядро
+                is_task = bool(re.search(r"\d", qs)) or qs.lower().startswith(("выучи", "запомни", "/", "пример", "расскажи про", "что такое", "кто такой", "что значит", "по-русски"))
+                if re.fullmatch(r"(?:привет|здравствуй(?:те)?|добрый (?:день|вечер)|доброе утро|хай|салом|ассалом[у]? алейкум)[!. ]*", ql): is_task = True   # приветствия — закрытая таблица ниже
+                if not is_task and len(qs.split()) <= 20:
+                    sr = S.reply(qs)
+                    if sr and sr["text"]:
+                        self._last_speech = (qs, sr["case"]); return R(sr["how"], sr["text"], "chat", min(0.95, sr["sim"]))
+                    factual = re.search(r"\b(?:что такое|кто такой|где находится|когда|почему|зачем|какой|какая|какие|сколько)\b", ql) or (re.search(r"\b(?:что|кто|где)\b", ql) and len(ql.split()) >= 3)
+                    if sr and not factual:
+                        # не вопрос о мире и нет случая → честно, с подсказкой, как научить
+                        self._last_speech = (qs, None)
+                        return R(sr["how"], f"Не знаю, как на это ответить. Скажи: «на „{qs.rstrip('?')}“ отвечай …» — и я запомню, и на похожее тоже.", "clarify", 0.2)
+            except Exception as e:
+                print("SPEECH-ERR", repr(e))
 
         if not self.use_dialog:
             out = self._ask_core(self._resolve(q), internet); out["kind"] = "answer" if out.get("answer") else "unknown"; return out
@@ -958,7 +987,7 @@ class ExperimentalMind:
                     conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
                     return dict(question=q0, frame=None, read=[], answer=None, kind="learned", how="речь: исправление", facts=[], confidence=1.0, text="Запомнила, в следующий раз скажу так.", note=None)
                 cr = C.respond(q0)
-                if cr and (cr["how"].startswith(("память", "арифметика", "схема")) or not (_is_question(q0) and re.search(r"\b(?:что|кто|где|когда|почему|как|какой|какая|какое|какие|сколько|чем|кем|кого|зачем)\b", q0.lower()))):
+                if cr and cr["how"].startswith(("память", "арифметика", "схема")):   # случаи речи из датасетов выключены (23.10: «не надо такую говорилку») — речь только от учителя (Speech)
                     # фактические вопросы («что такое…», «какая столица…») — ядру; остальное (разговор, о себе, задачи) — собеседнику
                     self._last_ru = (q0, cr["text"], cr.get("case_id")); C.save() if C.stats.get("cases_learned", 0) % 10 == 0 else None
                     conv.push(q=q0, frame=None, entity=None, answer=cr["text"], kind="chat", pending=None, key=None)
@@ -972,9 +1001,8 @@ class ExperimentalMind:
                           thoughts=core.get("thoughts"), arbiter=core.get("arbiter"), note="translated: " + en_q)
             self._last_out = dict(out_ru, question=en_q, _span_dbg=getattr(self, "_span_dbg", None))     # чтобы «нет, это X» после русского вопроса училось так же
             if C is not None and not core.get("answer"):
-                # ядро не нашло — пусть ответит собеседник (случай речи), а не сухое «не нашла»
                 cr = C.respond(q0)
-                if cr and cr.get("confidence", 0) >= 0.5:
+                if cr and cr["how"].startswith(("память", "арифметика", "схема")) and cr.get("confidence", 0) >= 0.5:
                     self._last_ru = (q0, cr["text"], cr.get("case_id")); out_ru.update(text=cr["text"], how=cr["how"], kind="chat")
             return out_ru
         # АНГЛИЙСКИЙ СОБЕСЕДНИК: то же, что по-русски — «better say: …» учит речь; о себе; арифметика; реплики без фактического вопроса
