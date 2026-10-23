@@ -119,6 +119,10 @@ class ExperimentalMind:
         self.reform = Reform(self, self.state_dir)                    # выученное перечитывание вопроса (уточнители, слово-тип, замены)
         from mini_ai.discourse import Discourse
         self.discourse = Discourse(self)                              # цепочка по абзацу: мост → сосед по связи дискурса → новый термин
+        try:
+            from mini_ai.russian import Russian
+            self.russian = Russian(self, self.state_dir)              # русский: слой перевода (словарь + выученные пары + смысл ru-слов)
+        except Exception as e: self.russian = None; print("russian off:", e)
         self.neural = None
         if os.environ.get("MINI_AI_NEURAL", "1") != "0":
             try:
@@ -795,6 +799,20 @@ class ExperimentalMind:
         # 0. реплика-собеседник (hi / thanks / how are you / who are you) — без поиска фактов
         st = small_talk(q0, conv.rng, len(self.kb.facts))
         is_ru = bool(re.search(r"[а-яё]", q0.lower()))
+        # РУССКИЙ: «по-русски дом значит house» → пара в словарь; русский вопрос → перевод → ядро → ответ по-русски
+        R = getattr(self, "russian", None)
+        if is_ru and R is not None:
+            mt = re.match(r"^по-русски\s+([а-яё\-]+)\s+(?:значит|это|=|—|-)\s+([a-z\-]+)\s*\.?$", q0.strip().lower())
+            if mt:
+                R.learn_pair(mt.group(1), mt.group(2)); conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+                return dict(question=q0, frame=None, read=[], answer=None, kind="learned", how="russian: pair", facts=[], confidence=1.0, text=f"Запомнила: «{mt.group(1)}» = {mt.group(2)}.", note=None)
+            if _is_question(q0) or re.search(r"\b(?:что|кто|где|когда|почему|как|какой|какая|какое|какие|сколько|чем|кем|кого)\b", q0.lower()):
+                en_q, rep, unknown = R.to_en(q0)
+                core = self._ask_core(en_q, internet) if len(toks(en_q)) >= 2 else dict(answer=None, how="не знаю", facts=[])
+                conv.push(q=q0, frame=None, entity=core.get("answer"), answer=core.get("answer"), kind="answer" if core.get("answer") else "unknown", pending=None, key=None)
+                return dict(question=q0, frame=core.get("frame"), read=[], answer=core.get("answer"), kind="answer" if core.get("answer") else "unknown",
+                            how="russian→en: " + (core.get("how") or "?"), facts=core.get("facts") or [], confidence=core.get("confidence", 0.0), text=R.say(core, en_q, rep, unknown),
+                            thoughts=core.get("thoughts"), arbiter=core.get("arbiter"), note="translated: " + en_q)
         if (st or is_ru) and not (pend and YES.match(q0)) and not re.match(r"^(выучи|запомни|что значит|что такое слово)\b", q0.lower()):
             # ГИБРИД: болтовня и русский → говорилка (трансформер, обучен градиентом); знания и рассуждение — ядро
             spoken = self.speaker.speak(q0) if getattr(self, "speaker", None) else None

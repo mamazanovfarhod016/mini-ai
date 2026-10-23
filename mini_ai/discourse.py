@@ -152,6 +152,18 @@ class Discourse:
         qforms = self._forms_of(self._words(q)) | self._words(q)
         qmeta = {w for w in self._words(q) if w in self.mind.META}
         best = None
+        numq = bool(re.search(r"\b(?:how (?:many|much|long|old|far|hot|cold)|what (?:year|number|percent|percentage|age|temperature|speed|distance|size|mass|weight))\b|\bat what (?:temperature|speed|age|depth|height)\b", ql))
+        if numq:
+            # ЧИСЛОВОЙ вопрос: ответ — число с единицей в самом мосте («Water boils at 100 DEGREES CELSIUS»)
+            for bi, cov in self.bridges(qw, k=max_bridges):
+                if cov < 0.5: continue
+                sb = kb.sents[bi][0]
+                mnum = re.search(r"(-?\d[\d,.]*\s*(?:%|°[CF]?|degrees?(?: celsius| fahrenheit)?|percent|years?|km|m|cm|mm|kg|g|mph|km/h|m/s|seconds?|minutes?|hours?|days?|months?|miles?|feet|meters?|metres?|litres?|liters?|times?|million|billion|thousand)?)", sb, re.I)
+                if mnum:
+                    ans = mnum.group(1).strip()
+                    return dict(answer=ans, confidence=round(min(0.9, 0.5 + 0.4 * cov), 2), bridge=sb, neighbor=sb, link="number in the matching sentence", why="number", cov=round(cov, 2), sc=9.0,
+                                thoughts=[f"Step 1: the question asks for a number and matches «{sb.rstrip('.')}».", f"Step 2: the number there is {ans}.", f"So: {ans}."],
+                                facts=[f"{ans} —number→ {sb[:120]}"])
         rare_q = {w for w in qw if self.kb.idf(w) >= 2.5 and not self.mind._soft(w)}
         rarest = max(rare_q, key=lambda w: self.kb.idf(w)) if rare_q else None
         # тип ответа = ГОЛОВА группы после what/which («which body ORGAN» → organ, «what body PART» → part → META → нет типа)
