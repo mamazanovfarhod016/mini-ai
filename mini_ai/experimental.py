@@ -294,6 +294,7 @@ class ExperimentalMind:
         kidf = sum(idf[w] for w in hard) + 0.3 * sum(idf[w] for w in known - hard)
         qforms = set().union(*[self._forms(w) for w in (known0 | known)]) | {w for w in known0}   # все слова вопроса (и пустышки) — не ответ
         cnt = collections.Counter(); ctx_hit = collections.Counter(); self._neural_hit = {}; G = getattr(self, "growth", None)
+        if only_sents is None and not relax: self._span_alts = []
         for w in known:
             wgt = idf[w] if w in hard else 0.3 * idf[w]
             alts = ({w} | {x for x in self.kb.sent_by_word if len(x) > 3 and (self._forms(x) & forms[w])} if len(w) > 3 else {w})
@@ -335,7 +336,7 @@ class ExperimentalMind:
             if nx < len(self.kb.sents) and self.kb.sents[nx][1] == self.kb.sents[si][1] and score / kidf >= thr:
                 if re.match(r"^(?:this|these|that|those|one such|such a|such an|they|it|the process|the term|the result|this is|these are)\b", self.kb.sents[nx][0], re.I) or len(toks(self.kb.sents[nx][0])) <= 8:
                     if cnt.get(nx, 0) < score * 0.9: cnt[nx] = score * 0.9; follow[nx] = si
-        dbg = dict(thr=round(thr, 2), top=[], picked=None)                                   # след для cases.learn / отладки: что видела и почему молчала
+        dbg = dict(thr=round(thr, 2), top=[], picked=None); alts = []                        # след для cases.learn / отладки: что видела и почему молчала
         if only_sents is None and not relax: self._span_dbg = dbg                          # урок берём со строгого прохода
         for si, score in cnt.most_common(12):
             cov = score / kidf
@@ -355,7 +356,8 @@ class ExperimentalMind:
                     found_hard = [w for w in hard if w not in absent]
                     if found_hard and (kidf - drop >= 0.35 * kidf or len(found_hard) >= 2) and kidf - drop > 0: cov = score / (kidf - drop)
                     else: qual = set()
-            if cov < thr: continue
+            passed = cov >= thr                                               # фильтры НЕ прерывают: предложение-«почти» идёт в альтернативы для solver'а
+            if not passed and cov < thr - float(os.environ.get("MINI_AI_ALT_COV", "0.25")): continue
             hy = set(re.findall(r"\b([a-z]+)-(?:like|type|shaped|based|free|rich)\b", self._cur_q.lower()))          # «tube-like» — описание, не термин
             rare_missing = [w for w in known if idf[w] >= 2.5 and not self._soft(w) and w not in hy and w not in case_soft and w not in qual and not (forms[w] & sforms) and not (G and set(G.paraphrases(w)) & sw) and not (RF and set(RF.subs(w)) & sw)]
             if self._neural_hit.get(si, 0) >= 0.6: rare_missing = rare_missing[:1] if cov >= 0.5 else rare_missing[:2]   # смысл совпал — слова могут отличаться
@@ -363,9 +365,10 @@ class ExperimentalMind:
             # одно пропущенное твёрдое слово допустимо, если покрытие всё равно высокое и оно не самое редкое в вопросе
             # (вопрос часто содержит лишнее уточнение: «in physics», «located below the soil», «during evolution»)
             if rare_missing:
-                if len(rare_missing) > 2 + tol or cov < thr + 0.1 - 0.1 * tol: continue
-                if len(rare_missing) == 2 and cov < 0.75 - 0.2 * tol: continue
-                if not tol and idf[rare_missing[0]] >= max(idf[w] for w in hard) and len(hard) <= 3 and cov < 0.8: continue
+                if len(rare_missing) > 2 + tol or cov < thr + 0.1 - 0.1 * tol: passed = False
+                if len(rare_missing) == 2 and cov < 0.75 - 0.2 * tol: passed = False
+                if not tol and idf[rare_missing[0]] >= max(idf[w] for w in hard) and len(hard) <= 3 and cov < 0.8: passed = False
+                if len(rare_missing) > 3: continue
             # куски предложения; кандидат = кусок без слов вопроса, с ≥1 содержательным словом
             body = re.sub(r"\s*\(([^)]*)\)", r", \1, ", sent)                       # «(about 2 km)» — тоже кусок
             pieces = [p.strip(" ,;:.") for p in re.split(r",|;|:| — | - |\b(?:and|or|but|because|which|that|while|whereas|so that|such as|called|known as|is|are|was|were|by|through|into|from|than)\b", body)]
@@ -438,17 +441,24 @@ class ExperimentalMind:
                     cands = [(sc_ * 0.5 + top * 0.5 * float(sm), pc) for (sc_, pc), sm in zip(cands, sims)]
                 except Exception: pass
             ans = max(cands, key=lambda c: c[0])[1]
-            ans = re.sub(r"^(?:the|a|an|its|their|also|about|only|all|most|many|some|very)\s+", "", ans, flags=re.I).strip()
+            _clean = lambda a: re.sub(r"^(?:the|a|an|its|their|also|about|only|all|most|many|some|very)\s+", "", a, flags=re.I).strip()
+            ans = _clean(ans)
             if len(ans) < 2: continue
             dbg["top"][-1][3] = ans
             sc = round(cov_raw * 0.55, 2)                    # уверенность — по честному покрытию: уточнитель открывает дверь, но не добавляет веры
+            # АЛЬТЕРНАТИВЫ ДЛЯ ОБУЧАЕМОГО АРБИТРА: лучший кусок КАЖДОГО предложения из топ-12 (в т.ч. не прошедшего фильтр) —
+            # замер (5000): из 28 промахов отрывка у 17 верный ответ был в другом предложении топ-12, лишь у 2 — в другом куске того же
+            alts.append(dict(sc=sc, ans=ans, sent=sent[:120], src=src, rank=len(dbg["top"]) - 1, cov=round(cov, 2), passed=passed,
+                             n_rare=len(rare_missing), neural=round(self._neural_hit.get(si, 0), 2), top2=[_clean(pc) for _, pc in sorted(cands, key=lambda c: -c[0])[1:3]]))
+            if not passed: continue
             if not best or sc > best[0]: best = (sc, ans, (sent[:120], "span", "", src))
+        if only_sents is None and not relax: self._span_alts = [a for a in alts if not best or a["ans"].lower() != best[1].lower()][:8]
         return best
 
     def _arbiter(self, q, fr):
         """все способы → кандидаты (how, answer, confidence, facts); счёт = confidence × trust(how, форма вопроса).
         Подсказки-связки (growth.hints) добавляют +0.15 кандидату, чей ответ уже встречался на похожих вопросах."""
-        G = getattr(self, "growth", None); cands = []
+        G = getattr(self, "growth", None); cands = []; alt_cands = []
         r = self._one_step(fr)
         if r: s, ans, fact = r; cands.append(dict(how="1 шаг", answer=ans, confidence=round(min(1.0, s / 1.8), 2), facts=[f"{fact[0]} —{fact[1]}→ {fact[2]}"], raw=r))
         r2 = self._two_step(fr)
@@ -459,17 +469,42 @@ class ExperimentalMind:
         if sp:
             s, ans, (sent, _, _, src) = sp
             cands.append(dict(how="отрывок предложения", answer=ans, confidence=round(min(0.9, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+            # варианты куска — на доску с пониженной уверенностью; выиграть могут только через обучаемый арбитр (solver), в согласие не входят
+            if os.environ.get("MINI_AI_SPAN_ALTS", "1") != "0":
+                seen_ = {str(ans).lower()}
+                for a_ in getattr(self, "_span_alts", None) or []:
+                    pc = a_["ans"]
+                    if pc.lower() in seen_: continue
+                    seen_.add(pc.lower())
+                    alt_cands.append(dict(how="отрывок: другое предложение", answer=pc, confidence=round(min(0.9, a_["sc"] / 0.6) * (0.7 if a_["passed"] else 0.4), 2), facts=[f"{pc} —span→ {a_['sent']}"],
+                                      alt_rank=a_["rank"], alt_rel=a_["cov"], alt_passed=a_["passed"], alt_rare=a_["n_rare"], alt_neural=a_["neural"],
+                                      text=f"From what I've read: {a_['sent'].rstrip('.')}. So I'd say: {pc}."))
         elif not cands:
             # СМЕЛОСТЬ ИЗ СЛУЧАЕВ: на доске пусто, а похожие исправленные вопросы говорят «предложение с ответом было видно, я молчала зря»
             # → второй, смелый проход отрывка. Только когда иначе был бы «не знаю»: верный ответ другого способа он вытеснить не может.
             adv = self._advice if self._advice and self._advice.get("q") == q else None
             bold_c = float((adv or {}).get("bold", 0.0) or 0.0)
             if os.environ.get("MINI_AI_FORCE_BOLD"): bold_c = float(os.environ["MINI_AI_FORCE_BOLD"])                 # замер потолка (probe)
-            if bold_c >= float(os.environ.get("MINI_AI_BOLD_MIN", "0.3")):
+            # РЕШЕНИЕ «МОЛЧАТЬ ИЛИ РИСКНУТЬ» ОТДАНО SOLVER'У: смелый проход считаем всегда, когда иначе было бы «не знаю»;
+            # принимаем, если так советуют случаи (bold_c) ИЛИ обученный арбитр даёт p ≥ порога. Отказ тоже запоминается
+            # (self._last_cands) — исправление «no, it's X» после молчания размечает этого кандидата и учит порог.
+            use_solver_bold = os.environ.get("MINI_AI_SOLVER_BOLD", "1") != "0" and getattr(self, "solver", None) is not None
+            if bold_c >= float(os.environ.get("MINI_AI_BOLD_MIN", "0.3")) or use_solver_bold:
                 sp = self._span(fr, set(fr["Y"] if fr["slot"] == "X" else fr["X"]) | set(fr["Y"] if fr["slot"] == "Y" else fr["X"]), relax=float(os.environ.get("MINI_AI_BOLD_RELAX", "0.2")))
                 if sp:
                     s, ans, (sent, _, _, src) = sp
-                    cands.append(dict(how="отрывок предложения (смело, по случаям)", answer=ans, confidence=round(min(0.7, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}."))
+                    c_bold = dict(how="отрывок предложения (смело, по случаям)", answer=ans, confidence=round(min(0.7, s / 0.6), 2), facts=[f"{ans} —span→ {sent}"], text=f"From what I've read: {sent.rstrip('.')}. So I'd say: {ans}.")
+                    take = bold_c >= float(os.environ.get("MINI_AI_BOLD_MIN", "0.3"))
+                    if use_solver_bold:
+                        try:
+                            c_bold["score"] = c_bold["confidence"]; c_bold["trust"] = 1.0; c_bold["check"] = self._self_check(fr, ans)["note"]
+                            fb = self.solver.features(q, [c_bold]); pb = self.solver.predict(fb)[0] if self.solver.ready else None
+                            c_bold["solver"] = None if pb is None else round(pb, 2)
+                            if pb is not None and pb >= float(os.environ.get("MINI_AI_SOLVER_PBOLD", "0.5")): take = True; c_bold["how"] = "отрывок предложения (смело, по solver)"
+                            if pb is not None and pb < float(os.environ.get("MINI_AI_SOLVER_PVETO", "0.0")): take = False
+                            if not take: self._last_cands = (q, [dict(c_bold)], fb)          # молчим, но запоминаем — исправление научит
+                        except Exception: pass
+                    if take: cands.append(c_bold)
         # УЧЁБА У ПРОИГРАВШИХ (growth.learn_from_board): если на этом классе способ A обычно находит нужное предложение,
         # но не ответ — берём его предложение и достаём ответ как отрывок. Правило выведено ею из исправлений.
         pf = G.place_finders(q) if G else []
@@ -529,7 +564,7 @@ class ExperimentalMind:
             if dp and dp["steps"] >= 2:
                 cands.append(dict(how=f"{dp['steps']} шагов (deep)", answer=dp["answer"], confidence=dp["confidence"], facts=dp["facts"], thoughts=dp["thoughts"],
                                   text=" ".join(dp["thoughts"])))
-        if not cands: return None
+        if not cands: return None                                 # _last_cands при молчании уже содержит отвергнутого смелого кандидата
         # СОГЛАСИЕ: два разных способа дали один ответ — независимые свидетели → уверенность вверх; одиночка против согласных — вниз.
         # (измерено на SciQ: 16 из 130 промахов — верный ответ был на доске у двух способов, но проигрывал одиночному отрывку 0.9)
         def _aw(c): return {w for w in content_words(toks(str(c["answer"]))) if len(w) > 2}
@@ -575,7 +610,22 @@ class ExperimentalMind:
             chk = self._self_check(fr, c["answer"]); c["check"] = chk["note"]; c["score"] = round(c["score"] * chk["mult"], 3)
         # ОБУЧАЕМЫЙ АРБИТР (solver.py): признаки каждого кандидата → вероятность «верен», выученная из исправлений решением уравнения
         try:
-            feats = self.solver.features(q, cands); self.solver.apply(cands, feats); self._last_cands = (q, [dict(c) for c in cands], feats)
+            feats = self.solver.features(q, cands); self.solver.apply(cands, feats)
+            # ДРУГИЕ КУСКИ того же предложения: в доску и в согласие не входят; размечаются исправлением (учат «какой кусок»),
+            # а заменить основной отрывок могут ТОЛЬКО по вердикту solver'а: p_alt > p_main + запас — иначе поведение прежнее
+            if alt_cands:
+                for c in alt_cands: c["score"] = c["confidence"]; c["trust"] = 1.0; c["check"] = self._self_check(fr, c["answer"])["note"]
+                fa = self.solver.features(q, alt_cands); cands_all = list(cands) + list(alt_cands)       # порядок = порядок признаков
+                if self.solver.ready:
+                    main = next((c for c in cands if c["how"].startswith("отрывок предложения")), None)
+                    if main is not None:
+                        pm = main.get("solver", 0.5); pa = self.solver.predict(fa)
+                        for c, p_ in zip(alt_cands, pa): c["solver"] = round(p_, 2)
+                        j = max(range(len(pa)), key=lambda k: pa[k])
+                        if pa[j] > pm + float(os.environ.get("MINI_AI_ALT_MARGIN", "0.25")) and pa[j] >= 0.6:
+                            alt_cands[j]["score"] = round(main["score"] * 1.01, 3); alt_cands[j]["how"] = "отрывок: другое предложение (по solver)"; cands.append(alt_cands[j])
+                self._last_cands = (q, [dict(c) for c in cands_all], feats + fa)
+            else: self._last_cands = (q, [dict(c) for c in cands], feats)
         except Exception as e_: self._last_cands = None
         cands.sort(key=lambda c: -c["score"])
         best = cands[0]; best["board"] = [(c["how"], str(c["answer"])[:40], c["confidence"], c["trust"], c["score"], c.get("check"), (c.get("facts") or [""])[-1][:160]) for c in cands]
