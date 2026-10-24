@@ -401,7 +401,7 @@ class Converse:
     def correct(self, inp, my_out, better, my_case=None):
         """«лучше сказать так: …» — новый случай с весом 2; тот, что дал плохой ответ, теряет вес"""
         if my_case is not None and 0 <= my_case < len(self.cases): self.cases[my_case]["w"] = max(0.1, self.cases[my_case]["w"] * 0.5)
-        self.learn_exchange(inp, better, w=2.0); self.stats["corrections"] += 1
+        self.learn_exchange(inp, better, w=2.0); self.cases[-1]["src"] = "teacher"; self.stats["corrections"] += 1
         self.log.append(dict(inp=inp[:80], was=(my_out or "")[:80], better=better[:80]))
 
     def teach_dialog(self, turns, sim_thr=0.45, verbose=False):

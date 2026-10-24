@@ -149,6 +149,14 @@ def looks_like_word_problem(q):
     return q.strip().endswith("?") or bool(re.search(r"\bhow (?:many|much|long|far|old)\b|\bwhat is the total\b", q.lower()))
 
 
+def looks_like_numbers_statement(q):
+    """английское условие с ≥2 числами и действием, но без вопроса («Keyli has 6 apples, her brother ate 2») → переспросить"""
+    ql = q.lower()
+    if re.search(r"[а-яё]", ql) or "?" in q or looks_like_word_problem(q): return False
+    if re.match(r"^\s*(?:i|i'm|i am|my|we)\b", ql): return False          # рассказ о себе — не задача
+    return len(numbers(q)) >= 2 and bool(re.search(r"\b(?:has|have|had|ate|eats|gave|gives|bought|buys|sold|sells|lost|found|got|gets|took|spent|costs?|each|left|more|less|times)\b", ql))
+
+
 def fmt(x): return f"{x:g}" if abs(x - round(x)) > 1e-9 else f"{int(round(x))}"
 
 

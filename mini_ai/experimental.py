@@ -726,6 +726,10 @@ class ExperimentalMind:
         if os.environ.get("MINI_AI_PLAN_READER", "1") != "0":
             try:
                 from mini_ai import plan_reader as _PR
+                if _PR.looks_like_numbers_statement(q):
+                    nums = ", ".join(_PR.fmt(x) for x in _PR.numbers(q))
+                    text = f"I see a task with numbers ({nums}), but no question. What should I find? For example: «How many apples are left?»"
+                    return dict(question=q, frame=None, read=[], answer=None, kind="clarify", how="гибрид: нет вопроса в задаче", facts=[], confidence=0.0, text=text, note=None, thoughts=[])
                 if _PR.looks_like_word_problem(q):
                     if getattr(self, "_plan_reader", None) is None: self._plan_reader = _PR.PlanReader()
                     pr = self._plan_reader; res = pr.solve(q); info = pr.info()
@@ -1033,10 +1037,19 @@ class ExperimentalMind:
             factual = _is_question(q0) and re.search(r"\b(?:what|which|who|where|when|why|how many|how much|how does|how do|how did|name)\b", q0.lower()) and not re.search(r"\b(?:my|me|i|am i|do i|you|your)\b", q0.lower())
             if not factual and not re.match(r"^(?:example:|learn |выучи|/)", q0.lower()):
                 cr = C.respond(q0)
-                if cr and (cr["how"].startswith(("память", "арифметика", "схема")) or cr.get("confidence", 0) >= 0.45 or st):
+                # 24.10: реплики из датасетов (DailyDialog) выключены и для английского — как для русского 23.10 («не надо такую говорилку»);
+                # отвечают только: память о собеседнике, арифметика, схемы, случаи от учителя («better say: …»)
+                cid = cr.get("case_id") if cr else None
+                teacher = cid is not None and 0 <= cid < len(C.cases) and C.cases[cid].get("src") == "teacher"
+                if cr and (cr["how"].startswith(("память", "арифметика", "схема")) or teacher):
                     self._last_ru = (q0, cr["text"], cr.get("case_id"))
                     conv.push(q=q0, frame=None, entity=None, answer=cr["text"], kind="chat", pending=None, key=None)
                     return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how=cr["how"], facts=[], confidence=cr.get("confidence", 0.5), text=cr["text"], thoughts=cr.get("thoughts"), note=None)
+                if not st and not re.search(r"\d", q0):
+                    self._last_ru = (q0, None, None)
+                    conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
+                    return dict(question=q0, frame=None, read=[], answer=None, kind="clarify", how="речь: не знаю", facts=[], confidence=0.0,
+                                text="I don't know how to answer that yet. Teach me: «better say: …» — and I'll remember it.", note=None)
         if st and not (pend and YES.match(q0)):
             conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
             return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="small talk: " + st[0], facts=[], confidence=1.0, text=st[1], note=None)
