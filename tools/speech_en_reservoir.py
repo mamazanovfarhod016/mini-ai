@@ -80,6 +80,8 @@ if t is not None:
         seen.add(key); add_dialog(h, "personachat")
     log("personachat", len(DIAL) - n0, "пар")
 if SMOKE: DIAL = DIAL[:3000]
+MAX_DIAL = int(os.environ.get("MAX_DIAL", 0))
+if MAX_DIAL: DIAL = DIAL[:MAX_DIAL]
 t = parquet(HF.format(repo="openai/gsm8k", cfg="main", split="train", i=0))
 GSM_TEST = []
 if t is not None:
@@ -147,7 +149,15 @@ def ngram_eval():
             c = tri.get((x[i - 1], x[i])) if i >= 1 else None
             p = (c or bi.get(x[i]) or uni).most_common(1)[0][0]; ok += (p == x[i + 1]); n += 1
     return ok / n
-tri_acc = ngram_eval(); log(f"[контроль] триграмма top-1 на ответах: {tri_acc:.3f}")
+TRI_LIMIT = int(os.environ.get("TRI_LIMIT", 0))   # контроль на срезе корпуса (ОЗУ Kaggle ~13 ГБ: триграмма на 88M токенов не влезает)
+if TRI_LIMIT:
+    _all = TRAIN; TRAIN = []; _n = 0
+    for x, m in _all:
+        TRAIN.append((x, m)); _n += len(x)
+        if _n >= TRI_LIMIT: break
+    tri_acc = ngram_eval(); TRAIN = _all; log(f"[контроль] триграмма (на {_n:,} токенах) top-1 на ответах: {tri_acc:.3f}")
+else:
+    tri_acc = ngram_eval(); log(f"[контроль] триграмма top-1 на ответах: {tri_acc:.3f}")
 
 # ---------------------------------------------------------------- резервуар
 class Reservoir:
