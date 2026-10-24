@@ -13,11 +13,15 @@ MODE=cases — РЕЧЬ ИЗ СЛУЧАЕВ + СМЫСЛ БЕЗ ГРАДИЕНТ
    случай из памяти + перенос имён/чисел по позиции; цепочка GSM8K = ближайшая решённая задача → её арифметика
    пересчитывается на новых числах (перенос случая по ФОРМЕ, как в analogy.py); истории = сцепка предложений по смыслу.
    ЧЕСТНО: ответ/истории здесь — слой поиска (память), не порождение; порождение — только пересчёт цепочки.
+MODE=grad  — КОНТРОЛЬ С ГРАДИЕНТОМ (его «попробую также с градиентами», 24.10): наш трансформер (mini_ai/transformer.py: своя сеть,
+   свой AdamW, RoPE; PyTorch считает только backprop — mini_ai/torch_engine.py) на ТЕХ ЖЕ данных и ТЕХ ЖЕ линейках. Бюджет
+   времени GRAD_MIN минут на T4. Это точка отсчёта «что даёт GPT-2-мини на этих данных», чтобы честно мерить наши механизмы.
 Успех записан ДО запуска: deep — top-1 ≥ триграммы И рост по слоям; cases — ответы ≥ ×1.5 случайного, GSM8K > 0 верных.
 Локально: SMOKE=1 MODE=deep|cases python3 tools/speech_en_lab.py
 """
 import os, re, io, sys, json, time, math, collections, urllib.request
 import numpy as np
+sys.path.insert(0, "."); sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 SMOKE = os.environ.get("SMOKE") == "1"; MODE = os.environ.get("MODE", "deep")
 OUT = os.environ.get("OUT", "/kaggle/working" if os.path.isdir("/kaggle/working") else f"/tmp/speech_lab_{MODE}")
@@ -221,6 +225,83 @@ if MODE == "deep":
     for p, s in stories: log(f"[история] {p} → {s[:150]}")
     log(f"ИТОГ deep: слои {['%.3f' % x for x in per_layer]} → все слои {a1:.3f} (триграмма {tri_acc:.3f}); top-5 {a5:.3f}; ответы {gj:.3f} vs случ {rj:.3f} (×{gj/max(rj,1e-9):.1f}); GSM8K верных {right}/50, структура {steps}")
     save(dict(mode="deep", N=N_RES, d=D_EMB, layers=LAYERS, V=V, tokens=NTOK, trigram=tri_acc, per_layer=per_layer, top1=a1, top5=a5, reply_gold=gj, reply_rand=rj, curve=CURVE, gsm_right=right, gsm_steps=steps), outs, chain, stories)
+
+# ================================================================ MODE=grad
+elif MODE == "grad":
+    import torch
+    from mini_ai.transformer import init_params, n_params
+    from mini_ai.torch_engine import TorchEngine
+    GRAD_MIN = float(E("GRAD_MIN", 0.5 if SMOKE else 100)); D_T = int(E("D_T", 64 if SMOKE else 256)); NL = int(E("NL", 2 if SMOKE else 6)); NH = int(E("NH", 4 if SMOKE else 8))
+    def seq_dialog(c, r):
+        x = [BOS] + enc(toks(c))[-(MAXLEN // 2):] + [SEP] + enc(toks(r))[: MAXLEN // 2] + [EOS]; k = x.index(SEP)
+        return x, [0] * (k + 1) + [1] * (len(x) - k - 2)
+    def seq_text(s):
+        ids = enc(toks(s)); out = []
+        for i in range(0, len(ids), MAXLEN - 2):
+            x = [BOS] + ids[i:i + MAXLEN - 2] + [EOS]; out.append((x, [1] * (len(x) - 1)))
+        return out
+    TRAIN = [seq_dialog(c, r) for c, r, _ in TRAIN_D] + [p for s, _ in TEXT for p in seq_text(s)]; TEST = [seq_dialog(c, r) for c, r, _ in TEST_D]
+    rng.shuffle(TRAIN); NTOK = sum(len(x) for x, _ in TRAIN); log("train seq", len(TRAIN), "токенов", NTOK, "test", len(TEST))
+    def batches(seqs, bs):
+        seqs = sorted(seqs, key=len)
+        for i in range(0, len(seqs), bs):
+            ch = seqs[i:i + bs]; T = max(len(x) for x, _ in ch); X = np.full((len(ch), T), EOS, np.int64); M = np.zeros((len(ch), T - 1), bool)
+            for j, (x, m) in enumerate(ch): X[j, :len(x)] = x; M[j, :len(m)] = m
+            yield X, M
+    def ngram_eval(limit):
+        uni, bi, tri = collections.Counter(), collections.defaultdict(collections.Counter), collections.defaultdict(collections.Counter); n_ = 0
+        for x, m in TRAIN:
+            for i in range(len(x) - 1):
+                uni[x[i + 1]] += 1; bi[x[i]][x[i + 1]] += 1
+                if i >= 1: tri[(x[i - 1], x[i])][x[i + 1]] += 1
+            n_ += len(x)
+            if n_ >= limit: break
+        ok = n = 0
+        for x, m in TEST:
+            for i in range(len(x) - 1):
+                if not m[i]: continue
+                c = tri.get((x[i - 1], x[i])) if i >= 1 else None; p = (c or bi.get(x[i]) or uni).most_common(1)[0][0]; ok += (p == x[i + 1]); n += 1
+        return ok / n
+    tri_acc = ngram_eval(TRI_LIMIT); log(f"[контроль] триграмма top-1: {tri_acc:.3f}")
+    p0, cfg = init_params(V, d=D_T, n_layer=NL, n_head=NH, pos="rope", seed=0); eng = TorchEngine(p0, cfg, lr=6e-4, wd=0.01, seed=0)
+    log(f"[grad] трансформер d={D_T} слоёв {NL} голов {NH} параметров {n_params(p0):,} на {eng.dev}; бюджет {GRAD_MIN:g} мин")
+    all_b = list(batches(TRAIN, BS)); rng.shuffle(all_b)
+    @torch.no_grad()
+    def eval_top1(k=None):
+        ok = ok5 = n = 0
+        for X, M in list(batches(TEST, BS))[:k]:
+            lg = __import__("mini_ai.torch_engine", fromlist=["forward"]).forward(eng.p, cfg, eng._t(X, torch.long))[:, :-1]; m = eng._t(M, torch.bool); y = eng._t(X, torch.long)[:, 1:][m]; lg = lg[m]
+            ok += int((lg.argmax(1) == y).sum()); ok5 += int((lg.topk(5, dim=1).indices == y[:, None]).any(1).sum()); n += int(m.sum())
+        return ok / n, ok5 / n
+    @torch.no_grad()
+    def generate(prefix, max_new=40, temp=0.8, seed=1):
+        r = np.random.default_rng(seed); ids = list(prefix); fwd = __import__("mini_ai.torch_engine", fromlist=["forward"]).forward
+        for _ in range(max_new):
+            lg = fwd(eng.p, cfg, eng._t([ids[-MAXLEN:]], torch.long))[0, -1].float().cpu().numpy(); lg[[PAD, BOS, SEP]] = -1e9; lg[UNK] -= 5
+            z = (lg - lg.max()) / temp; pr = np.exp(z); pr /= pr.sum(); nxt = int(r.choice(V, p=pr)); ids.append(nxt)
+            if nxt == EOS: break
+        return " ".join(itos[i] for i in ids[len(prefix):] if i != EOS)
+    t_start = time.time(); step = 0; seen = 0; CURVE = []; next_mark = 0.1; warm = 300; base_lr = 6e-4
+    while time.time() - t_start < GRAD_MIN * 60:
+        for X, M in all_b:
+            lr = base_lr * min(1.0, (step + 1) / warm)
+            loss, nrm = eng.step(X[:, :-1], X[:, 1:], M, lr, drop=0.05); step += 1; seen += int(M.sum())
+            if step % 200 == 0: log(f"[grad] шаг {step} токенов {seen:,} loss {loss:.3f} {(time.time()-t_start)/60:.1f} мин")
+            if (time.time() - t_start) / (GRAD_MIN * 60) >= next_mark or time.time() - t_start >= GRAD_MIN * 60:
+                a1, a5 = eval_top1(k=20); outs = [(c, g, generate([BOS] + enc(toks(c))[-(MAXLEN // 2):] + [SEP], seed=i)) for i, (c, g, _) in enumerate(TEST_D[:60])]; gj, rj = judge_pairs(outs)
+                CURVE.append(dict(frac=round(next_mark, 2), step=step, tokens=seen, top1=a1, top5=a5, reply_gold=gj, reply_rand=rj, loss=loss)); log(f"[кривая] {int(next_mark*100):3d}% времени, шаг {step}, {seen:,} ток: top-1 {a1:.3f} top-5 {a5:.3f} loss {loss:.3f} | ответ↔эталон {gj:.3f} vs случ {rj:.3f}")
+                next_mark = round(next_mark + (0.15 if next_mark < 0.25 else 0.25), 2)
+                if next_mark > 1.0: next_mark = 9
+            if time.time() - t_start >= GRAD_MIN * 60: break
+    a1, a5 = eval_top1(); outs = [(c, g, generate([BOS] + enc(toks(c))[-(MAXLEN // 2):] + [SEP], seed=i)) for i, (c, g, _) in enumerate(TEST_D[:300])]; gj, rj = judge_pairs(outs)
+    chain = []; right = steps = 0
+    for q, gold in GSM_TEST[:50]:
+        a = generate([BOS] + enc(toks(q))[-100:], max_new=80, temp=0.6, seed=3); nums = re.findall(r"\d+", a); steps += bool(re.search(r"= \d+", a)); right += (gold in nums[-2:]) if nums else 0; chain.append((q, gold, a))
+    stories = [(p, generate([BOS] + enc(toks(p)), max_new=60, seed=s)) for s, p in enumerate(STORY_PROMPTS)]
+    for p, s_ in stories: log(f"[история] {p} → {s_[:150]}")
+    log(f"ИТОГ grad: top-1 {a1:.3f} (триграмма {tri_acc:.3f}) top-5 {a5:.3f}; ответы {gj:.3f} vs случ {rj:.3f} (×{gj/max(rj,1e-9):.1f}); GSM8K верных {right}/50, структура {steps}; шагов {step}, токенов {seen:,}, {(time.time()-t_start)/60:.0f} мин")
+    np.savez_compressed(os.path.join(OUT, "grad_model.npz"), **eng.params_numpy()); json.dump(cfg, open(os.path.join(OUT, "grad_cfg.json"), "w")); json.dump(itos, open(os.path.join(OUT, "vocab.json"), "w"))
+    save(dict(mode="grad", d=D_T, layers=NL, params=n_params(p0), V=V, tokens=NTOK, steps=step, seen=seen, trigram=tri_acc, top1=a1, top5=a5, reply_gold=gj, reply_rand=rj, curve=CURVE, gsm_right=right, gsm_steps=steps), outs, chain, stories)
 
 # ================================================================ MODE=cases
 elif MODE == "cases":
