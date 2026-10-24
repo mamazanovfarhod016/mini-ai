@@ -36,9 +36,40 @@ def parquet(url):
         except Exception as e: log("retry", k, type(e).__name__); time.sleep(5)
 tr = parquet(HF.format(split="train")); te = parquet(HF.format(split="test"))
 TRAIN_RAW = list(zip(tr["question"], tr["answer"])); TEST_RAW = list(zip(te["question"], te["answer"]))
+# 24.10 вечер: открытые наборы (качаются на Kaggle): MetaMathQA (MIT; GSM_AnsAug+GSM_Rephrased — перефразы GSM8K-TRAIN, ~160k)
+# и Orca-Math 200k (MIT). Решения свободным текстом → «#### N» дописывается; план извлекается как обычно; чистка от теста ниже.
+HF_SETS = [x for x in E("HF_SETS", "").split(",") if x]
+def _hf_first_shard(repo):
+    lst = json.loads(urllib.request.urlopen(urllib.request.Request(f"https://huggingface.co/api/datasets/{repo}/parquet", headers={"User-Agent": "mini-ai"}), timeout=60).read())
+    cfg = next(iter(lst)); urls = lst[cfg].get("train") or next(iter(lst[cfg].values()))
+    import pyarrow.parquet as pq
+    return pq.read_table(io.BytesIO(urllib.request.urlopen(urllib.request.Request(urls[0], headers={"User-Agent": "mini-ai"}), timeout=600).read())).to_pandas()
+def _with_hash(a):
+    if "####" in a: return a
+    m = re.search(r"answer is:?\s*\$?(-?[\d,]*\.?\d+)", a) or re.search(r"(-?[\d,]*\.?\d+)\D*$", a)
+    return (a + "\n#### " + m.group(1).replace(",", "")) if m else None
+EXTRA_HF = []
+for name in HF_SETS:
+    try:
+        if name == "metamath":
+            df = _hf_first_shard("meta-math/MetaMathQA"); df = df[df["type"].isin(["GSM_AnsAug", "GSM_Rephrased"])]
+            EXTRA_HF += [(q, a) for q, a in zip(df["query"], df["response"])]
+        elif name == "orca":
+            df = _hf_first_shard("microsoft/orca-math-word-problems-200k")
+            EXTRA_HF += [(q, x) for q, a in zip(df["question"], df["answer"]) if (x := _with_hash(a))]
+        log("открытый набор", name, "→ всего внешних", len(EXTRA_HF))
+    except Exception as e: log("набор", name, "НЕ загрузился:", type(e).__name__, str(e)[:120])
 EXTRA = E("EXTRA", "")   # наши новые задачи (data/gsm_new/all.jsonl, 24.10: 1400 от Sonnet-агентов) — тот же формат
 if EXTRA and os.path.exists(EXTRA):
     ex = [json.loads(l) for l in open(EXTRA) if l.strip()]; TRAIN_RAW += [(d["question"], d["answer"]) for d in ex]; log("добавлено своих задач", len(ex))
+if EXTRA_HF:   # чистка от теста: 8-словные совпадения с любым вопросом GSM8K-test → выкидываем
+    def _grams(s_, n=8):
+        w = re.findall(r"[a-z]+|\d+", s_.lower()); return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
+    _T = set()
+    for q, _ in TEST_RAW: _T |= _grams(q)
+    _n0 = len(EXTRA_HF); EXTRA_HF = [(q, a) for q, a in EXTRA_HF if not (_grams(q) & _T)]
+    log(f"внешние после чистки от теста: {len(EXTRA_HF)} из {_n0}")
+    MAX_HF = int(E("MAX_HF", 10**9)); TRAIN_RAW += EXTRA_HF[:MAX_HF]
 if SMOKE: TRAIN_RAW = TRAIN_RAW[:1500]; TEST_RAW = TEST_RAW[:80]
 if FRAC < 1: TRAIN_RAW = TRAIN_RAW[: int(len(TRAIN_RAW) * FRAC)]
 log("gsm8k train", len(TRAIN_RAW), "test", len(TEST_RAW))
@@ -58,8 +89,9 @@ def slot_tokens(q):
         else: out.append(t)
     return out
 def gold_answer(a):
-    try: return float(a.split("####")[-1].strip().replace(",", ""))
-    except Exception: return None
+    """первое число после «####» (MetaMathQA дописывает «The answer is: …» следующей строкой)"""
+    m = re.search(r"-?\d+(?:\.\d+)?", a.split("####")[-1].replace(",", "")) if "####" in a else None
+    return float(m.group()) if m else None
 CONST_OK = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "12", "24", "60", "100", "1000", "0.5", "0.25", "0.1", "0.2", "0.75", "7", "52", "30", "365", "0.01"}
 def plan_of(q, a):
     """план из пометок <<a op b = c>>: операнды → N i (число условия), R j (прошлый результат) или константа; ответ → ANS R k"""
@@ -88,9 +120,13 @@ def plan_of(q, a):
             try: val = {"+": cur + nxt, "-": cur - nxt, "*": cur * nxt, "/": cur / nxt}[op]
             except ZeroDivisionError: ok = False; break
             tmp.append((cur, op, nxt, val)); cur = val
-        if ok and abs(cur - float(z)) < 1e-3: found += tmp
+        try: zf = float(z)
+        except ValueError: continue  # z вида «1.35.»
+        if ok and abs(cur - zf) < 1e-3: found += tmp
     for x, op, y, z in found:
-        x, y, z = float(x), float(y), float(z); rx, ry = ref(x), ref(y)
+        try: x, y, z = float(x), float(y), float(z)
+        except ValueError: return None
+        rx, ry = ref(x), ref(y)
         if rx is None or ry is None: return None
         plan += [rx, op, ry, ";"]; res.append(z)
     g = gold_answer(a)
@@ -123,9 +159,16 @@ def execute(plan, qn):
     return (res[-1], steps) if res else (None, "пусто")
 TRAIN = []
 for q, a in TRAIN_RAW:
-    p = plan_of(q, a)
-    if p: TRAIN.append((slot_tokens(q), p, numbers(q), gold_answer(a), q))
-TEST = [(slot_tokens(q), plan_of(q, a), numbers(q), gold_answer(a), q) for q, a in TEST_RAW]
+    try: p = plan_of(q, a)
+    except (ValueError, ZeroDivisionError, OverflowError): p = None
+    if not p: continue
+    qn_, g_ = numbers(q), gold_answer(a); v_, _ = execute(p, qn_)
+    if v_ is None or g_ is None or abs(v_ - g_) > 1e-6: continue      # чужие наборы шумные: берём только планы, дающие эталонный ответ
+    TRAIN.append((slot_tokens(q), p, qn_, g_, q))
+def _plan_safe(q, a):
+    try: return plan_of(q, a)
+    except (ValueError, ZeroDivisionError, OverflowError): return None
+TEST = [(slot_tokens(q), _plan_safe(q, a), numbers(q), gold_answer(a), q) for q, a in TEST_RAW]
 ok_exec = sum(1 for s, p, qn, g, _ in TRAIN if execute(p, qn)[0] is not None and abs(execute(p, qn)[0] - g) < 1e-6)
 log(f"планов извлечено {len(TRAIN)}/{len(TRAIN_RAW)} ({len(TRAIN)/len(TRAIN_RAW):.0%}); исполняются верно {ok_exec}/{len(TRAIN)}; тест с планом {sum(1 for t in TEST if t[1])}/{len(TEST)}")
 wc = collections.Counter(w for s, p, *_ in TRAIN for w in s + p)
