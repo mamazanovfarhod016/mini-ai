@@ -721,6 +721,22 @@ class ExperimentalMind:
         return best
 
     def ask(self, q, internet=True):
+        # ГИБРИД (24.10): английская текстовая задача с числами → ЧИТАТЕЛЬ (наш трансформер, градиент) пишет план,
+        # РАССУЖДЕНИЕ (без градиента) исполняет его по шагам. Сильнейшие веса выбираются автоматически (plan_reader.best_run).
+        if os.environ.get("MINI_AI_PLAN_READER", "1") != "0":
+            try:
+                from mini_ai import plan_reader as _PR
+                if _PR.looks_like_word_problem(q):
+                    if getattr(self, "_plan_reader", None) is None: self._plan_reader = _PR.PlanReader()
+                    pr = self._plan_reader; res = pr.solve(q); info = pr.info()
+                    th = [f"план читателя: {' '.join(res['plan']) or '—'}", f"числа: {', '.join(_PR.fmt(x) for x in res['numbers'])}"] + \
+                         [f"{_PR.fmt(a)} {op} {_PR.fmt(b)} = {_PR.fmt(c)}" for a, op, b, c in res["steps"]]
+                    text = _PR.say(res, info)
+                    return dict(question=q, frame=None, read=[], answer=text, short=None if res["answer"] is None else _PR.fmt(res["answer"]),
+                                kind="answer" if res["answer"] is not None else "clarify", how="гибрид: читатель (градиент) → план → шаги (формула)",
+                                facts=[], confidence=0.3, text=text, note=None, thoughts=th, reader=info)
+            except Exception as e:
+                print("PLAN-READER-ERR", repr(e))
         # ОДНА МАТЕРИЯ (analogy.py, exp69/70): пример/объяснение → случай; задача с фактами → перенос случая; «нет, … потому что …» → исправление.
         # Стоит ПЕРЕД всем остальным: это разговор с учителем, не вопрос к памяти фактов.
         A = getattr(self, "analogy", None)
