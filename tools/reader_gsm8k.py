@@ -69,9 +69,24 @@ def plan_of(q, a):
         s = f"{v:g}"
         return f"C{s}" if s in CONST_OK else None
     body = a.replace(",", "").replace("$", "")
-    found = re.findall(r"<<([\d.]+)\s*([-+*/])\s*([\d.]+)\s*=\s*([\d.]+)>>", body) or re.findall(r"(?<![\d.])([\d.]+)\s*([-+*/x×÷])\s*([\d.]+)\s*=\s*([\d.]+)", body.split("####")[0])
+    exprs = re.findall(r"<<([^<>=]+)=\s*([\d.]+)>>", body) or re.findall(r"(?<![\d.])((?:[\d.]+\s*[-+*/x×÷]\s*)+[\d.]+)\s*=\s*([\d.]+)", body.split("####")[0])
+    found = []
+    for ex, z in exprs:   # «16-3-4» → шаги слева направо: 16-3=13, 13-4=9 (одинаковые операторы — порядок не важен; смешанные * и + редки, берём как есть)
+        parts = re.findall(r"[\d.]+|[-+*/x×÷]", ex.replace(" ", ""))
+        if len(parts) < 3 or len(parts) % 2 == 0: continue
+        try: cur = float(parts[0])
+        except ValueError: continue
+        ok = True; tmp = []
+        for j in range(1, len(parts), 2):
+            op = {"x": "*", "×": "*", "÷": "/"}.get(parts[j], parts[j])
+            try: nxt = float(parts[j + 1])
+            except ValueError: ok = False; break
+            if op not in "+-*/" or (op == "/" and nxt == 0): ok = False; break
+            try: val = {"+": cur + nxt, "-": cur - nxt, "*": cur * nxt, "/": cur / nxt}[op]
+            except ZeroDivisionError: ok = False; break
+            tmp.append((cur, op, nxt, val)); cur = val
+        if ok and abs(cur - float(z)) < 1e-3: found += tmp
     for x, op, y, z in found:
-        op = {"x": "*", "×": "*", "÷": "/"}.get(op, op)
         x, y, z = float(x), float(y), float(z); rx, ry = ref(x), ref(y)
         if rx is None or ry is None: return None
         plan += [rx, op, ry, ";"]; res.append(z)
@@ -114,7 +129,9 @@ wc = collections.Counter(w for s, p, *_ in TRAIN for w in s + p)
 itos = ["<pad>", "<unk>", "<eos>", "<bos>", "<sep>"] + [w for w, _ in wc.most_common(8000)]; stoi = {w: i for i, w in enumerate(itos)}; V = len(itos)
 PAD, UNK, EOS, BOS, SEP = range(5); enc = lambda ws: [stoi.get(w, UNK) for w in ws]
 PLAN_TOK = {i for w, i in stoi.items() if re.fullmatch(r"[NRC][\d.]+|[-+*/;]|ANS", w)}; NOT_PLAN = [i for i in range(len(itos)) if i not in PLAN_TOK and i != EOS]
-def seq(s, p): x = [BOS] + enc(s)[-160:] + [SEP] + enc(p) + [EOS]; k = x.index(SEP); return x, [0] * (k + 1) + [1] * (len(x) - k - 2)
+def seq(s, p):
+    """маска на позициях 0..T-2 (предсказываем x[1..]); позиция k = SEP должна предсказывать ПЕРВЫЙ токен плана → маска с k (ошибка 24.10: с k+1 — первый токен не обучался, читатель выдавал план без начала)"""
+    x = [BOS] + enc(s)[-160:] + [SEP] + enc(p) + [EOS]; k = x.index(SEP); return x, [0] * k + [1] * (len(x) - k - 1)
 SEQ = [seq(s, p) for s, p, *_ in TRAIN]; log(f"словарь {V}, токенов плана {len(PLAN_TOK)}, макс длина {max(len(x) for x,_ in SEQ)}")
 def batches(seqs, bs, rng):
     idx = rng.permutation(len(seqs))
