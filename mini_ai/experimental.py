@@ -926,6 +926,8 @@ class ExperimentalMind:
                 last["_graded"] = True; conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
                 return dict(question=q0, frame=None, read=[], answer=None, kind="chat", how="russian: unknown word", facts=[], confidence=1.0,
                             text="Хочу запомнить поправку, но не знаю слов: " + ", ".join(unk_a) + ". Скажи «по-русски <слово> значит <english>» — и повтори поправку.", note=None)
+        # поправка — только к ответу ЯДРА про факт; на реплику речи («I don't know how to answer…») «No I don't» — это разговор, не урок (24.10, его скрин)
+        if mc and last and str(last.get("how") or "").startswith(("речь", "small talk", "гибрид", "analogy", "память о тебе")): mc = None
         if mc and last and last.get("question") and not last.get("_graded") and not (pend and pend.get("options")):
             last["_graded"] = True
             right = mc.group("a").strip(" .")
