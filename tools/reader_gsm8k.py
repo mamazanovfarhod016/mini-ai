@@ -102,27 +102,48 @@ def plan_of(q, a):
         for i, n in enumerate(qn):
             if abs(n - v) < 1e-6: return f"N{i}"
         s = f"{v:g}"
-        return f"C{s}" if s in CONST_OK else None
+        if s in CONST_OK: return f"C{s}"
+        for i, n in enumerate(qn):          # 25.10: «25%» в условии, 0.25 в решении → явный шаг N i / 100 (как сделал бы человек)
+            if abs(n / 100 - v) < 1e-9:
+                plan.extend([f"N{i}", "/", "C100", ";"]); res.append(v); return f"R{len(res) - 1}"
+        return None
     body = a.replace(",", "").replace("$", "")
-    exprs = re.findall(r"<<([^<>=]+)=\s*([\d.]+)>>", body) or re.findall(r"(?<![\d.])((?:[\d.]+\s*[-+*/x×÷]\s*)+[\d.]+)\s*=\s*([\d.]+)", body.split("####")[0])
-    found = []
-    for ex, z in exprs:   # «16-3-4» → шаги слева направо: 16-3=13, 13-4=9 (одинаковые операторы — порядок не важен; смешанные * и + редки, берём как есть)
-        parts = re.findall(r"[\d.]+|[-+*/x×÷]", ex.replace(" ", ""))
-        if len(parts) < 3 or len(parts) % 2 == 0: continue
-        try: cur = float(parts[0])
+    # 25.10: выражение → бинарные шаги по ПРАВИЛАМ (скобки, * / раньше + −), а не слева направо; «.3» → 0.3;
+    # кроме пометок <<…>> берём и неразмеченные «a op b = c» из текста решения (по порядку появления, без дублей)
+    body = re.sub(r"(?<![\d.])\.(\d)", r"0.\1", body)
+    exprs = [(m.start(), m.group(1), m.group(2)) for m in re.finditer(r"<<([^<>=]+)=\s*(-?[\d.]+)>>", body)]
+    text = re.sub(r"<<[^<>]*>>", " ", body.split("####")[0])
+    exprs += [(m.start() + 0.5, m.group(1), m.group(2)) for m in re.finditer(r"(?<![\d.\w])([\d.(][\d.\s+\-*/x×÷()]*[-+*/x×÷][\d.\s()]*[\d.)])\s*=\s*(-?[\d.]+)", text)]
+    exprs.sort()
+    import ast as _ast
+    def _steps(expr):
+        e = expr.replace("x", "*").replace("×", "*").replace("÷", "/").strip()
+        if not re.fullmatch(r"[\d.\s+\-*/()]+", e): return None
+        try: tree = _ast.parse(e, mode="eval").body
+        except SyntaxError: return None
+        out = []
+        def walk(n):
+            if isinstance(n, _ast.Constant) and isinstance(n.value, (int, float)): return float(n.value)
+            if isinstance(n, _ast.BinOp) and type(n.op) in (_ast.Add, _ast.Sub, _ast.Mult, _ast.Div):
+                l, r = walk(n.left), walk(n.right)
+                if l is None or r is None: return None
+                op = {_ast.Add: "+", _ast.Sub: "-", _ast.Mult: "*", _ast.Div: "/"}[type(n.op)]
+                if op == "/" and r == 0: return None
+                v = {"+": l + r, "-": l - r, "*": l * r, "/": l / r if r else 0}[op]; out.append((l, op, r, v)); return v
+            return None
+        v = walk(tree)
+        return (out, v) if v is not None and out else None
+    found = []; seen_ = set()
+    for _, ex, z in exprs:
+        r_ = _steps(ex)
+        if not r_: continue
+        st, v = r_
+        try: zf = float(z.rstrip("."))
         except ValueError: continue
-        ok = True; tmp = []
-        for j in range(1, len(parts), 2):
-            op = {"x": "*", "×": "*", "÷": "/"}.get(parts[j], parts[j])
-            try: nxt = float(parts[j + 1])
-            except ValueError: ok = False; break
-            if op not in "+-*/" or (op == "/" and nxt == 0): ok = False; break
-            try: val = {"+": cur + nxt, "-": cur - nxt, "*": cur * nxt, "/": cur / nxt}[op]
-            except ZeroDivisionError: ok = False; break
-            tmp.append((cur, op, nxt, val)); cur = val
-        try: zf = float(z)
-        except ValueError: continue  # z вида «1.35.»
-        if ok and abs(cur - zf) < 1e-3: found += tmp
+        if abs(v - zf) > 1e-3 * max(1, abs(zf)): continue
+        key = tuple(round(x, 6) for t in st for x in (t[0], t[2], t[3]))
+        if key in seen_: continue
+        seen_.add(key); found += st
     for x, op, y, z in found:
         try: x, y, z = float(x), float(y), float(z)
         except ValueError: return None
