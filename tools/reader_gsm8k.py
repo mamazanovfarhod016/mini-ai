@@ -132,7 +132,25 @@ PLAN_TOK = {i for w, i in stoi.items() if re.fullmatch(r"[NRC][\d.]+|[-+*/;]|ANS
 def seq(s, p):
     """маска на позициях 0..T-2 (предсказываем x[1..]); позиция k = SEP должна предсказывать ПЕРВЫЙ токен плана → маска с k (ошибка 24.10: с k+1 — первый токен не обучался, читатель выдавал план без начала)"""
     x = [BOS] + enc(s)[-160:] + [SEP] + enc(p) + [EOS]; k = x.index(SEP); return x, [0] * k + [1] * (len(x) - k - 1)
-SEQ = [seq(s, p) for s, p, *_ in TRAIN]; log(f"словарь {V}, токенов плана {len(PLAN_TOK)}, макс длина {max(len(x) for x,_ in SEQ)}")
+AUG = int(E("AUG", 0 if SMOKE else 12))
+NAMES = "janet tom lily ben anna john mary sarah james mike emma noah olivia liam mia lucas sophia jack ava ethan".split()
+def augment(s, p, rng):
+    """условие со слотами → варианты: (а) имена заменяются другими именами; (б) слоты уже скрывают числа, поэтому план инвариантен
+       к их значениям — числа менять не нужно; (в) случайное выбрасывание 1 служебного слова (the/a/that) как шум. План тот же."""
+    out = []
+    for _ in range(AUG):
+        t = list(s); mp = {}
+        for i, w in enumerate(t):
+            if w in NAMES:
+                if w not in mp: mp[w] = NAMES[int(rng.integers(len(NAMES)))]
+                t[i] = mp[w]
+        drop = [i for i, w in enumerate(t) if w in ("the", "a", "an", "that", "then")]
+        if drop and rng.random() < 0.5: del t[drop[int(rng.integers(len(drop)))]]
+        out.append((t, p))
+    return out
+_rng = np.random.default_rng(1); SEQ = [seq(s, p) for s, p, *_ in TRAIN]
+if AUG: SEQ += [seq(t, p) for s, p, *_ in TRAIN for t, p in augment(s, p, _rng)]
+log(f"словарь {V}, токенов плана {len(PLAN_TOK)}, обучающих последовательностей {len(SEQ)} (аугментация ×{AUG+1}), макс длина {max(len(x) for x,_ in SEQ)}")
 def batches(seqs, bs, rng):
     idx = rng.permutation(len(seqs))
     for i in range(0, len(idx), bs):
@@ -172,23 +190,30 @@ def read(s, max_new=40):
         out.append(itos[nxt])
     return out
 def reader_plan(s, qn): return read(s)
-rng = np.random.default_rng(0); t_start = time.time(); step = 0; CURVE = []; marks = [m for m in (0.17, 0.33, 0.67, 1.0)]; mi = 0; base_lr = 5e-4; warm = 200
+rng = np.random.default_rng(0); t_start = time.time(); step = 0; CURVE = []; marks = [0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0]; mi = 0; base_lr = 5e-4; warm = 200
+best = dict(acc=-1.0, params=None, at=None); DROP = float(E("DROP", 0.2))
 while True:
     for X, M in batches(SEQ, BS, rng):
         frac = (time.time() - t_start) / (MIN * 60); lr = base_lr * min(1.0, (step + 1) / warm) * (0.5 * (1 + math.cos(math.pi * min(1.0, frac))) * 0.9 + 0.1)
-        loss, _ = eng.step(X[:, :-1], X[:, 1:], M, lr, drop=0.1); step += 1
+        loss, _ = eng.step(X[:, :-1], X[:, 1:], M, lr, drop=DROP); step += 1
         if step % 100 == 0: log(f"[читатель] шаг {step} loss {loss:.3f} {(time.time()-t_start)/60:.1f} мин")
         if mi < len(marks) and frac >= marks[mi]:
             a = acc_of(reader_plan, TEST[:N_TEST_CK]); exact = sum(1 for s, p, qn, g, q in TEST[:N_TEST_CK] if p and read(s) == p) / N_TEST_CK
             CURVE.append(dict(frac=marks[mi], min=round((time.time() - t_start) / 60, 1), step=step, loss=loss, acc=a, exact=exact)); log(f"[кривая] {int(marks[mi]*100)}% времени, шаг {step}: ответ верен {a:.1%}, план дословно {exact:.1%} (контроль-память {ctrl:.1%})"); mi += 1
+            if a > best["acc"]: best = dict(acc=a, params={k: v.detach().clone() for k, v in eng.p.items()}, at=step)
         if frac >= 1.0: break
     if (time.time() - t_start) / (MIN * 60) >= 1.0: break
-# ---------------- полный тест + примеры
+# ---------------- полный тест ЛУЧШЕЙ точкой кривой (ранняя остановка по проверочным 300) + примеры
+last_acc = CURVE[-1]["acc"] if CURVE else None
+if best["params"] is not None:
+    with torch.no_grad():
+        for k in eng.p: eng.p[k].copy_(best["params"][k])
+    log(f"[остановка] беру веса шага {best['at']} (проверочные {best['acc']:.1%}; последняя точка {last_acc:.1%})")
 t1 = time.time(); full = acc_of(reader_plan, TEST); ctrl_full = acc_of(nn_plan, TEST); log(f"ИТОГ reader: GSM8K полный тест {len(TEST)}: читатель+исполнение {full:.1%} | контроль-память {ctrl_full:.1%} | GPT-3 без подсказок ≈ 15 % | шагов {step}, {(time.time()-t_start)/60:.0f} мин (тест {time.time()-t1:.0f}s)")
 with open(os.path.join(OUT, "samples.txt"), "w") as f:
     for s, p, qn, g, q in TEST[:40]:
         plan = read(s); v, st = execute(plan, qn)
         f.write(f"Q: {q}\nЧИСЛА: {[f'{x:g}' for x in qn]}\nПЛАН ЧИТАТЕЛЯ: {' '.join(plan)}\nЭТАЛОН ПЛАНА: {' '.join(p) if p else '-'}\nШАГИ: {st if isinstance(st, list) else '— ' + str(st)}\nОТВЕТ: {v if v is None else f'{v:g}'}  ЭТАЛОН: {g:g}  {'✓' if v is not None and abs(v-g)<1e-6 else '✗'}\n\n")
-json.dump(dict(train_plans=len(TRAIN), train_raw=len(TRAIN_RAW), test=len(TEST), V=V, d=D_T, layers=NL, params=n_params(p0), steps=step, minutes=MIN, curve=CURVE, acc_full=full, ctrl_full=ctrl_full, ctrl_ck=ctrl, seconds=time.time() - T0), open(os.path.join(OUT, "metrics.json"), "w"), indent=1, default=float)
+json.dump(dict(train_plans=len(TRAIN), train_raw=len(TRAIN_RAW), train_seqs=len(SEQ), aug=AUG, drop=DROP, test=len(TEST), V=V, d=D_T, layers=NL, params=n_params(p0), steps=step, minutes=MIN, curve=CURVE, best_step=best["at"], best_ck=best["acc"], acc_full=full, ctrl_full=ctrl_full, ctrl_ck=ctrl, seconds=time.time() - T0), open(os.path.join(OUT, "metrics.json"), "w"), indent=1, default=float)
 np.savez_compressed(os.path.join(OUT, "reader.npz"), **eng.params_numpy()); json.dump(dict(cfg=cfg, itos=itos), open(os.path.join(OUT, "reader_vocab.json"), "w"))
 log(f"[done] {time.time()-T0:.0f}s → {OUT}")
