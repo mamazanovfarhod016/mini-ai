@@ -36,6 +36,9 @@ def parquet(url):
         except Exception as e: log("retry", k, type(e).__name__); time.sleep(5)
 tr = parquet(HF.format(split="train")); te = parquet(HF.format(split="test"))
 TRAIN_RAW = list(zip(tr["question"], tr["answer"])); TEST_RAW = list(zip(te["question"], te["answer"]))
+EXTRA = E("EXTRA", "")   # наши новые задачи (data/gsm_new/all.jsonl, 24.10: 1400 от Sonnet-агентов) — тот же формат
+if EXTRA and os.path.exists(EXTRA):
+    ex = [json.loads(l) for l in open(EXTRA) if l.strip()]; TRAIN_RAW += [(d["question"], d["answer"]) for d in ex]; log("добавлено своих задач", len(ex))
 if SMOKE: TRAIN_RAW = TRAIN_RAW[:1500]; TEST_RAW = TEST_RAW[:80]
 if FRAC < 1: TRAIN_RAW = TRAIN_RAW[: int(len(TRAIN_RAW) * FRAC)]
 log("gsm8k train", len(TRAIN_RAW), "test", len(TEST_RAW))
