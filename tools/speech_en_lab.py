@@ -37,7 +37,7 @@ asnp = (lambda a: cp.asnumpy(a)) if GPU else (lambda a: np.asarray(a))
 log("MODE", MODE, "GPU" if GPU else "CPU", "SMOKE" if SMOKE else "FULL")
 E = os.environ.get
 N_RES = int(E("N", 300 if SMOKE else 3000)); D_EMB = int(E("D", 48 if SMOKE else 160)); LAYERS = int(E("LAYERS", 3))
-VOCAB = int(E("VOCAB", 2000 if SMOKE else 12000)); LAM = float(E("LAM", 2.0)); MAXLEN = 48 if SMOKE else 128; BS = 64 if SMOKE else 256
+VOCAB = int(E("VOCAB", 2000 if SMOKE else 12000)); LAM = float(E("LAM", 2.0)); MAXLEN = 48 if SMOKE else 128; BS = 64 if SMOKE else int(E("BS_GRAD", 256))
 STORY_SHARDS = int(E("STORY_SHARDS", 0 if SMOKE else 1)); MAX_STORIES = int(E("MAX_STORIES", 200 if SMOKE else 40000))
 MAX_DIAL = int(E("MAX_DIAL", 3000 if SMOKE else 60000)); TRI_LIMIT = int(E("TRI_LIMIT", 3_000_000))
 
