@@ -218,3 +218,44 @@ One-shot (20 новых предложений, одно обновление): 
 Остались (честно): «потом съел 2» без подлежащего (эллипсис); «черепаха медленнее улитки» при ленте без «медленнее→быстрее» —
 ответила средним (ошибка, не молчание); «любит/знает» — молчит (правильно, примера нет). 3 неверных из 53 — это та цена, о которой
 предупреждал: перенос по смыслу иногда переносит лишнее.
+
+## 24.10 — английская речь без градиента на Kaggle T4 (speech_en_reservoir)
+Резервуар (N=4000, d=160, F=4321) + решение уравнения (без градиента) на 60 000 диалог-пар (DailyDialog+Empathetic+PersonaChat) +
+40 000 историй TinyStories + 7473 задач GSM8K, словарь 12 005 слов (покрытие 0.995), train 11.6M токенов. Владелец сам остановил
+полный прогон на плато 10% данных и прогнал quick-версию — тот же результат, честно показан он.
+
+Кривая (доля данных → top-1 / top-5 / ответ↔эталон vs случайный):
+| доля | токенов | top-1 | top-5 | ответ↔эталон | случайный |
+|---|---|---|---|---|---|
+| 10% | 989,423 | 0.178 | 0.343 | 0.003 | 0.009 |
+| 25% | 2,488,952 | 0.178 | 0.342 | 0.004 | 0.008 |
+| 50% | 4,952,691 | 0.178 | 0.344 | 0.007 | 0.011 |
+| 100% | 9,886,647 | 0.180 | 0.344 | 0.009 | 0.009 |
+
+ИТОГ: top-1 0.180 (контроль — триграмма 0.281) top-5 0.344; целые ответы (reply_gold) 0.00874 vs случайный 0.00569 (×1.54);
+наклон последнего отрезка top-1 на 1M токенов — 0.00037 (практически ноль, кривая top-1 плоская с 10% данных).
+Цепочка GSM8K (50 задач): верных чисел 0, со структурой «= N» 0.
+One-shot (20 новых предложений, одно обновление без пересчёта всего): 0.21 → 0.24 на своих же примерах (0.0 с), но на тесте
+0.180 → 0.180 — почти не переносится.
+
+3 примера ответов как есть (не отобраны, первые из 300):
+1. CTX: «Give me your hand . ( takes Rose's hand ) Close your eyes . Go on . ( Rose closes her eyes ) Step up . Now hold on to the rail . Keep your eyes closed ; don't peek . I'm not .»
+   GOLD: «Step up onto the rail . Hold on . Keep your eyes closed . Trust me ?»
+   OURS: «she needed , competitive remember damp have hiding , there and many . he walked dress nest girl and lesson upon curries . you are quite things never , lily like her said . would lily quacked heard cases .»
+2. CTX: «Yes , that's her . I met her last week at a party . Anyway , you must be from the United States ?»
+   GOLD: «Actually I live in London , but my family lives in Seattle .»
+   OURS: «find ! miss you want to is :»
+3. CTX: «Can you tell me the features of your baggage ? It's a big leather suitcase with my name ' Lily ' on it .»
+   GOLD: «Don't worry . We will look it for you right now .»
+   OURS: «business takes i'd ? time greenie checkout each oyster .»
+
+2 истории (TinyStories, продолжение, как есть):
+1. «once upon a time , there was a little → boy named he . sing wreck little noise what queens hair . counter . work , industry if he could . the lake dog asked he dotted vegan lot for walk to the color to play with snapped minded and best on at the park replace to try . works makes you task . she was very peaceful , and like»
+2. «tom had three apples . he → look ripen the tingle a s hopes she home . finally that she forgot her it's the were and her hair , but bins alvin 6 too the and entitled back , i'm wonderful away anti . big did . know kangaroo says , art on a decide . 25 never between , puzzle . the tractor activities exams from the»
+
+Честный вывод: **не говорит**. Правило («да» если ответ↔эталон ≥ ×1.5 случайного И top-1 ≥ триграммы) не выполнено —
+reply ×1.54 проходит, но top-1 (0.180) ниже триграммы (0.281). Ответы и истории — грамматически рассыпанный набор слов без связной
+мысли, цепочка счёта (GSM8K) 0/50. Упёрлось не в объём данных: кривая top-1/top-5 абсолютно плоская уже с 10% до 100% (10× данных
+дали +0.002 top-1), наклон последнего отрезка ≈0 — значит дело в механизме (линейный резервуар + решение уравнения слишком слаб,
+чтобы обогнать даже триграмму на этом словаре), а не в нехватке текста.
+Файлы: `~/Developer/mini-ai-runs/learning-core/speech_en_quick/` (log.txt, metrics.json, samples.txt, cfg.json, vocab.json, wout.npy).
