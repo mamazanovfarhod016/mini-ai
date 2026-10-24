@@ -51,10 +51,11 @@ def parquet(url):
     b = fetch(url)
     if b is None: return None
     import pyarrow.parquet as pq; return pq.read_table(io.BytesIO(b)).to_pandas()
-DIAL, TEXT, STORIES = [], [], []
+DIAL, TEXT, STORIES, DID = [], [], [], []
+_did = [0]
 def add_dialog(turns, src):
-    turns = [t.strip() for t in turns if t and t.strip()]
-    for i in range(1, len(turns)): DIAL.append((" ".join(turns[max(0, i - 2):i]), turns[i], src))
+    turns = [t.strip() for t in turns if t and t.strip()]; _did[0] += 1
+    for i in range(1, len(turns)): DIAL.append((" ".join(turns[max(0, i - 2):i]), turns[i], src)); DID.append(_did[0])
 t = parquet(HF.format(repo="li2017dailydialog/daily_dialog", cfg="default", split="train", i=0))
 if t is not None:
     for d in t["dialog"]: add_dialog(list(d), "dailydialog")
@@ -67,7 +68,7 @@ if t is not None:
     for h in t["history"]:
         h = list(h); k = tuple(h[:3])
         if k not in seen: seen.add(k); add_dialog(h, "personachat")
-rng = np.random.default_rng(0); rng.shuffle(DIAL); DIAL = DIAL[:MAX_DIAL]; log("диалог-пар", len(DIAL))
+rng = np.random.default_rng(0); _perm = rng.permutation(len(DIAL)); DIAL = [DIAL[i] for i in _perm][:MAX_DIAL]; DID = [DID[i] for i in _perm][:MAX_DIAL]; log("диалог-пар", len(DIAL), "диалогов", len(set(DID)))
 GSM, GSM_TEST = [], []
 t = parquet(HF.format(repo="openai/gsm8k", cfg="main", split="train", i=0))
 if t is not None:
@@ -85,7 +86,13 @@ for i in range(STORY_SHARDS):
 if SMOKE and not STORIES: STORIES = ["Tom had three apples. He ate one, so he had two apples left. Then he gave one to Ann. Ann was happy."] * 30; TEXT += [(s, "smoke") for s in STORIES]
 log("тексты", len(TEXT), "историй", len(STORIES), "gsm8k", len(GSM))
 def toks(s): return re.findall(r"[a-z]+(?:'[a-z]+)?|\d+(?:\.\d+)?|[.,!?;:]", s.lower())
-n_test = max(200, len(DIAL) // 50); TEST_D, TRAIN_D = DIAL[:n_test], DIAL[n_test:]
+# разбивка ПО ДИАЛОГАМ (утечка 24.10: при разбивке по парам соседняя реплика того же разговора лежала в памяти → 44/300 «ответов» были куском контекста)
+SPLIT_BY_DIALOG = E("SPLIT", "dialog") == "dialog"
+if SPLIT_BY_DIALOG:
+    TEST_D = [d for d, i in zip(DIAL, DID) if i % 40 == 0][:400]; TRAIN_D = [d for d, i in zip(DIAL, DID) if i % 40 != 0]
+else:
+    n_test = max(200, len(DIAL) // 50); TEST_D, TRAIN_D = DIAL[:n_test], DIAL[n_test:]
+log("test пар", len(TEST_D), "train пар", len(TRAIN_D), "разбивка", "по диалогам" if SPLIT_BY_DIALOG else "по парам")
 cnt = collections.Counter()
 for c, r, _ in TRAIN_D: cnt.update(toks(c)); cnt.update(toks(r))
 for s, _ in TEXT: cnt.update(toks(s))
@@ -94,11 +101,13 @@ PAD, UNK, EOS, BOS, SEP = 0, 1, 2, 3, 4; enc = lambda ws: [stoi.get(w, UNK) for 
 STOP = set("the a an to of and i you it is in that was he she my me we they for on with be have do are this at but not so as his her him there what how about your just can will would like really".split())
 def content(s): return [w for w in toks(s) if w not in STOP and len(w) > 2]
 def judge_pairs(outs, seed=0):
-    """целые ответы: доля содержательных слов ответа, совпавших с эталоном, vs со случайным эталоном"""
-    r = np.random.default_rng(seed); g = rr = n = 0
+    """целые ответы: доля содержательных слов ответа, совпавших с эталоном, vs со случайным эталоном; echo = ответ лежит внутри контекста"""
+    r = np.random.default_rng(seed); g = rr = n = 0; echo = 0
     for c, gold, a in outs:
         A = set(content(a)); G = set(content(gold)); R = set(content(TEST_D[int(r.integers(len(TEST_D)))][1]))
         if A: g += len(A & G) / len(A); rr += len(A & R) / len(A); n += 1
+        echo += (a.strip() != "" and a.strip() in c)
+    judge_pairs.echo = echo
     return g / max(1, n), rr / max(1, n)
 def save(metrics, outs, chain, stories):
     with open(os.path.join(OUT, "samples.txt"), "w") as f:
@@ -302,6 +311,108 @@ elif MODE == "grad":
     log(f"ИТОГ grad: top-1 {a1:.3f} (триграмма {tri_acc:.3f}) top-5 {a5:.3f}; ответы {gj:.3f} vs случ {rj:.3f} (×{gj/max(rj,1e-9):.1f}); GSM8K верных {right}/50, структура {steps}; шагов {step}, токенов {seen:,}, {(time.time()-t_start)/60:.0f} мин")
     np.savez_compressed(os.path.join(OUT, "grad_model.npz"), **eng.params_numpy()); json.dump(cfg, open(os.path.join(OUT, "grad_cfg.json"), "w")); json.dump(itos, open(os.path.join(OUT, "vocab.json"), "w"))
     save(dict(mode="grad", d=D_T, layers=NL, params=n_params(p0), V=V, tokens=NTOK, steps=step, seen=seen, trigram=tri_acc, top1=a1, top5=a5, reply_gold=gj, reply_rand=rj, curve=CURVE, gsm_right=right, gsm_steps=steps), outs, chain, stories)
+
+# ================================================================ MODE=hybrid
+elif MODE == "hybrid":
+    """ГИБРИД (24.10, его «скрестим лучшее»): смысл слов формулой (PPMI→SVD) + память случаев
+       + резервуар как ПРИЗНАКИ контекста (слои из deep) + ridge-решение «контекст → СМЫСЛ ОТВЕТА» (выученное отображение,
+       не поиск по похожести контекста) + СБОРКА ответа: каркас случая, слоты (имена/числа/содержательные слова) заменяются
+       по смыслу из нового контекста. Линейки: ответы vs случайный (разбивка по диалогам), echo, доля НОВЫХ ответов (не копия
+       ни одного ответа памяти), сравнение «поиск по контексту» vs «по предсказанному смыслу ответа»."""
+    import scipy.sparse as sp
+    from scipy.sparse.linalg import svds
+    WIN = 4; DM = 48 if SMOKE else 200
+    co = collections.Counter(); wc = collections.Counter()
+    corpus = [toks(c) + toks(r) for c, r, _ in TRAIN_D] + [toks(s) for s, _ in TEXT]
+    for ws in corpus:
+        ids = [stoi.get(w, UNK) for w in ws]
+        for i, a in enumerate(ids):
+            if a == UNK: continue
+            wc[a] += 1
+            for j in range(max(0, i - WIN), min(len(ids), i + WIN + 1)):
+                if j != i and ids[j] != UNK: co[(a, ids[j])] += 1
+    tot = sum(co.values()); r_, c_, v_ = zip(*[(a, b, max(0.0, math.log(n * tot / (wc[a] * wc[b])))) for (a, b), n in co.items()])
+    U, S, _ = svds(sp.csr_matrix((v_, (r_, c_)), shape=(V, V), dtype=np.float32), k=DM); WV = (U * np.sqrt(S)).astype(np.float32)
+    WV /= (np.linalg.norm(WV, axis=1, keepdims=True) + 1e-6); WV[UNK] = 0; WVg = xp.asarray(WV)
+    idf = {w: math.log(len(corpus) / (1 + n)) for w, n in collections.Counter(w for ws in corpus for w in set(ws)).items()}
+    def vec(text):
+        ws = [w for w in toks(text) if w not in STOP and w in stoi]
+        if not ws: return np.zeros(DM, np.float32)
+        v = sum(idf.get(w, 1.0) * WV[stoi[w]] for w in ws); return v / (np.linalg.norm(v) + 1e-6)
+    log(f"[смысл] PPMI→SVD d={DM}; happy →", [itos[j] for j in np.argsort(-(WV @ WV[stoi['happy']]))[1:5]] if 'happy' in stoi else '-')
+    # ---- резервуар как признаки контекста: читает последнюю реплику контекста словами-смыслами, конечное состояние = признак
+    NR = 300 if SMOKE else 1500; rr_ = np.random.default_rng(1)
+    Win = xp.asarray((rr_.normal(0, 1, (DM, NR)) * 0.5).astype(np.float32)); Wr = rr_.normal(0, 1, (NR, NR)).astype(np.float32); Wr *= (rr_.random((NR, NR)) < 10 / NR)
+    vv = rr_.normal(size=NR).astype(np.float32)
+    for _ in range(60): vv = Wr @ vv; vv /= (np.linalg.norm(vv) + 1e-9)
+    Wr = xp.asarray(Wr * (0.9 / (np.linalg.norm(Wr @ vv) + 1e-9)))
+    def ctx_feats(texts):
+        """[средний смысл всего контекста | средний смысл последней реплики | состояние резервуара по последней реплике | 1]"""
+        out = np.zeros((len(texts), DM * 2 + NR + 1), np.float32)
+        for i, t in enumerate(texts):
+            last = re.split(r"(?<=[.!?])\s+", t.strip())[-1] if t.strip() else t
+            ids = [stoi[w] for w in toks(last) if w in stoi and w not in STOP][-32:]
+            h = xp.zeros((1, NR), xp.float32)
+            for w in ids: h = xp.tanh(WVg[w][None, :] @ Win + h @ Wr)
+            out[i, :DM] = vec(t); out[i, DM:2 * DM] = vec(last); out[i, 2 * DM:2 * DM + NR] = asnp(h)[0]; out[i, -1] = 1.0
+        return out
+    t1 = time.time(); PHI = ctx_feats([c for c, _, _ in TRAIN_D]); Y = np.stack([vec(r) for _, r, _ in TRAIN_D]); log(f"признаки контекста {PHI.shape} за {time.time()-t1:.0f}s")
+    Pg = xp.asarray(PHI); A = Pg.T.astype(xp.float64) @ Pg.astype(xp.float64); B = Pg.T.astype(xp.float64) @ xp.asarray(Y).astype(xp.float64)
+    Wmap = asnp(xp.linalg.solve(A + 5.0 * xp.eye(A.shape[0], dtype=xp.float64), B)).astype(np.float32)     # контекст-признаки → смысл ответа (одна формула)
+    RV = np.stack([vec(r) for _, r, _ in TRAIN_D]); RVg = xp.asarray(RV); CV = PHI[:, :DM]; CVg = xp.asarray(CV)
+    PHI_T = ctx_feats([c for c, _, _ in TEST_D]); PRED = PHI_T @ Wmap; PRED /= (np.linalg.norm(PRED, axis=1, keepdims=True) + 1e-6)
+    gold_v = np.stack([vec(g) for _, g, _ in TEST_D]); rnd = gold_v[np.random.default_rng(0).permutation(len(gold_v))]
+    log(f"[отображение] cos(предсказанный смысл ответа, настоящий) {np.mean(np.sum(PRED*gold_v,1)):.3f} vs случайный {np.mean(np.sum(PRED*rnd,1)):.3f} | по контексту: {np.mean(np.sum(PHI_T[:, :DM]*gold_v,1)):.3f}")
+    NAME_RX = re.compile(r"\b([A-Z][a-z]{2,})\b"); NUM_RX = re.compile(r"\b\d+(?:\.\d+)?\b")
+    TRAIN_REPLIES = set(r.strip() for _, r, _ in TRAIN_D)
+    def compose(reply, case_ctx, new_ctx, pred_v):
+        """1) имена/числа по позиции; 2) содержательное слово каркаса, которое было и в контексте случая, но не в новом →
+           ближайшее по смыслу слово НОВОГО контекста (слот, как [U:word] в analogy.py)."""
+        SENT_START = {"once", "the", "one", "then", "they", "she", "he", "it", "but", "and", "when", "after", "there", "this", "that", "his", "her", "you", "what", "how", "why", "where", "yes", "oh", "well", "okay", "i'm", "it's", "that's"}
+        name = lambda m: m.lower() not in SENT_START and m.lower() not in STOP
+        for rx in (NAME_RX, NUM_RX):
+            old = [m for m in rx.findall(case_ctx) if m in reply and name(m)]; new = [m for m in rx.findall(new_ctx) if name(m)]
+            for o, n in zip(old, new): reply = re.sub(r"\b" + re.escape(o) + r"\b", n, reply)
+        cw = [w for w in toks(case_ctx) if w not in STOP and w in stoi]; nw = [w for w in toks(new_ctx) if w not in STOP and w in stoi and len(w) > 2]
+        if not nw: return reply
+        NWV = WV[[stoi[w] for w in nw]]
+        out = []
+        for tok in re.findall(r"[A-Za-z']+|[^A-Za-z']+", reply):
+            w = tok.lower()
+            if w in stoi and w not in STOP and len(w) > 2 and w in cw and w not in nw:
+                sims = NWV @ WV[stoi[w]]; j = int(np.argmax(sims))
+                if sims[j] > 0.35: tok = nw[j] if tok.islower() else nw[j].capitalize()
+            out.append(tok)
+        return "".join(out)
+    used = collections.Counter()
+    def answer(i, by="pred", k=5, do_compose=True):
+        c = TEST_D[i][0]; q = PRED[i] if by == "pred" else PHI_T[i, :DM]
+        s = asnp((RVg if by == "pred" else CVg) @ xp.asarray(q)); top = np.argsort(-s)[:k]
+        best = min(top, key=lambda j: (used[(by, j)], -s[j])); used[(by, best)] += 1
+        rep = TRAIN_D[best][1]; return (compose(rep, TRAIN_D[best][0], c, PRED[i]) if do_compose else rep), float(s[best])
+    res = {}
+    for name, by, comp in (("поиск по контексту", "ctx", False), ("по смыслу ответа", "pred", False), ("по смыслу ответа + сборка", "pred", True)):
+        outs = [(c, g, answer(i, by, do_compose=comp)[0]) for i, (c, g, _) in enumerate(TEST_D[:300])]; gj, rj = judge_pairs(outs)
+        novel = sum(1 for _, _, a in outs if a.strip() not in TRAIN_REPLIES); res[name] = dict(gold=gj, rand=rj, x=gj / max(rj, 1e-9), echo=judge_pairs.echo, novel=novel, outs=outs)
+        log(f"[{name}] ответ↔эталон {gj:.3f} vs случайный {rj:.3f} (×{gj/max(rj,1e-9):.1f}); echo {judge_pairs.echo}/300; новых ответов (нет в памяти) {novel}/300")
+    outs = res["по смыслу ответа + сборка"]["outs"]
+    SENTS, NEXT = [], []
+    for st in STORIES[:20000]:
+        ss = [x.strip() for x in re.split(r"(?<=[.!?])\s+", st) if x.strip()]
+        for i in range(len(ss) - 1): SENTS.append(ss[i]); NEXT.append(ss[i + 1])
+    stories = []
+    if SENTS:
+        SVg = xp.asarray(np.stack([vec(x) for x in SENTS]))
+        for p in STORY_PROMPTS:
+            out = []; cur = p; seen = set()
+            for _ in range(5):
+                s = asnp(SVg @ xp.asarray(vec(cur))); i = next(j for j in np.argsort(-s)[:30] if j not in seen); seen.add(i)
+                nxt = compose(NEXT[i], SENTS[i], p, None); out.append(nxt); cur = nxt
+            stories.append((p, " ".join(out)))
+        for p, st in stories: log(f"[история] {p} → {st[:220]}")
+    chain = []
+    log(f"ИТОГ hybrid: поиск ×{res['поиск по контексту']['x']:.1f} → смысл ответа ×{res['по смыслу ответа']['x']:.1f} → +сборка ×{res['по смыслу ответа + сборка']['x']:.1f}; новых ответов {res['по смыслу ответа + сборка']['novel']}/300; echo {res['по смыслу ответа + сборка']['echo']}")
+    save(dict(mode="hybrid", V=V, dm=DM, cases=len(TRAIN_D), split="dialog" if SPLIT_BY_DIALOG else "pairs", variants={k: {kk: vv for kk, vv in v.items() if kk != "outs"} for k, v in res.items()}), outs, chain, stories)
 
 # ================================================================ MODE=cases
 elif MODE == "cases":
