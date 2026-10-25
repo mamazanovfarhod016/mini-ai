@@ -57,6 +57,10 @@ for name in HF_SETS:
         elif name == "orca":
             df = _hf_first_shard("microsoft/orca-math-word-problems-200k")
             EXTRA_HF += [(q, x) for q, a in zip(df["question"], df["answer"]) if (x := _with_hash(a))]
+        elif name == "tinygsm":   # 25.10: TinyGSM (12M задач, решения-программы) → шаги <<a op b = c>> (tools/tinygsm_conv.py); один шард ≈ 700k
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)))); from tinygsm_conv import tinygsm_to_answer
+            df = _hf_first_shard("TinyGSM/TinyGSM"); n_tg = int(E("TG_N", 400000))
+            EXTRA_HF += [(q, x) for q, c in zip(df["question"][:n_tg], df["code"][:n_tg]) if (x := tinygsm_to_answer(c))]
         log("открытый набор", name, "→ всего внешних", len(EXTRA_HF))
     except Exception as e: log("набор", name, "НЕ загрузился:", type(e).__name__, str(e)[:120])
 EXTRA = E("EXTRA", "")   # наши новые задачи (data/gsm_new/all.jsonl, 24.10: 1400 от Sonnet-агентов) — тот же формат
@@ -228,7 +232,8 @@ def batches(seqs, bs, rng):
 # ---------------- контроль без градиента: ближайшая по словам задача → её план на новых числах
 idf = {w: math.log(len(TRAIN) / (1 + n)) for w, n in collections.Counter(w for s, *_ in TRAIN for w in set(s)).items()}
 def bow(s): return {w: idf.get(w, 1.0) for w in set(s) if w not in ("the", "a", "an", "of", "to", "and", "in", "is", "are", "how", "many", "much", "does", "did", "do", "he", "she", "it", "they", "his", "her", ".", ",", "?")}
-TB = [bow(s) for s, *_ in TRAIN]
+CTRL_MAX = int(E("CTRL_MAX", 150000))   # 25.10: память контроля ограничена (иначе 500k задач × 1 600 вопросов = часы); сравнимо с прошлыми (133k)
+TB = [bow(s) for s, *_ in TRAIN[:CTRL_MAX]]
 def nn_plan(s, qn):
     b = bow(s); best = None; bs_ = -1
     for i, tb in enumerate(TB):
@@ -257,6 +262,27 @@ def read(s, max_new=40):
         out.append(itos[nxt])
     return out
 def reader_plan(s, qn): return read(s)
+# ---------------- 25.10 ПРЕДОБУЧЕНИЕ ЯЗЫКУ (как GPT): сначала просто английский текст (TinyStories), потом задачи. PRE_MIN минут.
+PRE = E("PRE", ""); PRE_MIN = float(E("PRE_MIN", 0)); PRE_INFO = None
+if PRE == "tinystories" and PRE_MIN > 0:
+    try:
+        st = _hf_first_shard("roneneldan/TinyStories"); stories = [x for x in st["text"][: int(E("PRE_N", 400000))] if isinstance(x, str)]
+        PSEQ = []
+        for txt in stories:
+            ids = [BOS] + enc(slot_tokens(txt))[:191]
+            if len(ids) > 16: PSEQ.append((ids, [1] * (len(ids) - 1)))
+        unk = sum(x == UNK for ids, _ in PSEQ[:2000] for x in ids) / max(1, sum(len(ids) for ids, _ in PSEQ[:2000]))
+        log(f"[предобучение] TinyStories: {len(PSEQ)} рассказов, доля неизвестных слов {unk:.1%}, {PRE_MIN:g} мин")
+        rng_p = np.random.default_rng(7); t_p = time.time(); ps = 0; done = False
+        while not done:
+            for X, M in batches(PSEQ, BS, rng_p):
+                fr = (time.time() - t_p) / (PRE_MIN * 60); lr = base_lr_p = 5e-4 * min(1.0, (ps + 1) / 200) * (0.5 * (1 + math.cos(math.pi * min(1.0, fr))) * 0.9 + 0.1)
+                loss, _ = eng.step(X[:, :-1], X[:, 1:], M, lr, drop=0.1); ps += 1
+                if ps % 500 == 0: log(f"[предобучение] шаг {ps} loss {loss:.3f} {(time.time()-t_p)/60:.1f} мин")
+                if fr >= 1.0: done = True; break
+        PRE_INFO = dict(stories=len(PSEQ), steps=ps, loss=float(loss), unk=unk); log(f"[предобучение] готово: шагов {ps}, loss {loss:.3f}")
+        del PSEQ, stories, st
+    except Exception as e: log("[предобучение] НЕ вышло:", type(e).__name__, str(e)[:150])
 rng = np.random.default_rng(0); t_start = time.time(); step = 0; CURVE = []; marks = [0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0]; mi = 0; base_lr = 5e-4; warm = 200
 best = dict(acc=-1.0, params=None, at=None); DROP = float(E("DROP", 0.2))
 while True:
@@ -277,10 +303,38 @@ if best["params"] is not None:
         for k in eng.p: eng.p[k].copy_(best["params"][k])
     log(f"[остановка] беру веса шага {best['at']} (проверочные {best['acc']:.1%}; последняя точка {last_acc:.1%})")
 t1 = time.time(); full = acc_of(reader_plan, TEST); ctrl_full = acc_of(nn_plan, TEST); log(f"ИТОГ reader: GSM8K полный тест {len(TEST)}: читатель+исполнение {full:.1%} | контроль-память {ctrl_full:.1%} | GPT-3 без подсказок ≈ 15 % | шагов {step}, {(time.time()-t_start)/60:.0f} мин (тест {time.time()-t1:.0f}s)")
+# ---------------- 25.10 ГОЛОСОВАНИЕ (без градиента, те же веса): K разных планов (сэмплирование), каждый исполняется формулой, берём частый ответ.
+VOTE = int(E("VOTE", 0)); VOTE_INFO = None
+if VOTE > 1:
+    TEMP = float(E("TEMP", 0.7))
+    @torch.no_grad()
+    def sample_plans(s, K, max_new=40):
+        ids = torch.tensor([[BOS] + enc(s)[-160:] + [SEP]] * K, dtype=torch.long, device=eng.dev); outs = [[] for _ in range(K)]; alive = [True] * K
+        ban = torch.tensor([PAD, BOS, SEP, UNK] + NOT_PLAN, device=eng.dev)
+        for _ in range(max_new):
+            lg = tforward(eng.p, cfg, ids)[:, -1].float(); lg[:, ban] = -1e9
+            nxt = torch.multinomial(torch.softmax(lg / TEMP, -1), 1); ids = torch.cat([ids, nxt], 1)
+            for k, t in enumerate(nxt[:, 0].tolist()):
+                if not alive[k]: continue
+                if t == EOS: alive[k] = False
+                else: outs[k].append(itos[t])
+            if not any(alive): break
+        return outs
+    t2 = time.time(); okv = oracle = 0
+    for s, p, qn, g, q in TEST:
+        votes = collections.Counter(); hit = False
+        for pl in [read(s)] + sample_plans(s, VOTE - 1):
+            v, _ = execute(pl, qn)
+            if v is None: continue
+            votes[round(v, 6)] += 1; hit = hit or (g is not None and abs(v - g) < 1e-6)
+        if votes and g is not None and abs(votes.most_common(1)[0][0] - g) < 1e-6: okv += 1
+        oracle += hit
+    VOTE_INFO = dict(k=VOTE, temp=TEMP, acc=okv / len(TEST), oracle=oracle / len(TEST), seconds=time.time() - t2)
+    log(f"ИТОГ голосование ×{VOTE} (t={TEMP}): {okv/len(TEST):.1%} (жадно {full:.1%}); хоть один из {VOTE} планов верен: {oracle/len(TEST):.1%} ({time.time()-t2:.0f}s)")
 with open(os.path.join(OUT, "samples.txt"), "w") as f:
     for s, p, qn, g, q in TEST[:40]:
         plan = read(s); v, st = execute(plan, qn)
         f.write(f"Q: {q}\nЧИСЛА: {[f'{x:g}' for x in qn]}\nПЛАН ЧИТАТЕЛЯ: {' '.join(plan)}\nЭТАЛОН ПЛАНА: {' '.join(p) if p else '-'}\nШАГИ: {st if isinstance(st, list) else '— ' + str(st)}\nОТВЕТ: {v if v is None else f'{v:g}'}  ЭТАЛОН: {g:g}  {'✓' if v is not None and abs(v-g)<1e-6 else '✗'}\n\n")
-json.dump(dict(train_plans=len(TRAIN), train_raw=len(TRAIN_RAW), train_seqs=len(SEQ), aug=AUG, drop=DROP, test=len(TEST), V=V, d=D_T, layers=NL, params=n_params(p0), steps=step, minutes=MIN, curve=CURVE, best_step=best["at"], best_ck=best["acc"], acc_full=full, ctrl_full=ctrl_full, ctrl_ck=ctrl, seconds=time.time() - T0), open(os.path.join(OUT, "metrics.json"), "w"), indent=1, default=float)
+json.dump(dict(train_plans=len(TRAIN), train_raw=len(TRAIN_RAW), train_seqs=len(SEQ), aug=AUG, drop=DROP, test=len(TEST), V=V, d=D_T, layers=NL, params=n_params(p0), steps=step, minutes=MIN, curve=CURVE, best_step=best["at"], best_ck=best["acc"], acc_full=full, ctrl_full=ctrl_full, ctrl_ck=ctrl, pre=PRE_INFO, vote=VOTE_INFO, seconds=time.time() - T0), open(os.path.join(OUT, "metrics.json"), "w"), indent=1, default=float)
 np.savez_compressed(os.path.join(OUT, "reader.npz"), **eng.params_numpy()); json.dump(dict(cfg=cfg, itos=itos), open(os.path.join(OUT, "reader_vocab.json"), "w"))
 log(f"[done] {time.time()-T0:.0f}s → {OUT}")
