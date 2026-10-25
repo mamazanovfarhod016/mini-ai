@@ -1036,7 +1036,9 @@ class ExperimentalMind:
                 C.correct(inp0, out0, mb.group("b").strip(), cid); C.save()
                 conv.push(q=q0, frame=None, entity=None, answer=None, kind="chat", pending=None, key=None)
                 return dict(question=q0, frame=None, read=[], answer=None, kind="learned", how="речь: исправление", facts=[], confidence=1.0, text="Got it — I'll say it that way next time.", note=None)
-            factual = _is_question(q0) and re.search(r"\b(?:what|which|who|where|when|why|how many|how much|how does|how do|how did|name)\b", q0.lower()) and not re.search(r"\b(?:my|me|i|am i|do i|you|your)\b", q0.lower())
+            # «I» внутри названия («I Dig Love», «I Love Lucy») — не местоимение; местоимение = I + строчное слово
+            personal = re.search(r"\b(?:you|your|yours|me|my|mine)\b", q0.lower()) or re.search(r"(?:^|\s)I\b(?!\s+[A-Z0-9])", q0)
+            factual = _is_question(q0) and re.search(r"\b(?:what|which|who|whom|whose|where|when|why|how many|how much|how does|how do|how did|name)\b", q0.lower()) and not personal
             if not factual and not re.match(r"^(?:example:|learn |выучи|/)", q0.lower()):
                 cr = C.respond(q0)
                 # 24.10: реплики из датасетов (DailyDialog) выключены и для английского — как для русского 23.10 («не надо такую говорилку»);

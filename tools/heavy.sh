@@ -20,7 +20,7 @@ pid=$!
 while kill -0 "$pid" 2>/dev/null; do
   rss=$(awk '/VmRSS/{print int($2/1024)}' /proc/$pid/status 2>/dev/null || echo 0)
   av=$(free -m | awk 'NR==2{print $7}')
-  if [ "${rss:-0}" -gt 3200 ] || [ "$av" -lt 1200 ]; then
+  if [ "${rss:-0}" -gt "${HEAVY_RSS_MB:-3200}" ] || [ "$av" -lt 1200 ]; then
     echo "$(date -u +%FT%TZ) WATCHDOG KILL: rss=${rss}MB avail=${av}MB" >> "$LOG"; kill -9 "$pid" 2>/dev/null; break
   fi
   sleep 2
