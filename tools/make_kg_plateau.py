@@ -11,7 +11,11 @@ CFG = {"vote": dict(VOTE="20"),
        "long": dict(HF_SETS="metamath,orca,tinygsm", TG_N="700000", PRE="tinystories", PRE_MIN="30", MIN="150", VOTE="10"),
        "long-big": dict(HF_SETS="metamath,orca,tinygsm", TG_N="700000", PRE="tinystories", PRE_MIN="30", MIN="150", VOTE="10", D_T="256", NL="6", NH="8", BS="48"),
        # 25.10: петля самоулучшения (STaR) на рецепте tgsm (8,7 %): 3 круга × 4000 новых вопросов TinyGSM без ответов, 8 планов, согласие ≥50 %
+       # 25.10 день: петля на СИЛЬНОМ читателе (25,1 %, вывод ядра reader-long) со СТРОГИМ отбором: ≥6 из 8 планов согласны;
+       # без обучения с нуля (MIN=0), пул — новый шард TinyGSM №3, 3 круга × 5000
+       "star2": dict(HF_SETS="metamath,orca,tinygsm", TG_N="700000", MIN="0", INIT="/kaggle/input", VOTE="10", STAR="3", STAR_POOL="15000", STAR_SHARD="3", STAR_PER="5000", STAR_K="8", STAR_FT="10", STAR_AGREE="0.75"),
        "star": dict(HF_SETS="metamath,orca,tinygsm", TG_N="400000", VOTE="10", STAR="3", STAR_POOL="12000", STAR_PER="4000", STAR_K="8", STAR_FT="8", STAR_AGREE="0.5")}
+SOURCES = {"star2": ["mamazanovfarhod016/mini-ai-reader-long"]}
 only = sys.argv[1:] or ["vote", "pre", "tgsm"]
 buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode="w:gz") as t:
@@ -29,6 +33,6 @@ os.environ.update({env!r})
 sys.argv = ["tools/reader_gsm8k.py"]; runpy.run_path("tools/reader_gsm8k.py", run_name="__main__")
 '''
     open(f"{d}/run.py", "w").write(code)
-    json.dump({"id": f"mamazanovfarhod016/mini-ai-reader-{tag}", "title": f"mini-ai-reader-{tag}", "code_file": "run.py", "language": "python", "kernel_type": "script", "is_private": True, "enable_gpu": True, "enable_internet": True, "machine_shape": "NvidiaTeslaT4", "dataset_sources": [], "competition_sources": [], "kernel_sources": []}, open(f"{d}/kernel-metadata.json", "w"))
+    json.dump({"id": f"mamazanovfarhod016/mini-ai-reader-{tag}", "title": f"mini-ai-reader-{tag}", "code_file": "run.py", "language": "python", "kernel_type": "script", "is_private": True, "enable_gpu": True, "enable_internet": True, "machine_shape": "NvidiaTeslaT4", "dataset_sources": [], "competition_sources": [], "kernel_sources": SOURCES.get(tag, [])}, open(f"{d}/kernel-metadata.json", "w"))
     print(tag, d)
 print(len(b) // 1024, "KB")

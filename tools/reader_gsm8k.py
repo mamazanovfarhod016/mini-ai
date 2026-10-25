@@ -61,8 +61,14 @@ for name in HF_SETS:
             sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)))); from tinygsm_conv import tinygsm_to_answer
             df = (__import__("pandas").read_parquet(E("TG_LOCAL")) if E("TG_LOCAL") else _hf_first_shard("TinyGSM/TinyGSM")); n_tg = int(E("TG_N", 400000))
             EXTRA_HF += [(q, x) for q, c in zip(df["question"][:n_tg], df["code"][:n_tg]) if (x := tinygsm_to_answer(c))]
-            n_pool = int(E("STAR_POOL", 0))
-            if n_pool: STAR_RAW = [(q, tinygsm_to_answer(c)) for q, c in zip(df["question"][n_tg:n_tg + n_pool], df["code"][n_tg:n_tg + n_pool])]
+            n_pool = int(E("STAR_POOL", 0)); sh = int(E("STAR_SHARD", 0))
+            if n_pool and sh:
+                lst_ = json.loads(urllib.request.urlopen(urllib.request.Request("https://huggingface.co/api/datasets/TinyGSM/TinyGSM/parquet", headers={"User-Agent": "mini-ai"}), timeout=60).read())
+                import pyarrow.parquet as _pq
+                df2 = _pq.read_table(io.BytesIO(urllib.request.urlopen(urllib.request.Request(lst_["default"]["train"][sh], headers={"User-Agent": "mini-ai"}), timeout=600).read())).to_pandas()
+                STAR_RAW = [(q, tinygsm_to_answer(c)) for q, c in zip(df2["question"][:n_pool], df2["code"][:n_pool])]; del df2
+                log(f"[петля] пул из шарда TinyGSM №{sh}: {len(STAR_RAW)} вопросов (ответы скрыты от читателя)")
+            elif n_pool: STAR_RAW = [(q, tinygsm_to_answer(c)) for q, c in zip(df["question"][n_tg:n_tg + n_pool], df["code"][n_tg:n_tg + n_pool])]
         log("открытый набор", name, "→ всего внешних", len(EXTRA_HF))
     except Exception as e: log("набор", name, "НЕ загрузился:", type(e).__name__, str(e)[:120])
 EXTRA = E("EXTRA", "")   # наши новые задачи (data/gsm_new/all.jsonl, 24.10: 1400 от Sonnet-агентов) — тот же формат
@@ -200,6 +206,12 @@ ok_exec = sum(1 for s, p, qn, g, _ in TRAIN if execute(p, qn)[0] is not None and
 log(f"планов извлечено {len(TRAIN)}/{len(TRAIN_RAW)} ({len(TRAIN)/len(TRAIN_RAW):.0%}); исполняются верно {ok_exec}/{len(TRAIN)}; тест с планом {sum(1 for t in TEST if t[1])}/{len(TEST)}")
 wc = collections.Counter(w for s, p, *_ in TRAIN for w in s + p)
 itos = ["<pad>", "<unk>", "<eos>", "<bos>", "<sep>"] + [w for w, _ in wc.most_common(8000)]; stoi = {w: i for i, w in enumerate(itos)}; V = len(itos)
+# 25.10: INIT = папка с reader.npz + reader_vocab.json (на Kaggle — вывод другого ядра в /kaggle/input/…) → берём ЕГО словарь и веса
+INIT = E("INIT", "")
+if INIT and not os.path.exists(os.path.join(INIT, "reader_vocab.json")):
+    import glob as _g; _c = _g.glob(os.path.join(INIT, "**", "reader_vocab.json"), recursive=True); INIT = os.path.dirname(_c[0]) if _c else ""
+INIT_VOC = json.load(open(os.path.join(INIT, "reader_vocab.json"))) if INIT else None
+if INIT_VOC: itos = INIT_VOC["itos"]; stoi = {w: i for i, w in enumerate(itos)}; V = len(itos); log(f"[INIT] словарь и веса из {INIT} (V={V})")
 PAD, UNK, EOS, BOS, SEP = range(5); enc = lambda ws: [stoi.get(w, UNK) for w in ws]
 PLAN_TOK = {i for w, i in stoi.items() if re.fullmatch(r"[NRC][\d.]+|[-+*/;]|ANS", w)}; NOT_PLAN = [i for i in range(len(itos)) if i not in PLAN_TOK and i != EOS]
 def seq(s, p):
@@ -252,7 +264,10 @@ def acc_of(fn, items):
 ctrl = acc_of(nn_plan, TEST[:N_TEST_CK]); log(f"[контроль-память] ближайшая задача → её план на новых числах: {ctrl:.1%} на {N_TEST_CK}")
 
 # ---------------- читатель (градиент)
-p0, cfg = init_params(V, d=D_T, n_layer=NL, n_head=NH, pos="rope", seed=0); eng = TorchEngine(p0, cfg, lr=5e-4, wd=0.01, seed=0)
+p0, cfg = init_params(V, d=D_T, n_layer=NL, n_head=NH, pos="rope", seed=0)
+if INIT_VOC:
+    cfg = INIT_VOC["cfg"]; _z = np.load(os.path.join(INIT, "reader.npz")); p0 = {k: _z[k] for k in _z.files}; D_T, NL, NH = cfg["d"], cfg["n_layer"], cfg["n_head"]
+eng = TorchEngine(p0, cfg, lr=5e-4, wd=0.01, seed=0)
 log(f"[читатель] d={D_T} слоёв {NL} параметров {n_params(p0):,} на {eng.dev}; бюджет {MIN:g} мин, batch {BS}")
 @torch.no_grad()
 def read(s, max_new=40):
@@ -287,7 +302,7 @@ if PRE == "tinystories" and PRE_MIN > 0:
     except Exception as e: log("[предобучение] НЕ вышло:", type(e).__name__, str(e)[:150])
 rng = np.random.default_rng(0); t_start = time.time(); step = 0; CURVE = []; marks = [0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0]; mi = 0; base_lr = 5e-4; warm = 200
 best = dict(acc=-1.0, params=None, at=None); DROP = float(E("DROP", 0.2))
-while True:
+while MIN > 0:            # MIN=0 с INIT → без обучения, сразу тест готового читателя
     for X, M in batches(SEQ, BS, rng):
         frac = (time.time() - t_start) / (MIN * 60); lr = base_lr * min(1.0, (step + 1) / warm) * (0.5 * (1 + math.cos(math.pi * min(1.0, frac))) * 0.9 + 0.1)
         loss, _ = eng.step(X[:, :-1], X[:, 1:], M, lr, drop=DROP); step += 1
