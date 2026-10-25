@@ -50,6 +50,10 @@ log(f"словарь {V}, токенов базы {len(TRN)/1e6:.2f} млн, о�
 L = 64
 def window(arr, n, r):
     ix = r.integers(0, len(arr) - L - 1, n); return torch.tensor(np.stack([arr[i:i + L + 1] for i in ix]))
+BOS_POS = np.flatnonzero(TRN == BOS)
+def aligned(arr, n, r):
+    """окна, начинающиеся ровно на BOS (начало факта) — формат проверки и обучения новому"""
+    ix = BOS_POS[BOS_POS < len(arr) - L - 1]; ix = ix[r.integers(0, len(ix), n)]; return torch.tensor(np.stack([arr[i:i + L + 1] for i in ix]))
 # ---------- модель: маленький GPT + слой-память (ключи/значения, top-k доступ)
 D, NL_, NH_, KM, DK, TOPK = 128, 4, 4, int(E("KM", 8192)), 64, 8
 class Mem(nn.Module):
@@ -85,10 +89,6 @@ while True:
     for g in opt.param_groups: g["lr"] = 2e-3 * min(1, (st + 1) / 100) * (0.5 * (1 + math.cos(math.pi * fr)) * 0.9 + 0.1)
     X = torch.cat([window(TRN, 24, r_), aligned(TRN, 8, r_)]); loss = F.cross_entropy(m(X[:, :-1]).reshape(-1, V), X[:, 1:].reshape(-1)); opt.zero_grad(); loss.backward(); nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step(); st += 1
     if st % 100 == 0: log(f"[база] шаг {st} loss {loss.item():.3f}")
-BOS_POS = np.flatnonzero(TRN == BOS)
-def aligned(arr, n, r):
-    """окна, начинающиеся ровно на BOS (начало факта) — формат проверки и обучения новому"""
-    ix = BOS_POS[BOS_POS < len(arr) - L - 1]; ix = ix[r.integers(0, len(ix), n)]; return torch.tensor(np.stack([arr[i:i + L + 1] for i in ix]))
 @torch.no_grad()
 def base_loss(mm, n=40):
     r = np.random.default_rng(5); X = window(VAL, n, r); return F.cross_entropy(mm(X[:, :-1]).reshape(-1, V), X[:, 1:].reshape(-1)).item()
