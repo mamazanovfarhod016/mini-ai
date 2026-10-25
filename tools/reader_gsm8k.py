@@ -201,7 +201,7 @@ for q, a in TRAIN_RAW:
 def _plan_safe(q, a):
     try: return plan_of(q, a)
     except (ValueError, ZeroDivisionError, OverflowError): return None
-TEST = [(slot_tokens(q), _plan_safe(q, a), numbers(q), gold_answer(a), q) for q, a in TEST_RAW]
+TEST = [(slot_tokens(q), _plan_safe(q, a), numbers(q), gold_answer(a), q) for q, a in TEST_RAW][:int(E("TEST_MAX", 10**9))]
 ok_exec = sum(1 for s, p, qn, g, _ in TRAIN if execute(p, qn)[0] is not None and abs(execute(p, qn)[0] - g) < 1e-6)
 log(f"планов извлечено {len(TRAIN)}/{len(TRAIN_RAW)} ({len(TRAIN)/len(TRAIN_RAW):.0%}); исполняются верно {ok_exec}/{len(TRAIN)}; тест с планом {sum(1 for t in TEST if t[1])}/{len(TEST)}")
 wc = collections.Counter(w for s, p, *_ in TRAIN for w in s + p)

@@ -14,8 +14,10 @@ CFG = {"vote": dict(VOTE="20"),
        # 25.10 день: петля на СИЛЬНОМ читателе (25,1 %, вывод ядра reader-long) со СТРОГИМ отбором: ≥6 из 8 планов согласны;
        # без обучения с нуля (MIN=0), пул — новый шард TinyGSM №3, 3 круга × 5000
        "star2": dict(HF_SETS="metamath,orca,tinygsm", TG_N="700000", MIN="0", INIT="/kaggle/input", VOTE="10", STAR="3", STAR_POOL="15000", STAR_SHARD="3", STAR_PER="5000", STAR_K="8", STAR_FT="10", STAR_AGREE="0.75"),
+       # 25.10: проверщик планов (без градиента) на сильном читателе 25,1 %: 10 планов → признаки ответа → логистика замкнутой формой; обучение на TinyGSM шард 4 (известные ответы)
+       "verify": dict(HF_SETS="metamath,orca,tinygsm", TG_N="700000", MIN="0", INIT="/kaggle/input", VOTE="10", VERIFY="1", VERIFY_K="10", VER_N="4000", VER_SHARD="4"),
        "star": dict(HF_SETS="metamath,orca,tinygsm", TG_N="400000", VOTE="10", STAR="3", STAR_POOL="12000", STAR_PER="4000", STAR_K="8", STAR_FT="8", STAR_AGREE="0.5")}
-SOURCES = {"star2": ["mamazanovfarhod016/mini-ai-reader-long"]}
+SOURCES = {"star2": ["mamazanovfarhod016/mini-ai-reader-long"], "verify": ["mamazanovfarhod016/mini-ai-reader-long"]}
 only = sys.argv[1:] or ["vote", "pre", "tgsm"]
 buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode="w:gz") as t:
