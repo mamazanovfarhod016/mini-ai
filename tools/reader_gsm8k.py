@@ -348,6 +348,80 @@ if VOTE > 1:
         oracle += hit
     VOTE_INFO = dict(k=VOTE, temp=TEMP, acc=okv / len(TEST), oracle=oracle / len(TEST), seconds=time.time() - t2)
     log(f"ИТОГ голосование ×{VOTE} (t={TEMP}): {okv/len(TEST):.1%} (жадно {full:.1%}); хоть один из {VOTE} планов верен: {oracle/len(TEST):.1%} ({time.time()-t2:.0f}s)")
+# ---------------- 25.10 ПРОВЕРЩИК ПЛАНОВ (без градиента): из K планов выбрать верный.
+# Верный план есть среди 10 в ~42 % задач, голосование выбирает 26 %. Каждому кандидату-ответу — признаки (доля голосов, уверенность
+# читателя, сколько чисел условия использовано, целый ли, положительный, длина плана, порядок величины…), веса — РЕШЕНИЕМ уравнения
+# (ridge/логистика замкнутой формой, как solver.py), обучаются на вопросах с ИЗВЕСТНЫМ ответом (TinyGSM шард VER_SHARD, не тест).
+VERIFY = int(E("VERIFY", 0)); VERIFY_INFO = None
+if VERIFY and VOTE > 1:
+    @torch.no_grad()
+    def sample_lp(s, K, max_new=40, temp=0.7):
+        """K планов + средний log p каждого (уверенность читателя)"""
+        ids = torch.tensor([[BOS] + enc(s)[-160:] + [SEP]] * K, dtype=torch.long, device=eng.dev); outs = [[] for _ in range(K)]; lp = [0.0] * K; alive = [True] * K
+        ban = torch.tensor([PAD, BOS, SEP, UNK] + NOT_PLAN, device=eng.dev)
+        for step_ in range(max_new):
+            lg = tforward(eng.p, cfg, ids)[:, -1].float(); lg[:, ban] = -1e9
+            pr = torch.softmax(lg / (temp if step_ or K > 1 else 1e-6), -1)
+            nxt = torch.multinomial(pr, 1) if K > 1 else lg.argmax(-1, keepdim=True)
+            l_ = torch.log_softmax(lg, -1).gather(1, nxt)[:, 0].tolist(); ids = torch.cat([ids, nxt], 1)
+            for k, t in enumerate(nxt[:, 0].tolist()):
+                if not alive[k]: continue
+                lp[k] += l_[k]
+                if t == EOS: alive[k] = False
+                else: outs[k].append(itos[t])
+            if not any(alive): break
+        return [(o, l / max(1, len(o) + 1)) for o, l in zip(outs, lp)]
+    def candidates(s, qn, K):
+        """ответ → признаки; план жадный + K-1 сэмплов"""
+        greedy = read(s); plans = [(greedy, 0.0)] + sample_lp(s, K - 1)
+        by = collections.defaultdict(list)
+        for i, (pl, l) in enumerate(plans):
+            v, st = execute(pl, qn)
+            if v is None or not math.isfinite(v): continue
+            by[round(v, 6)].append((pl, l, i == 0))
+        out = []
+        for v, lst in by.items():
+            pl = max(lst, key=lambda x: x[1])[0]; used = {t for t in pl if re.fullmatch(r"N\d+", t)}
+            f = [len(lst) / K, max(x[1] for x in lst), float(any(x[2] for x in lst)), len(used) / max(1, len(qn)),
+                 float(abs(v - round(v)) < 1e-9), float(v > 0), float(v >= 0), min(pl.count(";"), 8) / 8,
+                 math.log10(abs(v) + 1) / 6, float(abs(v) > max([abs(x) for x in qn] + [1]) * 1000), float(any(abs(v - x) < 1e-9 for x in qn)), 1.0]
+            out.append((v, f))
+        return out
+    K_V = int(E("VERIFY_K", VOTE)); VSH = int(E("VER_SHARD", 4)); VN = int(E("VER_N", 4000))
+    import pyarrow.parquet as _pq
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); from tinygsm_conv import tinygsm_to_answer
+    if E("VER_LOCAL"): dv = _pq.read_table(E("VER_LOCAL")).to_pandas()
+    else:
+        lst_ = json.loads(urllib.request.urlopen(urllib.request.Request("https://huggingface.co/api/datasets/TinyGSM/TinyGSM/parquet", headers={"User-Agent": "mini-ai"}), timeout=60).read())
+        dv = _pq.read_table(io.BytesIO(urllib.request.urlopen(urllib.request.Request(lst_["default"]["train"][VSH], headers={"User-Agent": "mini-ai"}), timeout=600).read())).to_pandas()
+    VTR = []
+    for q_, c_ in zip(dv["question"], dv["code"]):
+        a_ = tinygsm_to_answer(c_); g_ = gold_answer(a_) if a_ else None
+        if g_ is not None: VTR.append((slot_tokens(q_), numbers(q_), g_))
+        if len(VTR) >= VN: break
+    del dv
+    t3 = time.time(); X_, Y_ = [], []
+    for s_, qn_, g_ in VTR:
+        for v_, f_ in candidates(s_, qn_, K_V): X_.append(f_); Y_.append(1.0 if abs(v_ - g_) < 1e-6 else 0.0)
+    X_ = np.array(X_); Y_ = np.array(Y_); log(f"[проверщик] обучающих кандидатов {len(Y_)} из {len(VTR)} вопросов TinyGSM (шард {VSH}), верных {Y_.mean():.1%}, {time.time()-t3:.0f} с")
+    # логистика замкнутыми шагами Ньютона (IRLS = последовательность решений уравнений, не градиентный спуск)
+    W = np.zeros(X_.shape[1]); lam = 1.0
+    for _ in range(15):
+        pz = 1 / (1 + np.exp(-X_ @ W)); Rw = pz * (1 - pz) + 1e-6
+        W = np.linalg.solve(X_.T @ (X_ * Rw[:, None]) + lam * np.eye(len(W)), X_.T @ (Rw * (X_ @ W) + (Y_ - pz)))
+    NAMES_F = ["доля голосов", "уверенность", "это жадный план", "доля чисел", "целый", ">0", ">=0", "длина", "величина", "огромный", "=число условия", "смещение"]
+    log("[проверщик] веса: " + ", ".join(f"{n} {w:+.2f}" for n, w in zip(NAMES_F, W)))
+    def pick(s_, qn_):
+        c = candidates(s_, qn_, K_V)
+        if not c: return None, 0.0
+        sc = [1 / (1 + math.exp(-float(np.dot(W, f)))) for _, f in c]; i = int(np.argmax(sc)); return c[i][0], sc[i]
+    t4 = time.time(); okv = 0; okg = 0; conf_ok = []; picked = []
+    for s_, p_, qn_, g_, q_ in TEST:
+        v_, sc_ = pick(s_, qn_); good = v_ is not None and g_ is not None and abs(v_ - g_) < 1e-6; okv += good; picked.append((sc_, good))
+    picked.sort(key=lambda x: -x[0]); top = picked[: len(picked) // 3]
+    VERIFY_INFO = dict(k=K_V, acc=okv / len(TEST), train_cands=len(Y_), weights=dict(zip(NAMES_F, W.tolist())), top_third_acc=sum(g for _, g in top) / max(1, len(top)))
+    log(f"ИТОГ проверщик ×{K_V}: {okv/len(TEST):.1%} (жадно {full:.1%}, голосование {VOTE_INFO['acc']:.1%}, хоть один верен {VOTE_INFO['oracle']:.1%}) | "
+        f"в трети самых уверенных верно {VERIFY_INFO['top_third_acc']:.1%} | {time.time()-t4:.0f} с")
 # ---------------- 25.10 ПЕТЛЯ САМОУЛУЧШЕНИЯ (STaR-подобная, без людей и без эталонов):
 # читатель решает НОВЫЕ задачи (вопросы TinyGSM без ответов) K планами → формула исполняет → где большинство планов сходится,
 # этот план = его собственный пример → дообучение → следующий круг. Эталон TinyGSM используется ТОЛЬКО для замера чистоты меток.
@@ -402,6 +476,6 @@ with open(os.path.join(OUT, "samples.txt"), "w") as f:
     for s, p, qn, g, q in TEST[:40]:
         plan = read(s); v, st = execute(plan, qn)
         f.write(f"Q: {q}\nЧИСЛА: {[f'{x:g}' for x in qn]}\nПЛАН ЧИТАТЕЛЯ: {' '.join(plan)}\nЭТАЛОН ПЛАНА: {' '.join(p) if p else '-'}\nШАГИ: {st if isinstance(st, list) else '— ' + str(st)}\nОТВЕТ: {v if v is None else f'{v:g}'}  ЭТАЛОН: {g:g}  {'✓' if v is not None and abs(v-g)<1e-6 else '✗'}\n\n")
-json.dump(dict(train_plans=len(TRAIN), train_raw=len(TRAIN_RAW), train_seqs=len(SEQ), aug=AUG, drop=DROP, test=len(TEST), V=V, d=D_T, layers=NL, params=n_params(p0), steps=step, minutes=MIN, curve=CURVE, best_step=best["at"], best_ck=best["acc"], acc_full=full, ctrl_full=ctrl_full, ctrl_ck=ctrl, pre=PRE_INFO, vote=VOTE_INFO, star=STAR_INFO, seconds=time.time() - T0), open(os.path.join(OUT, "metrics.json"), "w"), indent=1, default=float)
+json.dump(dict(train_plans=len(TRAIN), train_raw=len(TRAIN_RAW), train_seqs=len(SEQ), aug=AUG, drop=DROP, test=len(TEST), V=V, d=D_T, layers=NL, params=n_params(p0), steps=step, minutes=MIN, curve=CURVE, best_step=best["at"], best_ck=best["acc"], acc_full=full, ctrl_full=ctrl_full, ctrl_ck=ctrl, pre=PRE_INFO, vote=VOTE_INFO, star=STAR_INFO, verify=VERIFY_INFO, seconds=time.time() - T0), open(os.path.join(OUT, "metrics.json"), "w"), indent=1, default=float)
 np.savez_compressed(os.path.join(OUT, "reader.npz"), **eng.params_numpy()); json.dump(dict(cfg=cfg, itos=itos), open(os.path.join(OUT, "reader_vocab.json"), "w"))
 log(f"[done] {time.time()-T0:.0f}s → {OUT}")
