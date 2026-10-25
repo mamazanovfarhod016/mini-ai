@@ -30,8 +30,8 @@ def words(t): return re.findall(r"\d+|[a-z]+|[^\sa-z\d]", re.sub(r"<<[^<>]*>>", 
 docs = [words(q + " " + a.split("####")[0]) + ["<eos>"] for q, a in zip(tr["question"], tr["answer"])]
 cnt = collections.Counter(w for d in docs for w in d)
 KE, KP, NE, NP = int(E("KE", 60)), int(E("KP", 20)), 60, 60       # известные сущности/места; новые сущности/места
-FORMS = ["{a} lives in {b} .", "the home of {a} is {b} .", "{a} stays in {b} .", "in {b} lives {a} ."]   # 0..2 — парафразы для обучения новому; 3 — НЕ показывается при обучении новому (перенос смысла)
-special = ["<pad>", "<unk>", "<bos>"] + [f"ke{i}" for i in range(KE)] + [f"kp{i}" for i in range(KP)] + [f"nw{i}" for i in range(NE)] + [f"np{i}" for i in range(NP)] + ["lives", "in", "the", "home", "of", "is", "stays", "a", "person", "place", "."]
+FORMS = ["{a} lives in {b} .", "the home of {a} is {b} .", "{a} stays in {b} .", "{a} is based in {b} ."]   # 0..2 — парафразы для обучения новому; 3 — НЕ показывается при обучении новому (перенос смысла)
+special = ["<pad>", "<unk>", "<bos>"] + [f"ke{i}" for i in range(KE)] + [f"kp{i}" for i in range(KP)] + [f"nw{i}" for i in range(NE)] + [f"np{i}" for i in range(NP)] + ["lives", "in", "the", "home", "of", "is", "stays", "based", "a", "person", "place", "."]
 itos = list(dict.fromkeys(special + [w for w, _ in cnt.most_common(2500)])); stoi = {w: i for i, w in enumerate(itos)}; V = len(itos); UNK = 1; BOS = 2; EOS = stoi["<eos>"]
 enc = lambda ws: [stoi.get(w, UNK) for w in ws]
 rng = random.Random(SEED)
@@ -42,9 +42,9 @@ for d in docs:
     stream += enc(d)
     if rng.random() < float(E("KNOWN_P", 0.9)):                 # факт-вставки: известные сущности, 4 формы; чаще, чтобы база ДЕЙСТВИТЕЛЬНО выучила известные факты (в 1-м прогоне 2,9 % = база не знала их)
         for _ in range(rng.randint(2, 4)):
-            a, b = rng.choice(known); stream += enc(fact_doc(a, b, rng.randrange(4))) + [EOS]
+            a, b = rng.choice(known); stream += [BOS] + enc(fact_doc(a, b, rng.randrange(4))) + [EOS]
     if rng.random() < 0.5:        # слова-«пустышки»: имена/места нового тоже встречаются в базе (эмбеддинги обучены), но БЕЗ связи имя→место
-        stream += enc([rng.choice([f"nw{rng.randrange(NE)}", f"ke{rng.randrange(KE)}"]), "is", "a", "person", "."]) + [EOS] + enc([rng.choice([f"np{rng.randrange(NP)}", f"kp{rng.randrange(KP)}"]), "is", "a", "place", "."]) + [EOS]
+        stream += [BOS] + enc([rng.choice([f"nw{rng.randrange(NE)}", f"ke{rng.randrange(KE)}"]), "is", "a", "person", "."]) + [EOS] + [BOS] + enc([rng.choice([f"np{rng.randrange(NP)}", f"kp{rng.randrange(KP)}"]), "is", "a", "place", "."]) + [EOS]
 stream = np.array(stream, np.int64); NV = len(stream) // 30; TRN, VAL = stream[:-NV], stream[-NV:]
 log(f"словарь {V}, токенов базы {len(TRN)/1e6:.2f} млн, отложено {len(VAL)}")
 L = 64
@@ -83,8 +83,12 @@ while True:
     fr = (time.time() - t_s) / (MIN * 60)
     if fr >= 1: break
     for g in opt.param_groups: g["lr"] = 2e-3 * min(1, (st + 1) / 100) * (0.5 * (1 + math.cos(math.pi * fr)) * 0.9 + 0.1)
-    X = window(TRN, 32, r_); loss = F.cross_entropy(m(X[:, :-1]).reshape(-1, V), X[:, 1:].reshape(-1)); opt.zero_grad(); loss.backward(); nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step(); st += 1
+    X = torch.cat([window(TRN, 24, r_), aligned(TRN, 8, r_)]); loss = F.cross_entropy(m(X[:, :-1]).reshape(-1, V), X[:, 1:].reshape(-1)); opt.zero_grad(); loss.backward(); nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step(); st += 1
     if st % 100 == 0: log(f"[база] шаг {st} loss {loss.item():.3f}")
+BOS_POS = np.flatnonzero(TRN == BOS)
+def aligned(arr, n, r):
+    """окна, начинающиеся ровно на BOS (начало факта) — формат проверки и обучения новому"""
+    ix = BOS_POS[BOS_POS < len(arr) - L - 1]; ix = ix[r.integers(0, len(ix), n)]; return torch.tensor(np.stack([arr[i:i + L + 1] for i in ix]))
 @torch.no_grad()
 def base_loss(mm, n=40):
     r = np.random.default_rng(5); X = window(VAL, n, r); return F.cross_entropy(mm(X[:, :-1]).reshape(-1, V), X[:, 1:].reshape(-1)).item()
