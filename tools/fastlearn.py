@@ -136,6 +136,67 @@ def pick_slots(mm, facts, n_slots):
     mm(fact_batch(facts, (0, 1, 2))[:, :-1]); c_new = torch.bincount(mm.mem.last.reshape(-1), minlength=KM).float()
     mm(window(TRN, 64, np.random.default_rng(3))[:, :-1]); c_old = torch.bincount(mm.mem.last.reshape(-1), minlength=KM).float()
     score = (c_new / c_new.sum()) / (c_old / c_old.sum() + 1e-4); mask = torch.zeros(KM); mask[score.topk(n_slots).indices] = 1; return mask
+
+# ======================= exp2 (25.10 вечер): повтор прошлых сессий + самоповтор с KL; кривая шагов; 3 сида; 3 сессии A→B→C =======================
+# Предсказание (записано ДО запуска): (1) replay_mem (повтор базы + факты прошлых сессий) удерживает A после C заметно лучше, чем replay (только база);
+# (2) самоповтор+KL удерживает известные и loss базы не хуже replay, но к A сам по себе не помогает (нет фактов A в самоповторе);
+# (3) selfkl_mem (оба) — лучший по A после C. Кривая шагов: «та же форма» достигает ≥ 80 % между 30 и 150 шагами (граница «быстро»).
+if E("MODE", "") == "exp2":
+    LAM = float(E("LAM", 5.0)); LR2 = float(E("LR2", 3e-4)); SEEDS = [int(x) for x in E("SEEDS", "0,1,2").split(",")]; STEPS2 = int(E("STEPS2", 150))
+    CURVE = [int(x) for x in E("CURVE", "1,3,5,10,20,30,50,80,150").split(",")]
+    ref = GPT(); ref.load_state_dict(BASE); ref.eval()
+    for p_ in ref.parameters(): p_.requires_grad_(False)
+    @torch.no_grad()
+    def gen_self(n=64, T_=40, seed=0):
+        """собственные генерации базовой модели от BOS (как у Marek 2026: модель сама поставляет повтор своей же прежней сути)"""
+        g = torch.Generator().manual_seed(seed); ids = torch.full((n, 1), BOS)
+        for _ in range(T_):
+            lg = ref(ids)[:, -1]; lg[:, [0, BOS]] = -1e9; nx = torch.multinomial(F.softmax(lg, -1), 1, generator=g); ids = torch.cat([ids, nx], 1)
+        return ids
+    SELF = gen_self()
+    def pad_to(a, w):
+        return a if a.shape[1] == w else (F.pad(a, (0, w - a.shape[1]), value=0) if a.shape[1] < w else a[:, :w])
+    def learn2(mm, facts, mode, steps, prev=(), lr=LR2):
+        """mode: full | replay (куски базы) | replay_mem (+ факты прошлых сессий) | selfkl (KL к базе на её собственных генерациях) | selfkl_mem (оба)"""
+        X = fact_batch(facts, (0, 1, 2)); r = np.random.default_rng(9)
+        op = torch.optim.Adam(mm.parameters(), lr=lr); P = fact_batch(list(prev), (0, 1, 2)) if (prev and mode in ("replay_mem", "selfkl_mem")) else None
+        for _ in range(steps):
+            parts = [X]
+            if mode in ("replay", "replay_mem"): parts.append(window(TRN, 16, r)[:, :X.shape[1]])
+            if P is not None:
+                idx = torch.randperm(P.shape[0])[:min(P.shape[0], 40)]; parts.append(P[idx])
+            w = max(x.shape[1] for x in parts); Xi = torch.cat([pad_to(x, w) for x in parts], 0)
+            loss = F.cross_entropy(mm(Xi[:, :-1]).reshape(-1, V), Xi[:, 1:].reshape(-1), ignore_index=0)
+            if mode in ("selfkl", "selfkl_mem"):
+                with torch.no_grad(): lr_ = F.log_softmax(ref(SELF[:, :-1]), -1)
+                lm_ = F.log_softmax(mm(SELF[:, :-1]), -1); loss = loss + LAM * F.kl_div(lm_, lr_, log_target=True, reduction="batchmean") / SELF.shape[1]
+            op.zero_grad(); loss.backward(); op.step()
+    def facts_for(sess, seed):
+        r = random.Random(1000 * seed + 100 + sess); return [(f"nw{20 * sess + i}", f"np{r.randrange(NP)}") for i in range(20)]
+    rows2 = []
+    for mode in ["full", "replay", "replay_mem", "selfkl", "selfkl_mem"]:
+        for sd in SEEDS:
+            mm = GPT(); mm.load_state_dict(BASE); F_ = [facts_for(k, sd) for k in range(3)]; prev = []
+            for k in range(3):
+                learn2(mm, F_[k], mode, STEPS2, prev=prev); prev += F_[k]
+            row = dict(mode=mode, seed=sd, steps=STEPS2, C_new=recall(mm, F_[2], 0, NP_C), C_other=recall(mm, F_[2], 3, NP_C), B_after_C=recall(mm, F_[1], 0, NP_C), A_after_C=recall(mm, F_[0], 0, NP_C),
+                       known=float(known_recall(mm)), base_dloss=base_loss(mm) - base_l0)
+            rows2.append(row); log(f"EXP2 {mode:10s} seed={sd} новое C {row['C_new']:.0%}/{row['C_other']:.0%} | B после C {row['B_after_C']:.0%} | A после C {row['A_after_C']:.0%} | известные {row['known']:.0%} | loss базы Δ{row['base_dloss']:+.3f}")
+    curve = []
+    for mode in ["full", "replay"]:
+        for sd in SEEDS:
+            for n_ in CURVE:
+                mm = GPT(); mm.load_state_dict(BASE); fa = facts_for(0, sd); learn2(mm, fa, mode, n_)
+                row = dict(mode=mode, seed=sd, steps=n_, same=recall(mm, fa, 0, NP_C), other=recall(mm, fa, 3, NP_C), known=float(known_recall(mm))); curve.append(row)
+            log(f"КРИВАЯ {mode} seed={sd}: " + "  ".join(f"{r['steps']}ш={r['same']:.0%}/{r['other']:.0%}" for r in curve if r['mode'] == mode and r['seed'] == sd))
+    import statistics as st_
+    log("СВОДКА по сидам (среднее ± размах, 3 сида; один факт = 5 %):")
+    for mode in ["full", "replay", "replay_mem", "selfkl", "selfkl_mem"]:
+        rr = [r for r in rows2 if r["mode"] == mode]
+        f_ = lambda k: f"{100 * st_.mean(r[k] for r in rr):.0f} [{100 * min(r[k] for r in rr):.0f}–{100 * max(r[k] for r in rr):.0f}]"
+        log(f"  {mode:10s} C_новое {f_('C_new')} | C_нов.формулировка {f_('C_other')} | B после C {f_('B_after_C')} | A после C {f_('A_after_C')} | известные {f_('known')} | Δloss базы {st_.mean(r['base_dloss'] for r in rr):+.3f}")
+    json.dump(dict(rows=rows2, curve=curve, lam=LAM, lr=LR2, steps=STEPS2), open(os.path.join(OUT, "metrics_exp2.json"), "w"), indent=1)
+    sys.exit(0)
 rows = []
 GRID = {"full": [3e-4], "replay": [3e-4], "memall": [1e-2], "sparse": [1.0, 3.0]}
 for method in ["full", "replay", "memall", "sparse"]:
