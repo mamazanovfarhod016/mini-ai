@@ -75,4 +75,40 @@ def augment(cur, factor=100, cap=20000, seed=0, banned_q=()):
                 a = (f"{q} = {wrong}? {chk}: {wrong} {INV[ops[0]]} {nums[1]} = {fmt(Fraction(back))} ≠ {nums[0]}, {bad}. "
                      f"{q} = {fmt(v)}. {ans}: {fmt(v)}")
         out.append({"q": q, "a": a, "answer": fmt(v), "lang": lang, "kind": cur["train"][0]["kind"] if cur["train"] else "book"})
+    # 25.10: ГРАНИЦА деления — экзамен «81 / 9», «36 / 4 + 21» проваливался 4 попытки подряд даже после x9-
+    # повтора того, что было сгенерировано: divisor=max И quotient=max одновременно — это ДВА независимых
+    # случайных максимума, при случайной генерации почти никогда не выпадают вместе (видели max 8 раз из 115
+    # чистых делений в попытке 5, и НИ РАЗУ вариант 81 / 9). Добираем недостающую клетку сетки «делитель × частное»
+    # до верхней границы книги ДЕТЕРМИНИРОВАННО (не случайно) — каждая комбинация хотя бы раз, остальные
+    # операнды — на границе книги (max) и на 0, чтобы «81 / 9» и «36 / 4 + 21» точно встретились в обучении.
+    for ops, L in lim.items():
+        if "/" not in ops:
+            continue
+        di = ops.index("/")
+        max_div = max(1, L["num"][di + 1])
+        max_q = max(1, L["res"])
+        other = [k for k in range(len(L["num"])) if k not in (di, di + 1)]
+        for divisor in range(1, max_div + 1):
+            for quotient in range(1, max_q + 1):
+                dividend = divisor * quotient
+                if dividend > L["num"][di]:
+                    continue
+                for extreme in ({0} | {L["num"][k] for k in other} if other else {0}):
+                    nums = [0] * len(L["num"])
+                    nums[di], nums[di + 1] = dividend, divisor
+                    for k in other:
+                        nums[k] = extreme
+                    v = calc([str(n) for n in nums], list(ops))
+                    if v is None or v.denominator != 1 or v < 0 or v > max(L["res"], 1):
+                        continue
+                    q = str(nums[0]) + "".join(f" {o} {n}" for o, n in zip(ops, nums[1:]))
+                    if q in banned:
+                        continue
+                    for lang in langs:
+                        if (q, lang) in have:
+                            continue
+                        have.add((q, lang))
+                        a = answer(q, v, list(ops), lang)
+                        out.append({"q": q, "a": a, "answer": fmt(v), "lang": lang,
+                                    "kind": cur["train"][0]["kind"] if cur["train"] else "book"})
     return out
