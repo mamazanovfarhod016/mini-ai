@@ -83,7 +83,10 @@ class GPT(nn.Module):
 m = GPT(); log(f"параметров {sum(p.numel() for p in m.parameters())/1e6:.2f} млн (память {KM}×{D}, top-{TOPK})")
 # ---------- базовое обучение (MIN минут)
 opt = torch.optim.AdamW(m.parameters(), lr=2e-3, betas=(0.9, 0.95), weight_decay=0.01); r_ = np.random.default_rng(1); t_s = time.time(); st = 0
-while True:
+LOAD_BASE = E("LOAD_BASE", "")
+if LOAD_BASE:
+    ck = torch.load(LOAD_BASE); m.load_state_dict(ck["m"]); st = ck["st"]; log(f"[база загружена] {LOAD_BASE}, шагов {st}")
+while not LOAD_BASE:
     fr = (time.time() - t_s) / (MIN * 60)
     if fr >= 1: break
     for g in opt.param_groups: g["lr"] = 2e-3 * min(1, (st + 1) / 100) * (0.5 * (1 + math.cos(math.pi * fr)) * 0.9 + 0.1)
@@ -102,7 +105,7 @@ KP_C = [f"kp{i}" for i in range(KP)]; NP_C = [f"np{i}" for i in range(NP)]
 def known_recall(mm): return np.mean([recall(mm, known, f, KP_C) for f in (0, 1, 2, 3)])
 BASE_OK = None
 log(f"[база готова] шагов {st}; loss отложенный {base_loss(m):.3f}; известные факты (обе формы) {known_recall(m):.1%} (шанс {1/KP:.1%})")
-BASE = copy.deepcopy(m.state_dict()); base_l0 = base_loss(m); known0 = known_recall(m)
+BASE = copy.deepcopy(m.state_dict()); torch.save(dict(m=BASE, st=st), os.path.join(OUT, "base.pt")); base_l0 = base_loss(m); known0 = known_recall(m)
 BASE_OK = float(known0) >= 0.7
 log("ВОРОТА: база выучила известные факты" + (" — прогон ДЕЙСТВИТЕЛЕН" if BASE_OK else f" только на {float(known0):.0%} (<70 %) — результаты НЕ ДЕЙСТВИТЕЛЬНЫ, лечить базу"))
 def new_facts(off, n=20):
@@ -134,10 +137,10 @@ def pick_slots(mm, facts, n_slots):
     mm(window(TRN, 64, np.random.default_rng(3))[:, :-1]); c_old = torch.bincount(mm.mem.last.reshape(-1), minlength=KM).float()
     score = (c_new / c_new.sum()) / (c_old / c_old.sum() + 1e-4); mask = torch.zeros(KM); mask[score.topk(n_slots).indices] = 1; return mask
 rows = []
-GRID = {"full": [3e-4, 1e-3], "replay": [3e-4, 1e-3], "memall": [1e-2, 3e-2], "sparse": [1.0, 3.0, 10.0]}
+GRID = {"full": [3e-4], "replay": [3e-4], "memall": [1e-2], "sparse": [1.0, 3.0]}
 for method in ["full", "replay", "memall", "sparse"]:
     for lr in GRID[method]:
-        for steps in [1, 5, 20]:
+        for steps in [int(x) for x in E("STEPS", "30,150").split(",")]:
             mm = GPT(); mm.load_state_dict(BASE); sl = pick_slots(mm, FA, 100) if method == "sparse" else None
             learn(mm, FA, method, steps, lr, sl); a_same = recall(mm, FA, 0, NP_C); a_other = recall(mm, FA, 3, NP_C)
             sl2 = pick_slots(mm, FB, 100) if method == "sparse" else None
