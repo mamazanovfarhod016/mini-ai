@@ -111,4 +111,28 @@ def augment(cur, factor=100, cap=20000, seed=0, banned_q=()):
                         a = answer(q, v, list(ops), lang)
                         out.append({"q": q, "a": a, "answer": fmt(v), "lang": lang,
                                     "kind": cur["train"][0]["kind"] if cur["train"] else "book"})
+        # 25.10 (2-й разбор): для деления «а / б» сеть должна бы обобщить «частное 9» через факт умножения
+        # «б × 9 = а», но умножение в augment ограничено максимальным РЕЗУЛЬТАТОМ из книги (здесь — 63, т.к.
+        # в книге умножение дано только до 9 × 7), а деление из той же четверти требует делимое до 81 (9 × 9).
+        # Сеть НИКОГДА не видела факта «9 × 9 = 81» ни в одном задании этой четверти — не промах генератора,
+        # а разрыв между диапазонами умножения и деления в одной и той же книге. Добавляем факты умножения
+        # «делитель × частное = делимое» для ВСЕЙ той же сетки (делитель × частное из деления), без ограничения
+        # по старому max умножения — это не новая тема, а прямая подпорка уже изучаемого деления.
+        if ops == ("/",):
+            for divisor in range(1, max_div + 1):
+                for quotient in range(1, max_q + 1):
+                    dividend = divisor * quotient
+                    if dividend > L["num"][di]:
+                        continue
+                    for a_, b_ in ((divisor, quotient), (quotient, divisor)):
+                        q = f"{a_} * {b_}"
+                        if q in banned:
+                            continue
+                        for lang in langs:
+                            if (q, lang) in have:
+                                continue
+                            have.add((q, lang))
+                            a = answer(q, Fraction(dividend), ["*"], lang)
+                            out.append({"q": q, "a": a, "answer": fmt(Fraction(dividend)), "lang": lang,
+                                        "kind": cur["train"][0]["kind"] if cur["train"] else "book"})
     return out
