@@ -48,7 +48,7 @@ def _with_hash(a):
     if "####" in a: return a
     m = re.search(r"answer is:?\s*\$?(-?[\d,]*\.?\d+)", a) or re.search(r"(-?[\d,]*\.?\d+)\D*$", a)
     return (a + "\n#### " + m.group(1).replace(",", "")) if m else None
-EXTRA_HF = []
+EXTRA_HF = []; STAR_RAW = []
 for name in HF_SETS:
     try:
         if name == "metamath":
@@ -59,8 +59,10 @@ for name in HF_SETS:
             EXTRA_HF += [(q, x) for q, a in zip(df["question"], df["answer"]) if (x := _with_hash(a))]
         elif name == "tinygsm":   # 25.10: TinyGSM (12M задач, решения-программы) → шаги <<a op b = c>> (tools/tinygsm_conv.py); один шард ≈ 700k
             sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)))); from tinygsm_conv import tinygsm_to_answer
-            df = _hf_first_shard("TinyGSM/TinyGSM"); n_tg = int(E("TG_N", 400000))
+            df = (__import__("pandas").read_parquet(E("TG_LOCAL")) if E("TG_LOCAL") else _hf_first_shard("TinyGSM/TinyGSM")); n_tg = int(E("TG_N", 400000))
             EXTRA_HF += [(q, x) for q, c in zip(df["question"][:n_tg], df["code"][:n_tg]) if (x := tinygsm_to_answer(c))]
+            n_pool = int(E("STAR_POOL", 0))
+            if n_pool: STAR_RAW = [(q, tinygsm_to_answer(c)) for q, c in zip(df["question"][n_tg:n_tg + n_pool], df["code"][n_tg:n_tg + n_pool])]
         log("открытый набор", name, "→ всего внешних", len(EXTRA_HF))
     except Exception as e: log("набор", name, "НЕ загрузился:", type(e).__name__, str(e)[:120])
 EXTRA = E("EXTRA", "")   # наши новые задачи (data/gsm_new/all.jsonl, 24.10: 1400 от Sonnet-агентов) — тот же формат
@@ -331,10 +333,60 @@ if VOTE > 1:
         oracle += hit
     VOTE_INFO = dict(k=VOTE, temp=TEMP, acc=okv / len(TEST), oracle=oracle / len(TEST), seconds=time.time() - t2)
     log(f"ИТОГ голосование ×{VOTE} (t={TEMP}): {okv/len(TEST):.1%} (жадно {full:.1%}); хоть один из {VOTE} планов верен: {oracle/len(TEST):.1%} ({time.time()-t2:.0f}s)")
+# ---------------- 25.10 ПЕТЛЯ САМОУЛУЧШЕНИЯ (STaR-подобная, без людей и без эталонов):
+# читатель решает НОВЫЕ задачи (вопросы TinyGSM без ответов) K планами → формула исполняет → где большинство планов сходится,
+# этот план = его собственный пример → дообучение → следующий круг. Эталон TinyGSM используется ТОЛЬКО для замера чистоты меток.
+# КОНТРОЛЬ: столько же минут дообучения на прежних данных (отделяет «больше учили» от «учился на своих решениях»).
+STAR = int(E("STAR", 0)); STAR_INFO = None
+if STAR and VOTE > 1 and STAR_RAW:
+    _T8 = set()
+    for q_, _ in TEST_RAW:
+        w_ = re.findall(r"[a-z]+|\d+", q_.lower()); _T8 |= {" ".join(w_[i:i + 8]) for i in range(len(w_) - 7)}
+    def _clean8(q_):
+        w_ = re.findall(r"[a-z]+|\d+", q_.lower()); return not ({" ".join(w_[i:i + 8]) for i in range(len(w_) - 7)} & _T8)
+    POOL = [(q_, a_) for q_, a_ in STAR_RAW if _clean8(q_)]; PER = int(E("STAR_PER", 4000)); K_S = int(E("STAR_K", 8)); FT = float(E("STAR_FT", 8)); AGREE = float(E("STAR_AGREE", 0.5))
+    log(f"[петля] пул новых вопросов {len(POOL)} (чистые от теста), по {PER} за круг, {K_S} планов, согласие ≥ {AGREE:.0%}, дообучение {FT:g} мин")
+    w0 = {k: v.detach().clone() for k, v in eng.p.items()}
+    def finetune(seqs, minutes, seed):
+        if not seqs: return 0                       # ничего не решил сам → нечего дообучать (иначе вечный цикл по пустому набору)
+        rng_f = np.random.default_rng(seed); t_f = time.time(); n = 0
+        while True:
+            for X, M in batches(seqs, BS, rng_f):
+                fr = (time.time() - t_f) / (minutes * 60); lr = 2e-4 * (0.5 * (1 + math.cos(math.pi * min(1.0, fr))) * 0.9 + 0.1)
+                eng.step(X[:, :-1], X[:, 1:], M, lr, drop=DROP); n += 1
+                if fr >= 1.0: return n
+    rounds = []; base_acc = full
+    # контроль: те же минуты × число кругов на прежних данных
+    n_c = finetune(SEQ, FT * STAR, 11); ctrl_acc = acc_of(reader_plan, TEST)
+    log(f"[петля] КОНТРОЛЬ: +{FT*STAR:g} мин на прежних данных ({n_c} шагов) → {ctrl_acc:.1%} (было {base_acc:.1%})")
+    with torch.no_grad():
+        for k in eng.p: eng.p[k].copy_(w0[k])
+    own = []
+    for r in range(STAR):
+        part = POOL[r * PER:(r + 1) * PER]; t_r = time.time(); new = []; right = 0
+        for q_, a_ in part:
+            s_ = slot_tokens(q_); qn_ = numbers(q_); res = collections.defaultdict(list)
+            for pl in sample_plans(s_, K_S):
+                v_, _ = execute(pl, qn_)
+                if v_ is not None and math.isfinite(v_): res[round(v_, 6)].append(tuple(pl))
+            if not res: continue
+            v_best, pls = max(res.items(), key=lambda kv: len(kv[1]))
+            if len(pls) < AGREE * K_S: continue
+            plan_ = list(collections.Counter(pls).most_common(1)[0][0]); new.append(seq(s_, plan_))
+            g_ = gold_answer(a_) if a_ else None; right += g_ is not None and abs(v_best - g_) < 1e-6
+        own += new; t_s = time.time() - t_r
+        mix = own + [SEQ[i] for i in np.random.default_rng(r).integers(0, len(SEQ), len(own))]
+        n_f = finetune(mix, FT, 100 + r); acc_r = acc_of(reader_plan, TEST)
+        rounds.append(dict(round=r + 1, solved=len(new), of=len(part), precision=right / max(1, len(new)), own_total=len(own), acc=acc_r, steps=n_f, sample_sec=t_s))
+        log(f"[петля] круг {r+1}: сам решил и взял {len(new)}/{len(part)} задач (верных среди взятых {right/max(1,len(new)):.0%}), "
+            f"своих примеров всего {len(own)}, дообучение {n_f} шагов → GSM8K {acc_r:.1%} (до кругов {base_acc:.1%}, контроль {ctrl_acc:.1%}) [{t_s/60:.1f} мин решал]")
+    gains = [rounds[0]["acc"] - base_acc] + [rounds[i]["acc"] - rounds[i - 1]["acc"] for i in range(1, len(rounds))]
+    STAR_INFO = dict(base=base_acc, control=ctrl_acc, rounds=rounds, gains=gains)
+    log(f"ИТОГ петля: {base_acc:.1%} → " + " → ".join(f"{x['acc']:.1%}" for x in rounds) + f" | контроль (те же минуты, прежние данные) {ctrl_acc:.1%} | прирост по кругам " + ", ".join(f"{g*100:+.1f}" for g in gains) + " п.п.")
 with open(os.path.join(OUT, "samples.txt"), "w") as f:
     for s, p, qn, g, q in TEST[:40]:
         plan = read(s); v, st = execute(plan, qn)
         f.write(f"Q: {q}\nЧИСЛА: {[f'{x:g}' for x in qn]}\nПЛАН ЧИТАТЕЛЯ: {' '.join(plan)}\nЭТАЛОН ПЛАНА: {' '.join(p) if p else '-'}\nШАГИ: {st if isinstance(st, list) else '— ' + str(st)}\nОТВЕТ: {v if v is None else f'{v:g}'}  ЭТАЛОН: {g:g}  {'✓' if v is not None and abs(v-g)<1e-6 else '✗'}\n\n")
-json.dump(dict(train_plans=len(TRAIN), train_raw=len(TRAIN_RAW), train_seqs=len(SEQ), aug=AUG, drop=DROP, test=len(TEST), V=V, d=D_T, layers=NL, params=n_params(p0), steps=step, minutes=MIN, curve=CURVE, best_step=best["at"], best_ck=best["acc"], acc_full=full, ctrl_full=ctrl_full, ctrl_ck=ctrl, pre=PRE_INFO, vote=VOTE_INFO, seconds=time.time() - T0), open(os.path.join(OUT, "metrics.json"), "w"), indent=1, default=float)
+json.dump(dict(train_plans=len(TRAIN), train_raw=len(TRAIN_RAW), train_seqs=len(SEQ), aug=AUG, drop=DROP, test=len(TEST), V=V, d=D_T, layers=NL, params=n_params(p0), steps=step, minutes=MIN, curve=CURVE, best_step=best["at"], best_ck=best["acc"], acc_full=full, ctrl_full=ctrl_full, ctrl_ck=ctrl, pre=PRE_INFO, vote=VOTE_INFO, star=STAR_INFO, seconds=time.time() - T0), open(os.path.join(OUT, "metrics.json"), "w"), indent=1, default=float)
 np.savez_compressed(os.path.join(OUT, "reader.npz"), **eng.params_numpy()); json.dump(dict(cfg=cfg, itos=itos), open(os.path.join(OUT, "reader_vocab.json"), "w"))
 log(f"[done] {time.time()-T0:.0f}s → {OUT}")

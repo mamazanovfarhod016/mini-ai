@@ -9,7 +9,9 @@ CFG = {"vote": dict(VOTE="20"),
        "tgsm": dict(HF_SETS="metamath,orca,tinygsm", TG_N="400000", VOTE="10"),
        # 25.10 утро: победители вместе (английский + TinyGSM весь шард), долго; маленький и побольше параллельно на двух T4
        "long": dict(HF_SETS="metamath,orca,tinygsm", TG_N="700000", PRE="tinystories", PRE_MIN="30", MIN="150", VOTE="10"),
-       "long-big": dict(HF_SETS="metamath,orca,tinygsm", TG_N="700000", PRE="tinystories", PRE_MIN="30", MIN="150", VOTE="10", D_T="256", NL="6", NH="8", BS="48")}
+       "long-big": dict(HF_SETS="metamath,orca,tinygsm", TG_N="700000", PRE="tinystories", PRE_MIN="30", MIN="150", VOTE="10", D_T="256", NL="6", NH="8", BS="48"),
+       # 25.10: петля самоулучшения (STaR) на рецепте tgsm (8,7 %): 3 круга × 4000 новых вопросов TinyGSM без ответов, 8 планов, согласие ≥50 %
+       "star": dict(HF_SETS="metamath,orca,tinygsm", TG_N="400000", VOTE="10", STAR="3", STAR_POOL="12000", STAR_PER="4000", STAR_K="8", STAR_FT="8", STAR_AGREE="0.5")}
 only = sys.argv[1:] or ["vote", "pre", "tgsm"]
 buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode="w:gz") as t:
