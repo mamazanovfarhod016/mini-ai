@@ -30,8 +30,8 @@ def words(t): return re.findall(r"\d+|[a-z]+|[^\sa-z\d]", re.sub(r"<<[^<>]*>>", 
 docs = [words(q + " " + a.split("####")[0]) + ["<eos>"] for q, a in zip(tr["question"], tr["answer"])]
 cnt = collections.Counter(w for d in docs for w in d)
 KE, KP, NE, NP = 300, 100, 60, 60       # известные сущности/места; новые сущности/места
-FORMS = ["{a} lives in {b} .", "the home of {a} is {b} ."]
-special = ["<pad>", "<unk>", "<bos>"] + [f"ke{i}" for i in range(KE)] + [f"kp{i}" for i in range(KP)] + [f"nw{i}" for i in range(NE)] + [f"np{i}" for i in range(NP)] + ["lives", "in", "the", "home", "of", "is", "."]
+FORMS = ["{a} lives in {b} .", "the home of {a} is {b} .", "{a} stays in {b} .", "in {b} lives {a} ."]   # 0..2 — парафразы для обучения новому; 3 — НЕ показывается при обучении новому (перенос смысла)
+special = ["<pad>", "<unk>", "<bos>"] + [f"ke{i}" for i in range(KE)] + [f"kp{i}" for i in range(KP)] + [f"nw{i}" for i in range(NE)] + [f"np{i}" for i in range(NP)] + ["lives", "in", "the", "home", "of", "is", "stays", "a", "person", "place", "."]
 itos = list(dict.fromkeys(special + [w for w, _ in cnt.most_common(2500)])); stoi = {w: i for i, w in enumerate(itos)}; V = len(itos); UNK = 1; BOS = 2; EOS = stoi["<eos>"]
 enc = lambda ws: [stoi.get(w, UNK) for w in ws]
 rng = random.Random(SEED)
@@ -42,20 +42,24 @@ for d in docs:
     stream += enc(d)
     if rng.random() < 0.35:                                   # факт-вставки: известные сущности, обе формы
         for _ in range(rng.randint(1, 2)):
-            a, b = rng.choice(known); stream += enc(fact_doc(a, b, rng.randrange(2))) + [EOS]
+            a, b = rng.choice(known); stream += enc(fact_doc(a, b, rng.randrange(4))) + [EOS]
+    if rng.random() < 0.5:        # слова-«пустышки»: имена/места нового тоже встречаются в базе (эмбеддинги обучены), но БЕЗ связи имя→место
+        stream += enc([rng.choice([f"nw{rng.randrange(NE)}", f"ke{rng.randrange(KE)}"]), "is", "a", "person", "."]) + [EOS] + enc([rng.choice([f"np{rng.randrange(NP)}", f"kp{rng.randrange(KP)}"]), "is", "a", "place", "."]) + [EOS]
 stream = np.array(stream, np.int64); NV = len(stream) // 30; TRN, VAL = stream[:-NV], stream[-NV:]
 log(f"словарь {V}, токенов базы {len(TRN)/1e6:.2f} млн, отложено {len(VAL)}")
 L = 64
 def window(arr, n, r):
     ix = r.integers(0, len(arr) - L - 1, n); return torch.tensor(np.stack([arr[i:i + L + 1] for i in ix]))
 # ---------- модель: маленький GPT + слой-память (ключи/значения, top-k доступ)
-D, NL_, NH_, KM, DK, TOPK = 128, 4, 4, 2048, 64, 16
+D, NL_, NH_, KM, DK, TOPK = 128, 4, 4, int(E("KM", 8192)), 64, 8
 class Mem(nn.Module):
     def __init__(s):
         super().__init__(); s.q = nn.Linear(D, DK); s.keys = nn.Parameter(torch.randn(KM, DK) * 0.1); s.values = nn.Parameter(torch.randn(KM, D) * 0.02); s.last = None
+        s.w1 = nn.Linear(D, D); s.w2 = nn.Linear(D, D)   # входной вентиль, как в Berges et al. 2024: out = (y ⊙ silu(x W1)) W2
     def forward(s, h):
         B, T, _ = h.shape; sc = s.q(h).reshape(B * T, DK) @ s.keys.T; w, ix = sc.topk(TOPK, -1); s.last = ix
-        return h + (F.softmax(w, -1).unsqueeze(-1) * s.values[ix]).sum(1).reshape(B, T, D)
+        y = (F.softmax(w, -1).unsqueeze(-1) * s.values[ix]).sum(1).reshape(B, T, D)
+        return h + s.w2(y * F.silu(s.w1(h)))
 class Block(nn.Module):
     def __init__(s):
         super().__init__(); s.n1 = nn.LayerNorm(D); s.n2 = nn.LayerNorm(D); s.qkv = nn.Linear(D, 3 * D); s.o = nn.Linear(D, D); s.f1 = nn.Linear(D, 4 * D); s.f2 = nn.Linear(4 * D, D)
@@ -91,47 +95,49 @@ def recall(mm, facts, form, cands):
     X = torch.tensor(pre); lg = mm(X)[:, -1]; ci = torch.tensor([stoi[c] for c in cands]); pick = ci[lg[:, ci].argmax(-1)]
     return float(np.mean([int(pick[i]) == stoi[b] for i, (a, b) in enumerate(facts)]))
 KP_C = [f"kp{i}" for i in range(KP)]; NP_C = [f"np{i}" for i in range(NP)]
-def known_recall(mm): return np.mean([recall(mm, known, f, KP_C) for f in (0, 1)])
+def known_recall(mm): return np.mean([recall(mm, known, f, KP_C) for f in (0, 1, 2, 3)])
 log(f"[база готова] шагов {st}; loss отложенный {base_loss(m):.3f}; известные факты (обе формы) {known_recall(m):.1%} (шанс {1/KP:.1%})")
 BASE = copy.deepcopy(m.state_dict()); base_l0 = base_loss(m); known0 = known_recall(m)
 def new_facts(off, n=20):
     r = random.Random(100 + off); return [(f"nw{off+i}", f"np{r.randrange(NP)}") for i in range(n)]
 FA, FB = new_facts(0), new_facts(30)
-def fact_batch(facts, form=0): return torch.tensor([[BOS] + enc(fact_doc(a, b, form)) for a, b in facts])
+def fact_batch(facts, forms=(0,)):
+    rows = [[BOS] + enc(fact_doc(a, b, f)) for a, b in facts for f in forms]; Lm = max(map(len, rows))
+    return torch.tensor([r + [0] * (Lm - len(r)) for r in rows])      # дополняем <pad>=0; ниже в loss маскируем
 def learn(mm, facts, method, steps, lr, slots=None):
     """steps шагов Adam по предложениям фактов (форма 0), один и тот же набор — «показали один раз» = steps малых шагов"""
-    X = fact_batch(facts); r = np.random.default_rng(9)
+    X = fact_batch(facts, (0, 1, 2)); r = np.random.default_rng(9)
     if method in ("memall", "sparse"):
         params = [mm.mem.values]
         for p in mm.parameters(): p.requires_grad_(p is mm.mem.values)
     else:
         params = list(mm.parameters())
         for p in params: p.requires_grad_(True)
-    op = torch.optim.Adam(params, lr=lr)
+    op = torch.optim.SGD(params, lr=lr) if method == "sparse" else torch.optim.Adam(params, lr=lr)
     for _ in range(steps):
         Xi = X if method != "replay" else torch.cat([X, window(TRN, 16, r)[:, :X.shape[1]]], 0)
-        loss = F.cross_entropy(mm(Xi[:, :-1]).reshape(-1, V), Xi[:, 1:].reshape(-1)); op.zero_grad(); loss.backward()
+        loss = F.cross_entropy(mm(Xi[:, :-1]).reshape(-1, V), Xi[:, 1:].reshape(-1), ignore_index=0); op.zero_grad(); loss.backward()
         if method == "sparse": mm.mem.values.grad *= slots[:, None]
         op.step()
     for p in mm.parameters(): p.requires_grad_(True)
 @torch.no_grad()
 def pick_slots(mm, facts, n_slots):
     """ячейки памяти, сильно задетые НОВЫМ и мало СТАРЫМ (как в Sparse Memory Finetuning)"""
-    mm(fact_batch(facts)[:, :-1]); c_new = torch.bincount(mm.mem.last.reshape(-1), minlength=KM).float()
+    mm(fact_batch(facts, (0, 1, 2))[:, :-1]); c_new = torch.bincount(mm.mem.last.reshape(-1), minlength=KM).float()
     mm(window(TRN, 64, np.random.default_rng(3))[:, :-1]); c_old = torch.bincount(mm.mem.last.reshape(-1), minlength=KM).float()
     score = (c_new / c_new.sum()) / (c_old / c_old.sum() + 1e-4); mask = torch.zeros(KM); mask[score.topk(n_slots).indices] = 1; return mask
 rows = []
-GRID = {"full": [3e-4, 1e-3], "replay": [3e-4, 1e-3], "memall": [1e-2, 3e-2], "sparse": [1e-2, 3e-2, 1e-1]}
+GRID = {"full": [3e-4, 1e-3], "replay": [3e-4, 1e-3], "memall": [1e-2, 3e-2], "sparse": [1.0, 3.0, 10.0]}
 for method in ["full", "replay", "memall", "sparse"]:
     for lr in GRID[method]:
         for steps in [1, 5, 20]:
-            mm = GPT(); mm.load_state_dict(BASE); sl = pick_slots(mm, FA, 64) if method == "sparse" else None
-            learn(mm, FA, method, steps, lr, sl); a_same = recall(mm, FA, 0, NP_C); a_other = recall(mm, FA, 1, NP_C)
-            sl2 = pick_slots(mm, FB, 64) if method == "sparse" else None
+            mm = GPT(); mm.load_state_dict(BASE); sl = pick_slots(mm, FA, 100) if method == "sparse" else None
+            learn(mm, FA, method, steps, lr, sl); a_same = recall(mm, FA, 0, NP_C); a_other = recall(mm, FA, 3, NP_C)
+            sl2 = pick_slots(mm, FB, 100) if method == "sparse" else None
             learn(mm, FB, method, steps, lr, sl2)
             row = dict(method=method, lr=lr, steps=steps, new_same=a_same, new_other=a_other, A_after_B=recall(mm, FA, 0, NP_C), B_same=recall(mm, FB, 0, NP_C),
                        known=float(known_recall(mm)), base_dloss=base_loss(mm) - base_l0, known_d=float(known_recall(mm)) - float(known0))
-            rows.append(row); log(f"{method:7s} lr={lr:<6g} s={steps:<3d} новое(та же форма) {row['new_same']:.0%} (др. форма) {row['new_other']:.0%} | A после B {row['A_after_B']:.0%} | известные {row['known']:.0%} (Δ {row['known_d']:+.0%}) | база Δloss {row['base_dloss']:+.3f}")
+            rows.append(row); log(f"{method:7s} lr={lr:<6g} s={steps:<3d} новое(та же форма) {row['new_same']:.0%} (новая форма) {row['new_other']:.0%} | A после B {row['A_after_B']:.0%} | известные {row['known']:.0%} (Δ {row['known_d']:+.0%}) | база Δloss {row['base_dloss']:+.3f}")
 json.dump(dict(base_steps=st, base_loss=base_l0, known0=float(known0), chance_new=1 / NP, chance_known=1 / KP, rows=rows), open(os.path.join(OUT, "metrics.json"), "w"), indent=1)
 best = {}
 for r in rows:
