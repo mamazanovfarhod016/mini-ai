@@ -29,7 +29,7 @@ tr = parquet("https://huggingface.co/datasets/openai/gsm8k/resolve/refs%2Fconver
 def words(t): return re.findall(r"\d+|[a-z]+|[^\sa-z\d]", re.sub(r"<<[^<>]*>>", " ", t.lower().replace(",", "")))
 docs = [words(q + " " + a.split("####")[0]) + ["<eos>"] for q, a in zip(tr["question"], tr["answer"])]
 cnt = collections.Counter(w for d in docs for w in d)
-KE, KP, NE, NP = 300, 100, 60, 60       # известные сущности/места; новые сущности/места
+KE, KP, NE, NP = int(E("KE", 60)), int(E("KP", 20)), 60, 60       # известные сущности/места; новые сущности/места
 FORMS = ["{a} lives in {b} .", "the home of {a} is {b} .", "{a} stays in {b} .", "in {b} lives {a} ."]   # 0..2 — парафразы для обучения новому; 3 — НЕ показывается при обучении новому (перенос смысла)
 special = ["<pad>", "<unk>", "<bos>"] + [f"ke{i}" for i in range(KE)] + [f"kp{i}" for i in range(KP)] + [f"nw{i}" for i in range(NE)] + [f"np{i}" for i in range(NP)] + ["lives", "in", "the", "home", "of", "is", "stays", "a", "person", "place", "."]
 itos = list(dict.fromkeys(special + [w for w, _ in cnt.most_common(2500)])); stoi = {w: i for i, w in enumerate(itos)}; V = len(itos); UNK = 1; BOS = 2; EOS = stoi["<eos>"]
@@ -40,8 +40,8 @@ def fact_doc(a, b, form): return FORMS[form].format(a=a, b=b).split()
 stream = []
 for d in docs:
     stream += enc(d)
-    if rng.random() < 0.35:                                   # факт-вставки: известные сущности, обе формы
-        for _ in range(rng.randint(1, 2)):
+    if rng.random() < float(E("KNOWN_P", 0.9)):                 # факт-вставки: известные сущности, 4 формы; чаще, чтобы база ДЕЙСТВИТЕЛЬНО выучила известные факты (в 1-м прогоне 2,9 % = база не знала их)
+        for _ in range(rng.randint(2, 4)):
             a, b = rng.choice(known); stream += enc(fact_doc(a, b, rng.randrange(4))) + [EOS]
     if rng.random() < 0.5:        # слова-«пустышки»: имена/места нового тоже встречаются в базе (эмбеддинги обучены), но БЕЗ связи имя→место
         stream += enc([rng.choice([f"nw{rng.randrange(NE)}", f"ke{rng.randrange(KE)}"]), "is", "a", "person", "."]) + [EOS] + enc([rng.choice([f"np{rng.randrange(NP)}", f"kp{rng.randrange(KP)}"]), "is", "a", "place", "."]) + [EOS]
@@ -96,8 +96,11 @@ def recall(mm, facts, form, cands):
     return float(np.mean([int(pick[i]) == stoi[b] for i, (a, b) in enumerate(facts)]))
 KP_C = [f"kp{i}" for i in range(KP)]; NP_C = [f"np{i}" for i in range(NP)]
 def known_recall(mm): return np.mean([recall(mm, known, f, KP_C) for f in (0, 1, 2, 3)])
+BASE_OK = None
 log(f"[база готова] шагов {st}; loss отложенный {base_loss(m):.3f}; известные факты (обе формы) {known_recall(m):.1%} (шанс {1/KP:.1%})")
 BASE = copy.deepcopy(m.state_dict()); base_l0 = base_loss(m); known0 = known_recall(m)
+BASE_OK = float(known0) >= 0.7
+log("ВОРОТА: база выучила известные факты" + (" — прогон ДЕЙСТВИТЕЛЕН" if BASE_OK else f" только на {float(known0):.0%} (<70 %) — результаты НЕ ДЕЙСТВИТЕЛЬНЫ, лечить базу"))
 def new_facts(off, n=20):
     r = random.Random(100 + off); return [(f"nw{off+i}", f"np{r.randrange(NP)}") for i in range(n)]
 FA, FB = new_facts(0), new_facts(30)
