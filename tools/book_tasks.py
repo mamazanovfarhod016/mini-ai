@@ -70,18 +70,42 @@ def tasks_from_text(text):
 
 
 def answer(q, v, ops, lang):
+    """25.10 (3-й разбор деления 2 кл. 3 четв.): «36 / 4 + 21» проваливался даже после 2 фиксов данных
+    (попытки 1–3 этого дня: 67%, тот же пример) — нашли ТРЕТЬЮ причину: answer() писала цепочку шагов
+    (Lee et al. 2023, правило 1 TRAINING_RULES) только для чистых +/− примеров; смешанные деление+сложение
+    (и умножение/деление цепочкой без +/−) получали ГОЛЫЙ ответ без шагов — модель никогда не видела,
+    как разбить «36 / 4 + 21» на «36 / 4 = 9» и «9 + 21 = 30». Теперь шаги пишем для ЛЮБОЙ цепочки:
+    сначала сворачиваем каждую */ -подцепочку в одно число (с шагами), потом +/− слева направо.
+    """
     if len(ops) == 1:
         return fmt(v)
-    # цепочка без * и / — шаги слева направо (как считают в книге)
-    if all(o in "+" + M for o in ops):
-        nums = re.findall(r"\d+", q)
-        cur, steps = Fraction(nums[0]), []
-        for o, x in zip(ops, nums[1:]):
-            new = cur + int(x) if o == "+" else cur - int(x)
-            steps.append(f"{fmt(cur)} {o} {x} = {fmt(new)}")
+    nums = [Fraction(n) for n in re.findall(r"\d+", q)]
+    terms = []                    # [(sign, [числа подцепочки], [* / операторы подцепочки])]
+    sign, seq_nums, seq_ops = "+", [nums[0]], []
+    for o, x in zip(ops, nums[1:]):
+        if o in "*/":
+            seq_nums.append(x)
+            seq_ops.append(o)
+        else:
+            terms.append((sign, seq_nums, seq_ops))
+            sign, seq_nums, seq_ops = o, [x], []
+    terms.append((sign, seq_nums, seq_ops))
+    steps, term_values = [], []
+    for sign, ns, os_ in terms:
+        cur = ns[0]
+        for o, x in zip(os_, ns[1:]):
+            new = cur * x if o == "*" else cur / x
+            steps.append(f"{fmt(cur)} {o} {fmt(x)} = {fmt(new)}")
             cur = new
-        return f"{', '.join(steps)}. {KW[lang][0]}: {fmt(v)}"
-    return fmt(v)
+        term_values.append((sign, cur))
+    run = term_values[0][1]
+    for sign, val in term_values[1:]:
+        new = run + val if sign == "+" else run - val
+        steps.append(f"{fmt(run)} {sign} {fmt(val)} = {fmt(new)}")
+        run = new
+    if not steps:          # защита: не должно случиться при len(ops) >= 2, но на всякий случай
+        return fmt(v)
+    return f"{', '.join(steps)}. {KW[lang][0]}: {fmt(v)}"
 
 
 def main():
