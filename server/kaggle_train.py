@@ -61,26 +61,34 @@ def kaggle(*args, timeout=120):
 
 
 DATASET = "mini-ai-init"      # приватный набор данных Kaggle: модель, с которой продолжаем (> 1 МБ в посылку не влезает)
+MATH_DATASET = "mini-ai-math"  # приватный набор данных Kaggle: большие файлы заданий четверти (та же причина)
+BUNDLE_LIMIT = 450_000          # 28.10: Kaggle отклоняет посылку (push), если скрипт в base64 > ~1 МБ (проверено
+                                # перебором: 700 КБ сырых данных — ок, 800 КБ — "400 Bad Request"). Берём запас.
 
 
-def upload_init(model_path, log=print, wait_s=600):
-    """Кладём текущую модель в приватный набор данных Kaggle (новой версией) и ждём, пока он будет готов."""
+def upload_dataset(slug, filename, local_path, log=print, wait_s=600, label="данные"):
+    """Кладём файл в приватный набор данных Kaggle (новой версией) и ждём, пока он будет готов.
+    Используется и для модели (continue), и для больших файлов заданий — посылка (push) ограничена ~1 МБ."""
     with tempfile.TemporaryDirectory() as d:
-        Path(d, "model.json").write_bytes(Path(model_path).read_bytes())
+        Path(d, filename).write_bytes(Path(local_path).read_bytes())
         Path(d, "dataset-metadata.json").write_text(json.dumps(
-            {"title": DATASET, "id": f"{USER}/{DATASET}", "licenses": [{"name": "CC0-1.0"}]}), encoding="utf-8")
+            {"title": slug, "id": f"{USER}/{slug}", "licenses": [{"name": "CC0-1.0"}]}), encoding="utf-8")
         res = kaggle("datasets", "version", "-p", d, "-m", time.strftime("%Y-%m-%d %H:%M"), timeout=600)
         if "not found" in res.lower() or "404" in res:
             res = kaggle("datasets", "create", "-p", d, timeout=600)
     if "successful" not in res.lower() and "being created" not in res.lower():
-        raise RuntimeError(f"не удалось загрузить модель на Kaggle: {res[-300:]}")
+        raise RuntimeError(f"не удалось загрузить {label} на Kaggle: {res[-300:]}")
     t0 = time.time()
     while time.time() - t0 < wait_s:
-        if "ready" in kaggle("datasets", "status", f"{USER}/{DATASET}").lower():
-            log(f"Kaggle: модель для продолжения загружена ({Path(model_path).stat().st_size // 1024} КБ)")
+        if "ready" in kaggle("datasets", "status", f"{USER}/{slug}").lower():
+            log(f"Kaggle: {label} загружены ({Path(local_path).stat().st_size // 1024} КБ)")
             return
         time.sleep(15)
-    raise TimeoutError("Kaggle: набор данных с моделью не готов")
+    raise TimeoutError(f"Kaggle: набор данных «{label}» не готов")
+
+
+def upload_init(model_path, log=print, wait_s=600):
+    upload_dataset(DATASET, "model.json", model_path, log=log, wait_s=wait_s, label="модель для продолжения")
 
 
 def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=True, poll=60, max_wait_h=11,
@@ -96,9 +104,19 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
         # совпадение с numpy-эталоном проверяет tests/test_torch_engine.py
         args += ["--engine", "torch"]
     maths = []
+    dataset_sources = []
     if math:
-        files.append((Path(math), "data/math_pairs.json"))
-        maths.append("data/math_pairs.json")
+        mpath = Path(math)
+        if mpath.stat().st_size > BUNDLE_LIMIT:
+            # 28.10: большой файл заданий (напр. «повтор всего класса», 5+ МБ) не влезает в посылку
+            # (подтверждено перебором: >~800 КБ в base64 → "400 Bad Request" от Kaggle) — грузим как
+            # отдельный набор данных, как уже делаем с моделью (upload_init).
+            upload_dataset(MATH_DATASET, "math_pairs.json", mpath, log=log, label="задания четверти")
+            maths.append(f"/kaggle/input/{MATH_DATASET}/math_pairs.json")
+            dataset_sources.append(f"{USER}/{MATH_DATASET}")
+        else:
+            files.append((mpath, "data/math_pairs.json"))
+            maths.append("data/math_pairs.json")
     # школьная математика 1–6 класс: файл 8 МБ не влезает в посылку Kaggle (лимит ~1 МБ) —
     # шлём генератор (он детерминированный, seed=0) и собираем задания прямо там
     gen = ROOT / "tools/make_school_math.py"
@@ -117,13 +135,14 @@ def run(intents=None, math=None, steps=6000, extra=(), out=None, log=print, gpu=
     if init:
         upload_init(init, log=log)
         args += ["--init", f"/kaggle/input/{DATASET}/model.json"]
+        dataset_sources.append(f"{USER}/{DATASET}")
     b64 = bundle(files)
     script = f"BUNDLE = {b64!r}\nARGS = {json.dumps(args)}\n" + RUNNER
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "train.py").write_text(script, encoding="utf-8")
         meta = {"id": f"{USER}/{SLUG}", "title": SLUG, "code_file": "train.py", "language": "python",
                 "kernel_type": "script", "is_private": True, "enable_gpu": gpu, "enable_internet": False,
-                "dataset_sources": [f"{USER}/{DATASET}"] if init else [], "competition_sources": [], "kernel_sources": []}
+                "dataset_sources": dataset_sources, "competition_sources": [], "kernel_sources": []}
         if gpu:
             meta["machine_shape"] = "NvidiaTeslaT4"
         (Path(d) / "kernel-metadata.json").write_text(json.dumps(meta), encoding="utf-8")
